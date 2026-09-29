@@ -1,0 +1,580 @@
+import { test, expect } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import type { Execution, Output } from "../packages/protocol/src/index.ts";
+import { fixture, initialSnapshot } from "./ui-fixture.ts";
+
+test("compact layouts, focus, and keyboard navigation retain local work", async ({ page }) => {
+  await fixture(page);
+  await page.goto("/");
+  await page
+    .getByRole("textbox", { name: "Message Biologue", exact: true })
+    .fill("A question in progress");
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Research context", exact: true })
+    .fill("Observation: the samples were collected on different days.");
+  await page.getByRole("textbox", { name: "Console code", exact: true }).fill("print('draft')");
+  await page.setViewportSize({ width: 1000, height: 740 });
+  await expect(page.locator(".layout-compact")).toBeVisible();
+  await expect
+    .poll(() => page.locator(".chat").evaluate((el) => el.clientWidth))
+    .toBeGreaterThanOrEqual(280);
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
+    /different days/,
+  );
+  await page.keyboard.press("Alt+2");
+  await page.keyboard.press("Alt+f");
+  await expect(page.getByRole("button", { name: "Restore workspace" })).toBeVisible();
+  await expect
+    .poll(() => page.locator(".editor-pane").evaluate((el) => el.clientWidth))
+    .toBeGreaterThan(850);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Focus active panel" })).toBeVisible();
+  await page.setViewportSize({ width: 640, height: 760 });
+  await expect(page.locator(".layout-narrow")).toBeVisible();
+  await page.keyboard.press("Alt+1");
+  await expect(page.getByRole("textbox", { name: "Message Biologue", exact: true })).toHaveValue(
+    "A question in progress",
+  );
+  await page.reload();
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
+    /different days/,
+  );
+  await page.getByRole("button", { name: "Open Console", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Console code", exact: true })).toHaveValue(
+    "print('draft')",
+  );
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    .toBe(true);
+});
+
+test("file execution follows the script language and offline drafts remain editable", async ({
+  page,
+}) => {
+  const ui = await fixture(page);
+  ui.handle(async (request) =>
+    request.path === "/executions" ? { body: { id: "execution-1", ...request.body } } : undefined,
+  );
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Session language" }).selectOption("r");
+  await expect(page.getByText("This file runs in Python. The console is viewing R.")).toBeVisible();
+  await page.getByRole("button", { name: "Run file", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Session language" })).toHaveValue("python");
+  expect(ui.requests.find((request) => request.path === "/executions")?.body).toEqual({
+    language: "python",
+    code: initialSnapshot.documents[0].content,
+    document: { path: "analysis.py", version: 1 },
+  });
+  await ui.connect(false);
+  await expect(page.getByText(/Connection lost\. Reconnecting/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run file", exact: true })).toBeDisabled();
+  await page
+    .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
+    .fill("print('retained while offline')");
+  await expect(page.getByText("Edits retained offline", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save file", exact: true })).toBeDisabled();
+  await ui.connect(true);
+  await expect(page.getByRole("button", { name: "Save file", exact: true })).toBeEnabled();
+  await page.reload();
+  await expect(page.locator(".cm-content")).toContainText("retained while offline");
+});
+
+test("version conflicts retain and expose both document and context versions", async ({ page }) => {
+  const ui = await fixture(page);
+  await page.goto("/");
+  await page
+    .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
+    .fill("print('my draft')");
+  await ui.emit({
+    type: "document",
+    document: { ...initialSnapshot.documents[0], content: "print('shared version')", version: 2 },
+  });
+  await expect(page.getByText("The working document changed.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run file", exact: true })).toBeDisabled();
+  await page.getByText("Review working version · revision 2").click();
+  await expect(page.locator(".conflict pre")).toHaveText("print('shared version')");
+  await expect(page.locator(".cm-content")).toHaveText("print('my draft')");
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Research context", exact: true })
+    .fill("My observed result");
+  await ui.emit({
+    type: "context",
+    context: {
+      text: "A correction from another window",
+      version: 1,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  await expect(page.getByRole("button", { name: "Save context", exact: true })).toBeDisabled();
+  await page.getByText("Review saved notes · version 1").click();
+  await expect(page.locator(".research .conflict pre")).toHaveText(
+    "A correction from another window",
+  );
+  await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
+    "My observed result",
+  );
+});
+
+test("failed submissions explain the error and retain the console draft", async ({ page }) => {
+  const ui = await fixture(page);
+  ui.handle(async (request) =>
+    request.path === "/executions"
+      ? {
+          status: 503,
+          body: { error: "The Python kernel is unavailable. Reconnect the session and try again." },
+        }
+      : undefined,
+  );
+  await page.goto("/");
+  const input = page.getByRole("textbox", { name: "Console code", exact: true });
+  await input.fill("print('keep this input')");
+  await input.press("ControlOrMeta+Enter");
+  const error = page.getByRole("alert").filter({ hasText: "The Python kernel is unavailable" });
+  await expect(error).toBeVisible();
+  await expect(input).toHaveValue("print('keep this input')");
+  await expect(page.getByRole("button", { name: "Run console code" })).toBeEnabled();
+  await page.getByRole("button", { name: "Dismiss error" }).click();
+  await expect(error).toHaveCount(0);
+});
+
+test("saving context preserves changes typed while the request is in flight", async ({ page }) => {
+  const ui = await fixture(page);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  ui.handle(async (request) => {
+    if (request.path !== "/context") return;
+    await pending;
+    const context = { text: request.body.text, version: 1, updatedAt: new Date().toISOString() };
+    await ui.emit({ type: "context", context });
+    return { body: context };
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  const notes = page.getByRole("textbox", { name: "Research context", exact: true });
+  await notes.fill("Observation one");
+  await page.getByRole("button", { name: "Save context", exact: true }).click();
+  await expect
+    .poll(() => ui.requests.filter((request) => request.path === "/context").length)
+    .toBe(1);
+  await notes.fill("Observation one\nObservation two");
+  release();
+  await expect(page.getByText("Version 1 · authored by you")).toBeVisible();
+  await expect(notes).toHaveValue("Observation one\nObservation two");
+  await expect(page.getByRole("button", { name: "Save context", exact: true })).toBeEnabled();
+  await expect(page.getByText("Local draft · not yet shared with Biologue")).toBeVisible();
+});
+
+test("conversation drafts are separate, sends are guarded, and new investigations are named", async ({
+  page,
+}) => {
+  const ui = await fixture(page, {
+    agent: { enabled: true, provider: "test", model: "UI fixture" },
+  });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  ui.handle(async (request) => {
+    if (request.path !== "/agent/runs") return;
+    await pending;
+    return { body: { id: "run-test" } };
+  });
+  await page.goto("/");
+  const input = page.getByRole("textbox", { name: "Message Biologue", exact: true });
+  await input.fill("First question");
+  await page
+    .getByRole("combobox", { name: "Conversation", exact: true })
+    .selectOption("conversation-2");
+  await expect(input).toHaveValue("");
+  await input.fill("Second question");
+  await page
+    .getByRole("combobox", { name: "Conversation", exact: true })
+    .selectOption("conversation-1");
+  await expect(input).toHaveValue("First question");
+  await input.press("ControlOrMeta+Enter");
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+  await input.fill("New thought while sending");
+  await input.press("ControlOrMeta+Enter");
+  expect(ui.requests.filter((request) => request.path === "/agent/runs")).toHaveLength(1);
+  release();
+  await expect(input).toHaveValue("New thought while sending");
+  await page.getByRole("button", { name: "New conversation", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Investigation name" })
+    .fill("Understanding the batch effect");
+  await page.getByRole("button", { name: "Create conversation" }).click();
+  await expect(page.getByRole("combobox", { name: "Conversation", exact: true })).toHaveValue(
+    "conversation-3",
+  );
+  await expect(input).toHaveValue("");
+});
+
+test("permission review shows exact code, prevents duplicate decisions, and supports denial", async ({
+  page,
+}) => {
+  const request = {
+    id: "permission-1",
+    runId: "run-1",
+    tool: "execute_code",
+    description: "Inspect the synthetic signal distribution.",
+    code: "measurements.describe()",
+    language: "python" as const,
+    createdAt: "2026-09-26T10:00:00Z",
+  };
+  const ui = await fixture(page, {
+    agent: { enabled: true, provider: "test", model: "UI fixture" },
+    permissions: [request],
+    runs: [
+      {
+        id: "run-1",
+        conversationId: "conversation-1",
+        status: "running",
+        startedAt: request.createdAt,
+        contextVersion: 0,
+      },
+    ],
+  });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  ui.handle(async (req) => {
+    if (!req.path.startsWith("/permissions")) return;
+    await pending;
+    await ui.emit({ type: "permission-resolved", id: req.path.split("/").at(-1)! });
+    return { body: { ok: true } };
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /1 request awaiting review/ }).click();
+  await expect(page.locator(".permission-card pre")).toHaveText(request.code);
+  await page.getByRole("button", { name: "Allow once", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Decline", exact: true })).toBeDisabled();
+  expect(ui.requests.filter((req) => req.path === "/permissions/permission-1")).toHaveLength(1);
+  expect(ui.requests.find((req) => req.path === "/permissions/permission-1")?.body).toEqual({
+    allow: true,
+  });
+  release();
+  await expect(page.locator(".permission-card")).toHaveCount(0);
+  await ui.emit({ type: "permission", request: { ...request, id: "permission-2" } });
+  await page.getByRole("button", { name: "Decline", exact: true }).click();
+  await expect(page.locator(".permission-card")).toHaveCount(0);
+  expect(ui.requests.find((req) => req.path === "/permissions/permission-2")?.body).toEqual({
+    allow: false,
+  });
+});
+
+test("new messages do not pull a scientist away from earlier reading", async ({ page }) => {
+  const messages = Array.from({ length: 12 }, (_, i) => ({
+    id: `message-${i}`,
+    conversationId: "conversation-1",
+    role: "assistant" as const,
+    text: `**Observation ${i + 1}**\n\nThis is a synthetic UI fixture. It does not establish a biological interpretation.\n\n- Check the supplied context.\n- Retain uncertainty.`,
+    createdAt: "2026-09-26T10:00:00Z",
+  }));
+  const ui = await fixture(page, { messages });
+  await page.goto("/");
+  await expect(page.locator(".message")).toHaveCount(12);
+  await page.locator(".chat-messages").evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await ui.emit({
+    type: "message",
+    message: { ...messages[0], id: "message-new", text: "A new message" },
+  });
+  await expect
+    .poll(() => page.locator(".chat-messages").evaluate((element) => element.scrollTop))
+    .toBe(0);
+  await expect(page.getByRole("button", { name: "Latest messages", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Latest messages", exact: true }).click();
+  await expect(page.getByText("A new message", { exact: true })).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Latest messages", exact: true })).toHaveCount(0);
+});
+
+test("an older figure opens its own artifact and exact source", async ({ page }) => {
+  const png =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jJ1kAAAAASUVORK5CYII=";
+  const executions: (Execution & { outputs: Output[] })[] = [1, 2].map((id) => ({
+    id: `figure-${id}`,
+    language: "python",
+    actor: "human",
+    code: `print('source ${id}')`,
+    codePreview: `print('source ${id}')`,
+    codeHash: `hash-${id}`,
+    purpose: "analysis",
+    status: "succeeded",
+    createdAt: "2026-09-26T10:00:00Z",
+    outputs: [
+      {
+        id: `output-${id}`,
+        executionId: `figure-${id}`,
+        sequence: 0,
+        kind: "display",
+        data: { "image/png": png },
+      },
+    ],
+  }));
+  await fixture(page, { executions });
+  await page.goto("/");
+  await expect(page.locator(".figure-count")).toHaveText("Figure 2 of 2");
+  await page.locator(".execution").first().getByRole("button", { name: "View figure" }).click();
+  await expect(page.locator(".figure-count")).toHaveText("Figure 1 of 2");
+  await page.locator(".plots").getByRole("button", { name: "View source" }).click();
+  await expect(page.locator("#execution-figure-1 .code-record pre")).toHaveText(
+    "print('source 1')",
+  );
+  await page.getByRole("button", { name: "Expand figure" }).click();
+  await expect(page.getByRole("button", { name: "Restore workspace" })).toBeVisible();
+});
+
+test("main panels and help dialog meet automated accessibility checks", async ({ page }) => {
+  await fixture(page);
+  await page.goto("/");
+  await expect(page.locator(".cm-content")).toContainText("Synthetic example");
+  for (const panel of [null, "Research context", "Agent", "Data"] as const) {
+    if (panel) await page.getByRole("button", { name: `Open ${panel}`, exact: true }).click();
+    const result = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+      .analyze();
+    expect(
+      result.violations,
+      `${panel || "Initial workspace"}: ${JSON.stringify(result.violations)}`,
+    ).toEqual([]);
+  }
+  await page.getByRole("button", { name: "Workspace help" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  const result = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
+  expect(result.violations).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Workspace help" })).toBeFocused();
+});
+
+test("queued corrections remain visible after cancellation and delivery does not duplicate them", async ({
+  page,
+}) => {
+  const run = {
+    id: "run-queued",
+    conversationId: "conversation-1",
+    status: "running" as const,
+    startedAt: "2026-09-26T10:00:00Z",
+    contextVersion: 0,
+  };
+  const ui = await fixture(page, {
+    agent: { enabled: true, provider: "test", model: "UI fixture" },
+    runs: [run],
+  });
+  const message = {
+    id: "correction-1",
+    conversationId: "conversation-1",
+    role: "user" as const,
+    text: "Those samples share one donor.",
+    createdAt: "2026-09-26T10:01:00Z",
+    runId: run.id,
+    delivery: "pending" as const,
+  };
+  ui.handle(async (request) => {
+    if (request.path === `/agent/runs/${run.id}/steer`) {
+      await ui.emit({ type: "message", message });
+      return { body: { ok: true } };
+    }
+  });
+  await page.goto("/");
+  await page.getByRole("textbox", { name: "Message Biologue", exact: true }).fill(message.text);
+  await page.getByRole("button", { name: "Send context", exact: true }).click();
+  await expect(page.getByText("Queued", { exact: true })).toBeVisible();
+  await ui.emit({
+    type: "agent-run",
+    run: { ...run, status: "cancelled", finishedAt: "2026-09-26T10:02:00Z" },
+  });
+  await expect(page.getByText("Saved for your next message", { exact: true })).toBeVisible();
+  await ui.emit({ type: "message", message: { ...message, delivery: "delivered" } });
+  await expect(page.getByText("Saved for your next message", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(message.text, { exact: true })).toHaveCount(1);
+});
+
+test("automatic document sync preserves a revert typed during an outstanding request", async ({
+  page,
+}) => {
+  const ui = await fixture(page);
+  let release!: () => void;
+  let first = true;
+  ui.handle(async (request) => {
+    if (request.path !== "/documents" || request.method !== "PUT" || !first) return;
+    first = false;
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const document = {
+      ...ui.state.documents[0],
+      content: request.body.content,
+      version: 2,
+      editId: request.body.editId,
+    };
+    await ui.emit({ type: "document", document });
+    return { body: document };
+  });
+  await page.goto("/");
+  const editor = page.getByRole("textbox", { name: "Code editor: analysis.py", exact: true });
+  await editor.fill("print('in flight')");
+  await expect
+    .poll(
+      () =>
+        ui.requests.filter((request) => request.path === "/documents" && request.method === "PUT")
+          .length,
+    )
+    .toBe(1);
+  await editor.fill(initialSnapshot.documents[0].content);
+  release();
+  await expect.poll(() => ui.state.documents[0].version).toBe(3);
+  expect(ui.state.documents[0].content).toBe(initialSnapshot.documents[0].content);
+  await expect(editor.locator(".cm-line")).toHaveText(
+    initialSnapshot.documents[0].content.split("\n"),
+  );
+  expect(
+    ui.requests.filter((request) => request.path === "/documents" && request.method === "PUT")[1]
+      .body.expectedVersion,
+  ).toBe(2);
+  await expect(page.getByRole("button", { name: "Share buffer", exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(editor.locator(".cm-line")).toHaveText(
+    initialSnapshot.documents[0].content.split("\n"),
+  );
+});
+
+test("disk conflicts expose the reviewed disk version and can be resolved in the editor", async ({
+  page,
+}) => {
+  const document = {
+    ...initialSnapshot.documents[0],
+    content: "working copy",
+    version: 2,
+    diskConflict: { content: "external edit", hash: "external-hash" },
+  };
+  const ui = await fixture(page, { documents: [document] });
+  ui.handle(async (request) => {
+    if (request.path !== "/documents/reconcile") return;
+    expect(request.body).toEqual({
+      path: document.path,
+      expectedVersion: 2,
+      expectedDiskHash: "external-hash",
+      choice: "disk",
+    });
+    const reconciled = {
+      ...document,
+      content: "external edit",
+      version: 3,
+      savedVersion: 3,
+      diskHash: "external-hash",
+      diskConflict: undefined,
+    };
+    await ui.emit({ type: "document", document: reconciled });
+    return { body: reconciled };
+  });
+  await page.goto("/");
+  await expect(page.getByText("The file changed on disk.", { exact: true })).toBeVisible();
+  await page.getByText("Review disk version", { exact: true }).click();
+  await expect(page.locator(".conflict pre")).toHaveText("external edit");
+  await expect(page.getByRole("button", { name: "Save file", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Use disk version", exact: true }).click();
+  await expect(page.locator(".cm-content")).toHaveText("external edit");
+  await expect(page.getByText("Saved to file", { exact: true })).toBeVisible();
+});
+
+test("chat pages only the selected conversation and keeps the reading position when loading earlier messages", async ({
+  page,
+}) => {
+  const messages = Array.from({ length: 125 }, (_, i) => ({
+    id: `history-${i}`,
+    conversationId: "conversation-1",
+    role: "assistant" as const,
+    sequence: i,
+    text: `Observation ${i}. The interpretation remains unresolved.`,
+    createdAt: "2026-09-28T10:00:00Z",
+    delivery: "delivered" as const,
+  }));
+  const ui = await fixture(page, { messages });
+  await page.goto("/");
+  await expect(page.locator(".message")).toHaveCount(50);
+  expect(
+    ui.requests
+      .filter((request) => request.path.endsWith("/messages"))
+      .map((request) => request.path),
+  ).toEqual(["/conversations/conversation-1/messages"]);
+  await page.locator(".chat-messages").evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const anchor = page.getByText(messages[75].text, { exact: true });
+  const top = (await anchor.boundingBox())!.y;
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  await expect(page.locator(".message")).toHaveCount(100);
+  await expect.poll(async () => Math.abs((await anchor.boundingBox())!.y - top)).toBeLessThan(3);
+  expect(
+    ui.requests.filter((request) => request.path.endsWith("/messages"))[1].query.get("before"),
+  ).toBe("history-75");
+  await page
+    .getByRole("combobox", { name: "Conversation", exact: true })
+    .selectOption("conversation-2");
+  await expect(page.locator(".message")).toHaveCount(0);
+  await expect(page.getByText("A place to think together")).toBeVisible();
+  await ui.emit({
+    type: "message",
+    message: { ...messages[0], id: "history-live", text: "A newer observation.", sequence: 125 },
+  });
+  await expect(page.locator(".message")).toHaveCount(0);
+  await page
+    .getByRole("combobox", { name: "Conversation", exact: true })
+    .selectOption("conversation-1");
+  await expect(page.locator(".message")).toHaveCount(50);
+  await expect(page.getByText("A newer observation.", { exact: true })).toBeVisible();
+  await ui.connect(false);
+  await ui.connect(true);
+  await expect(page.locator(".message")).toHaveCount(50);
+});
+
+test("conversation loading errors are retryable and a live delivery survives a stale page", async ({
+  page,
+}) => {
+  const ui = await fixture(page);
+  let attempt = 0;
+  let release!: () => void;
+  const message = {
+    id: "accepted-question",
+    conversationId: "conversation-1",
+    role: "user" as const,
+    text: "Preserve the matched control.",
+    createdAt: "2026-09-28T10:00:00Z",
+    delivery: "pending" as const,
+  };
+  ui.handle(async (request) => {
+    if (!request.path.endsWith("/messages")) return;
+    if (!attempt++)
+      return { status: 503, body: { error: "Conversation temporarily unavailable." } };
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { body: { items: [message] } };
+  });
+  await page.goto("/");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Conversation temporarily unavailable" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Retry loading messages", exact: true }).click();
+  await expect.poll(() => attempt).toBe(2);
+  await ui.emit({ type: "message", message: { ...message, delivery: "delivered" } });
+  release();
+  await expect(page.getByText(message.text, { exact: true })).toHaveCount(1);
+  await expect(page.getByText("Saved for your next message", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Retry loading messages", exact: true }),
+  ).toHaveCount(0);
+});

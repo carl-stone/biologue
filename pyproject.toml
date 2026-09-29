@@ -1,0 +1,8 @@
+[project]
+name = "carl-runtime"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["jupyter-server>=2.17,<3", "ipykernel>=6.30,<8", "matplotlib>=3.10,<4", "pandas>=2.3,<4"]
+
+[tool.uv]
+package = false

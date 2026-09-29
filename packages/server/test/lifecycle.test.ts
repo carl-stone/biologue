@@ -1,0 +1,203 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { Store } from "../src/store.ts";
+import { Events } from "../src/events.ts";
+import { Permissions } from "../src/permissions.ts";
+import { fixture } from "./helpers/pi-fixture.ts";
+
+const timeout = { timeout: 20_000 };
+
+test("failed permission writes reject all waiters, including aborts, and never grant execution", async () => {
+  const store = new Store(":memory:");
+  const events = new Events();
+  const observed: unknown[] = [];
+  events.subscribe((event) => observed.push(event));
+  const permissions = new Permissions(store, events);
+  const put = store.put.bind(store);
+  store.put = (kind, id, value) => {
+    if (kind === "permission") throw new Error("Disk full");
+    return put(kind, id, value);
+  };
+  try {
+    const input = { runId: "run", tool: "execute_code", description: "Proposed code" };
+    const controller = new AbortController();
+    const requested = [
+      permissions.request(input),
+      permissions.request(input),
+      permissions.request(input, controller.signal),
+    ];
+    const settled = Promise.allSettled(requested);
+    const [allowed] = permissions.list();
+    assert.throws(() => permissions.decide(allowed.id, true), /Disk full/);
+    assert.doesNotThrow(() => controller.abort());
+    assert.throws(() => permissions.cancelRun("run"), /cancelled permission decisions/);
+    const results = await settled;
+    assert.ok(
+      results.every(
+        (result) => result.status === "rejected" && /Disk full/.test(result.reason.message),
+      ),
+    );
+    assert.equal(permissions.list().length, 0);
+    assert.equal(permissions.decide(allowed.id, true), false);
+    assert.equal(
+      observed.filter(
+        (event: any) => event.type === "permission-resolved" && event.error.includes("Disk full"),
+      ).length,
+      3,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+for (const kind of ["run-input", "run"]) {
+  test(
+    `failed ${kind} startup writes retain the input without reserving the conversation`,
+    timeout,
+    async () => {
+      const f = await fixture();
+      const put = f.store.put.bind(f.store);
+      try {
+        f.store.put = (target, id, value) => {
+          if (target === kind) throw new Error("Startup write failed");
+          return put(target, id, value);
+        };
+        assert.throws(
+          () => f.supervisor.start(f.conversationId, "Retain the matched control."),
+          /Startup write failed/,
+        );
+        assert.equal(f.requests.length, 0);
+        assert.equal(f.store.list("run").length, 0);
+        assert.equal(f.store.list("run-input").length, 0);
+        assert.match(f.sessions.pending(f.conversationId)[0].text, /matched control/);
+        f.store.put = put;
+        f.faux.setResponses([fauxAssistantMessage("The earlier input is available.")]);
+        assert.equal((await f.run("Continue.")).status, "completed");
+        assert.match(JSON.stringify(f.requests.at(-1)), /matched control/);
+      } finally {
+        f.store.put = put;
+        await f.close();
+      }
+    },
+  );
+}
+
+test(
+  "disposal and publication failures cannot strand an agent run or reject its background task",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const create = f.pi.create.bind(f.pi);
+    const publish = f.sessions.publishMessages.bind(f.sessions);
+    try {
+      f.pi.create = async (input) => {
+        const session = await create(input);
+        const dispose = session.dispose.bind(session);
+        session.clearQueue = () => {
+          throw new Error("Queue cleanup failed");
+        };
+        session.dispose = () => {
+          dispose();
+          throw new Error("Disposal failed");
+        };
+        return session;
+      };
+      f.sessions.publishMessages = () => {
+        throw new Error("Projection unavailable");
+      };
+      f.faux.setResponses([fauxAssistantMessage("Retained in Pi.")]);
+      const failed = await f.run("Discuss the observation.");
+      assert.equal(failed.status, "failed");
+      assert.equal(failed.endReason, "integration_error");
+      assert.match(failed.error!, /Projection unavailable/);
+      assert.match(failed.error!, /Queue cleanup failed/);
+      assert.match(failed.error!, /Disposal failed/);
+      f.pi.create = create;
+      f.sessions.publishMessages = publish;
+      f.faux.setResponses([fauxAssistantMessage("The conversation is usable again.")]);
+      assert.equal((await f.run("Continue.")).status, "completed");
+    } finally {
+      f.pi.create = create;
+      f.sessions.publishMessages = publish;
+      await f.close();
+    }
+  },
+);
+
+test(
+  "cancellation settles tools despite failed permission and run persistence",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const put = f.store.put.bind(f.store);
+    try {
+      f.faux.setResponses([
+        fauxAssistantMessage(
+          fauxToolCall("execute_code", {
+            language: "python",
+            code: "never_execute()",
+            reason: "Test cancellation",
+          }),
+          { stopReason: "toolUse" },
+        ),
+      ]);
+      const requested = f.requested(),
+        finished = f.finished();
+      const run = f.supervisor.start(f.conversationId, "Consider an action.");
+      await requested;
+      let runWriteFailed = false;
+      f.store.put = (kind, id, value) => {
+        if (kind === "permission") throw new Error("Permission disk failure");
+        if (kind === "run" && !runWriteFailed) {
+          runWriteFailed = true;
+          throw new Error("Run disk failure");
+        }
+        return put(kind, id, value);
+      };
+      await f.supervisor.cancel(run.id);
+      const result = await finished;
+      assert.equal(result.status, "cancelled");
+      assert.ok(result.finishedAt);
+      assert.match(result.error!, /permission decisions/);
+      assert.match(result.error!, /Run disk failure/);
+      assert.equal(f.permissions.list().length, 0);
+      assert.deepEqual(f.calls, []);
+      f.store.put = put;
+      f.faux.setResponses([fauxAssistantMessage("Ready.")]);
+      assert.equal((await f.run("Continue.")).status, "completed");
+    } finally {
+      f.store.put = put;
+      await f.close();
+    }
+  },
+);
+
+test(
+  "a failed final run write is reported live and releases the conversation",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const put = f.store.put.bind(f.store);
+    try {
+      let failed = false;
+      f.store.put = (kind, id, value) => {
+        if (kind === "run" && (value as any).finishedAt && !failed) {
+          failed = true;
+          throw new Error("Final record failed");
+        }
+        return put(kind, id, value);
+      };
+      f.faux.setResponses([fauxAssistantMessage("A response.")]);
+      const result = await f.run("Discuss.");
+      assert.equal(result.status, "failed");
+      assert.match(result.error!, /Final record failed/);
+      assert.equal(f.store.get<any>("run", result.id).status, "failed");
+      f.faux.setResponses([fauxAssistantMessage("Another response.")]);
+      assert.equal((await f.run("Continue.")).status, "completed");
+    } finally {
+      f.store.put = put;
+      await f.close();
+    }
+  },
+);

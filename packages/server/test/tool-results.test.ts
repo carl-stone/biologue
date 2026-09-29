@@ -1,0 +1,174 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ContextIssue, Execution, Output } from "@carl/protocol";
+import { Store } from "../src/store.ts";
+import { Events } from "../src/events.ts";
+import { OutputService } from "../src/outputs.ts";
+import { artifactText, executionText, inspectionResult } from "../src/tool-results.ts";
+
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "biologue-tool-results-"));
+  const store = new Store(join(root, "state.sqlite"));
+  const outputs = new OutputService(store, new Events(), join(root, "artifacts"));
+  const record: Execution = {
+    id: randomUUID(),
+    language: "python",
+    actor: "agent",
+    purpose: "analysis",
+    code: "print(42)",
+    codeHash: "internal-hash",
+    codePreview: "print(42)",
+    status: "succeeded",
+    createdAt: new Date().toISOString(),
+    kernelId: "internal-kernel",
+    sessionId: "internal-session",
+  };
+  return {
+    record,
+    outputs,
+    close() {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test("warnings group shared evidence and keep control metadata out of model text", () => {
+  const f = fixture();
+  try {
+    const change = randomUUID(),
+      observation = randomUUID();
+    f.record.status = "not_executed";
+    f.record.error = "A redundant internal status message";
+    f.record.contextCheck = {
+      disposition: "review",
+      through: 42,
+      epoch: "internal-generation",
+      notes: ["generic policy"],
+      issues: [
+        ...["A", "B", "C"].map((object): ContextIssue => ({
+          id: randomUUID(),
+          object,
+          kind: "possible_change",
+          message: "internal explanation",
+          executionId: change,
+          observedExecutionId: observation,
+          codePreview: "A = B = C = 42",
+          actor: "human",
+          status: "succeeded",
+        })),
+        ...["D", "E"].map((object): ContextIssue => ({
+          id: randomUUID(),
+          object,
+          kind: "unknown",
+          message: "Alias analysis limit reached.",
+        })),
+      ],
+    };
+    const text = executionText(f.record, f.outputs);
+    assert.match(text, /^Not run/);
+    assert.match(text, /A, B, C: may have changed/);
+    assert.match(text, /D, E: Alias analysis limit reached\./);
+    for (const value of [f.record.id, change, observation, "A = B = C = 42"])
+      assert.equal(text.split(value).length - 1, 1, `Repeated ${value}`);
+    assert.doesNotMatch(text, /internal|generic policy|contextCheck|disposition|executed/);
+    assert.ok(text.length < 600);
+    assert.equal(
+      f.record.contextCheck.issues.length,
+      5,
+      "Presentation must not change acknowledgment evidence",
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("successful results carry output once; large output and source pages remain retrievable", () => {
+  const f = fixture();
+  try {
+    f.outputs.append(f.record, { kind: "stream", text: "4" });
+    f.outputs.append(f.record, { kind: "stream", text: "2\n" });
+    assert.equal(executionText(f.record, f.outputs), `Execution ${f.record.id} succeeded.\n\n42\n`);
+    for (let i = 0; i < 20; i++)
+      f.outputs.append(f.record, { kind: "stream", text: `${i}:` + "x".repeat(3000) });
+    f.record.code = "# source\n".repeat(2000);
+    const tail = executionText(f.record, f.outputs);
+    assert.ok(tail.length < 8000);
+    assert.match(tail, /Earlier outputs: read_execution outputOffset=0/);
+    for (const ref of f.outputs.references(f.record.id, f.outputs.count(f.record.id) - 8, 8)) {
+      assert.ok(tail.includes(ref.id));
+      const full = artifactText(f.outputs.get(ref.id)!, 0);
+      assert.ok(full.length > 3000, "A truncated preview must leave complete output available");
+    }
+    const first = executionText(f.record, f.outputs, { codeOffset: 0, outputOffset: 0 });
+    assert.match(first, /More code: read_execution codeOffset=6000/);
+    assert.match(first, /More outputs: read_execution outputOffset=8/);
+    assert.ok(first.length < 15_000);
+    const codePage = executionText(f.record, f.outputs, { codeOffset: 6000, outputOffset: 0 });
+    assert.ok(codePage.includes(f.record.code.slice(6000, 12_000)));
+    assert.doesNotMatch(codePage, /Output |Earlier outputs|More outputs/);
+    const outputPage = executionText(f.record, f.outputs, { codeOffset: 0, outputOffset: 8 });
+    assert.doesNotMatch(outputPage, /# source/);
+    assert.match(outputPage, /More outputs: read_execution outputOffset=16/);
+  } finally {
+    f.close();
+  }
+});
+
+test("inspection content and observation receipts cover exactly the delivered preview", () => {
+  const f = fixture();
+  try {
+    f.record.purpose = "inspection";
+    f.record.inspection = "environment";
+    f.outputs.append(f.record, {
+      kind: "stream",
+      text: JSON.stringify(
+        Array.from({ length: 120 }, (_, i) => ({ name: `A${i}`, type: "int", preview: `${i}` })),
+      ),
+    });
+    f.outputs.complete(f.record);
+    const result = inspectionResult(f.record, f.outputs);
+    const text = result.content[0].text;
+    assert.equal(text.match(/^"A\d+"/gm)?.length, 100);
+    assert.match(text, /Showing 100 of 120 objects/);
+    assert.equal(result.details!.biologueObservation!.names.length, 100);
+    assert.doesNotMatch(text, /biologueObservation|mimeTypes|totalOutputs/);
+    const selected = inspectionResult(f.record, f.outputs, ["A119"]);
+    assert.deepEqual(selected.details!.biologueObservation!.names, ["A119"]);
+    assert.match(selected.content[0].text, /"A119" \(int\): 119/);
+    assert.doesNotMatch(selected.content[0].text, /Showing|truncated/);
+  } finally {
+    f.close();
+  }
+});
+
+test("artifact text selects one representation and pages it without data loss", () => {
+  const output: Output = {
+    id: randomUUID(),
+    executionId: randomUUID(),
+    sequence: 0,
+    kind: "display",
+    data: {
+      "text/plain": "Duplicate description",
+      "text/html": "<b>Duplicate description</b>",
+      "application/json": { value: 42 },
+    },
+  };
+  assert.equal(artifactText(output, 0), '{"value":42}');
+  delete output.data!["application/json"];
+  assert.equal(artifactText(output, 0), "Duplicate description");
+  output.text = "a".repeat(16_000) + "b".repeat(4000);
+  assert.equal(
+    artifactText(output, 0),
+    `${"a".repeat(16_000)}\n[More: read_artifact offset=16000.]`,
+  );
+  assert.equal(artifactText(output, 16_000), "b".repeat(4000));
+  assert.throws(() => artifactText(output, 20_001), /Offset exceeds/);
+  delete output.text;
+  output.data = { "application/vnd.example+json": { value: 42 } };
+  assert.match(artifactText(output, 0), /application\/vnd.example\+json\n\{"value":42\}/);
+});
