@@ -170,6 +170,14 @@ provider credentials/catalogs, using the configured state directory's
 Pi settings live in `pi/settings.json` under that state directory, with project
 `.pi/settings.json` supported by the SDK. Cache warming is forced off in Biologue.
 
+Use `npm run login:codex` to sign Biologue into ChatGPT through Pi's device-code
+flow. It uses `CARL_PROJECT` and `CARL_STATE_DIR` to select the same credential
+store as the server; it does not change the configured model. Complete the login
+on OpenAI's page instead of pasting credentials into chat. The SDK owns login,
+credential locking, persistence, and token refresh. Give Biologue its own login
+instead of copying rotating tokens from an active Codex session. See
+[OpenAI's headless sign-in guidance](https://learn.chatgpt.com/docs/auth#login-on-headless-devices).
+
 Place a scientific skill in `.pi/skills/<name>/SKILL.md` with Pi's standard name
 and description frontmatter. Biologue loads skill descriptions and lets the model
 read selected skill resources. There is no skill-management UI yet. External

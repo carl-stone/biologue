@@ -52,8 +52,12 @@ load a `.env` file automatically. Provider authentication and model availability
 are checked by Pi when a run starts; an error is shown if configuration is invalid.
 Alternatively, save `defaultProvider` and `defaultModel` in `<stateDir>/pi/settings.json`.
 Explicit server environment settings take precedence. ChatGPT/Codex subscription
-authentication uses Pi's `openai-codex` provider and `<stateDir>/pi/auth.json`;
-credentials stay in ignored local state. No live provider call is part of the test suite.
+authentication uses Pi's `openai-codex` provider. Run `npm run login:codex`, open the
+displayed OpenAI URL, and enter the one-time code. Pi saves the credentials in
+`<stateDir>/pi/auth.json`, in ignored local state. Use a separate sign-in for
+Biologue: copying another active application's refresh token can leave Biologue
+with an invalid token when that application refreshes it. No live provider call
+is part of the test suite.
 
 For the native shell, install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 and run `npm run desktop` instead of `npm run dev`. The development shell starts
