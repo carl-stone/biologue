@@ -1,5 +1,8 @@
 # Biologue interaction design
 
+The subsequent [five additional review cycles](review-cycles-two.md) examine all
+panels again and record further fixes and verification.
+
 September 29, 2026. This follows the five-round UI review. That review established
 useful robustness improvements, but its checks did not establish that the
 cross-panel workflow was well designed. Approval requests in the settings pane

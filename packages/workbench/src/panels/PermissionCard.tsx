@@ -5,7 +5,7 @@ import type {
   PermissionDecision,
   PermissionDecisionSummary,
 } from "@carl/protocol";
-import { api, useResource, useWorkbench } from "../state.tsx";
+import { api, useResource, useSnapshot, useWorkbench } from "../state.tsx";
 import { CopyButton, Dialog, Spinner, languageName, useAction, useProjectDraft } from "../ui.tsx";
 
 type Request = PermissionRequest | PermissionDecisionSummary;
@@ -22,7 +22,7 @@ function ExactProposal({ request, expand }: { request: PermissionRequest; expand
       {request.before !== undefined && (
         <div className="permission-code">
           <div className="code-record-heading">
-            Current contents · revision {request.document?.version}
+            Original contents · revision {request.document?.version}
           </div>
           <pre>{request.before || "(Empty document)"}</pre>
         </div>
@@ -104,7 +104,14 @@ function Decision({ request }: { request: PermissionDecisionSummary }) {
 }
 
 function PendingProposal({ request }: { request: PermissionRequest }) {
-  const { connected } = useWorkbench("connected");
+  const { connected, drafts } = useWorkbench("connected", "drafts");
+  const { documents } = useSnapshot("documents");
+  const current = documents.find((document) => document.path === request.document?.path);
+  const draft = request.document && drafts[request.document.path];
+  const changed =
+    !!request.document &&
+    ((!!current && current.version !== request.document.version) ||
+      (!!draft && draft.content !== current?.content));
   const action = useAction();
   const [expanded, setExpanded] = useState(false);
   const [feedback, setFeedback] = useProjectDraft(`permission-feedback:${request.id}`, "");
@@ -113,6 +120,7 @@ function PendingProposal({ request }: { request: PermissionRequest }) {
   const [error, setError] = useState<string>();
   const execute = request.tool === "execute_code";
   function resolve(allow: boolean, feedback?: string) {
+    if (allow && changed) return;
     return action.run(async () => {
       setDecision(allow);
       setError(undefined);
@@ -129,6 +137,11 @@ function PendingProposal({ request }: { request: PermissionRequest }) {
   }
   const actions = (
     <>
+      {changed && (
+        <p className="proposal-changed" role="status">
+          The document changed after this proposal. Request changes so Biologue can review it again.
+        </p>
+      )}
       {error && (
         <div className="inline-error" role="alert">
           {error}
@@ -177,7 +190,7 @@ function PendingProposal({ request }: { request: PermissionRequest }) {
           </button>
           <button
             className="primary"
-            disabled={!connected || action.busy}
+            disabled={!connected || action.busy || changed}
             onClick={() => void resolve(true)}
           >
             {action.busy && decision ? <Spinner /> : <Check size={14} />}
@@ -218,6 +231,7 @@ function PendingProposal({ request }: { request: PermissionRequest }) {
           {actions}
         </Dialog>
       )}
+      <span className="permission-end" aria-hidden="true" />
     </article>
   );
 }

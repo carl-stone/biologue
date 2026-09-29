@@ -33,7 +33,7 @@ export function ResearchContext() {
       <div className="research-body">
         <div className="research-intro">
           <h2>Research context</h2>
-          <p>Your question, observations, and corrections. Saved notes inform the next run.</p>
+          <p>Shared across this project’s conversations. Saved notes inform new runs.</p>
           <details className="context-guide">
             <summary>What belongs here?</summary>
             <dl>

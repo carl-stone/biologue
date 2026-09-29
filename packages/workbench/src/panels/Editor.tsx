@@ -512,7 +512,10 @@ export function Editor() {
             aria-label="View output for latest run"
             onClick={() => wb.revealExecution(lastRun)}
           >
-            {runLabel} · View output
+            {runLabel}
+            {(draft || lastRun.document?.version !== doc?.version) &&
+              ` · revision ${lastRun.document?.version}`}
+            {" · View output"}
           </button>
         ) : (
           <span className="shortcut-hint">

@@ -52,9 +52,21 @@ function OutputView({ output, execution }: { output: DisplayOutput; execution: E
           {stripAnsi(text)}
         </pre>
       )}
-      {output.truncated && !full && (
-        <button className="text-button" onClick={() => setFull(true)}>
-          Read full output
+      {output.truncated && (!full || loaded.loading || loaded.error) && (
+        <button
+          className="text-button"
+          disabled={loaded.loading}
+          onClick={() => (full ? loaded.retry() : setFull(true))}
+        >
+          {loaded.loading ? (
+            <>
+              <Spinner /> Loading output…
+            </>
+          ) : loaded.error ? (
+            "Retry full output"
+          ) : (
+            "Read full output"
+          )}
         </button>
       )}
       {loaded.error && <p className="output-error">{loaded.error}</p>}
@@ -144,7 +156,18 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
             </span>
             {source.data && <CopyButton text={source.data.code} />}
           </div>
-          <pre>{source.data?.code ?? source.error ?? "Loading exact source…"}</pre>
+          {source.data ? (
+            <pre>{source.data.code}</pre>
+          ) : source.error ? (
+            <div className="inline-error" role="status">
+              <p>{source.error}</p>
+              <button onClick={source.retry}>Retry loading code</button>
+            </div>
+          ) : (
+            <p role="status">
+              <Spinner /> Loading exact source…
+            </p>
+          )}
         </div>
         <details className="provenance">
           <summary>Execution details</summary>
@@ -162,7 +185,12 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
           </dl>
         </details>
       </details>
-      {page.error && <p className="output-error">{page.error}</p>}
+      {page.error && (
+        <div className="inline-error" role="status">
+          <p>{page.error}</p>
+          <button onClick={page.retry}>Retry loading output</button>
+        </div>
+      )}
       {page.data?.next && (
         <button className="text-button" onClick={() => setBefore(page.data!.next)}>
           Earlier output

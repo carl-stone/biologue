@@ -180,7 +180,28 @@ export function App() {
       if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
       if (event.altKey && !event.ctrlKey && !event.metaKey && /^[1-8]$/.test(event.key)) {
         event.preventDefault();
-        reveal(panels[Number(event.key) - 1].id);
+        const panel = panels[Number(event.key) - 1];
+        reveal(panel.id);
+        requestAnimationFrame(() => {
+          const destinations: Record<PanelId, string> = {
+            chat: '.chat textarea[aria-label="Message Biologue"]',
+            editor: ".editor-pane .cm-content",
+            console: ".console-input textarea",
+            context: "#research-notes",
+            environment: ".environment",
+            plots: ".plots",
+            data: ".data-pane",
+            controls: ".controls",
+          };
+          const content = document.querySelector<HTMLElement>(destinations[panel.id]);
+          const destination =
+            (content?.matches(".pane")
+              ? content.closest<HTMLElement>('[role="tabpanel"]')
+              : content) ??
+            document.querySelector<HTMLElement>(`button[aria-label="Open ${panel.title}"]`);
+          if (destination?.getAttribute("role") === "tabpanel") destination.tabIndex = -1;
+          destination?.focus({ preventScroll: true });
+        });
       } else if (event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         toggleFocus();

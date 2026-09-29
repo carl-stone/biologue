@@ -170,11 +170,12 @@ export function Chat() {
   useEffect(() => {
     setRequestVisible(false);
     const element =
-      pendingRequests[0] && document.getElementById(`permission-${pendingRequests[0].id}`);
+      pendingRequests[0] &&
+      document.querySelector(`#permission-${pendingRequests[0].id} .permission-end`);
     if (!element || !scroll.scroll.current) return;
     const observer = new IntersectionObserver(
-      ([entry]) => setRequestVisible(entry.intersectionRatio >= 0.6),
-      { root: scroll.scroll.current, threshold: [0, 0.6] },
+      ([entry]) => setRequestVisible(entry.isIntersecting && entry.intersectionRatio === 1),
+      { root: scroll.scroll.current, threshold: [0, 1] },
     );
     observer.observe(element);
     return () => observer.disconnect();
@@ -477,7 +478,9 @@ export function Chat() {
       </form>
       {creating && (
         <Dialog title="New conversation" onClose={() => setCreating(false)}>
-          <p>Give this investigation a name. Your project’s research context will come with it.</p>
+          <p>
+            Give this investigation a name. Conversations share this project’s research context.
+          </p>
           <form
             onSubmit={(event) => {
               event.preventDefault();

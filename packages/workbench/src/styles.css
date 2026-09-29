@@ -644,6 +644,10 @@ kbd {
 .chat {
   background: var(--surface);
 }
+[role="tabpanel"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .chat .pane-toolbar {
   background: var(--surface);
 }
@@ -1491,7 +1495,7 @@ kbd {
   max-height: 100%;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: scale-down;
 }
 .artifact-footer {
   display: flex;
@@ -1854,6 +1858,7 @@ kbd {
   overflow-wrap: anywhere;
 }
 .permission-code {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -2182,10 +2187,21 @@ kbd {
 .proposal-target code {
   overflow-wrap: anywhere;
 }
+.proposal-changed {
+  border-left: 2px solid #b78636;
+  padding: 7px 10px;
+  background: #fbf3de;
+  color: #77571d;
+}
 .proposal-contents {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
+}
+.permission-end {
+  display: block;
+  height: 1px;
 }
 .permission-actions button {
   font-size: 12px;

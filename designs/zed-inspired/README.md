@@ -15,6 +15,8 @@ subsequent interaction and continuity improvements.
 The [source-informed interaction review](../../docs/design/interaction-principles.md)
 corrects the placement of approvals and feedback, preserves editor focus, and
 explains the design principles behind those choices.
+The [next five review cycles](../../docs/design/review-cycles-two.md) check context
+scope, changed proposals, execution provenance, result recovery, and keyboard use.
 
 ## Concept design choices
 
