@@ -73,6 +73,7 @@ export class Supervisor {
       piSessionId: manager.getSessionId(),
     };
     const input = this.sessions.accept(conversationId, text, run.id);
+    this.context.firstTitle(conversationId, text);
     let markReady!: () => void;
     const ready = new Promise<void>((resolve) => {
       markReady = resolve;
@@ -234,6 +235,17 @@ export class Supervisor {
       run.finishedAt = new Date().toISOString();
       this.active.delete(run.id);
       this.publish(active);
+      if (run.status === "completed") {
+        try {
+          this.context.refreshTitle(
+            run.conversationId,
+            this.sessions.page(run.conversationId, 12).items,
+            (messages) => this.pi.conversationTitle(messages),
+          );
+        } catch {
+          /* A display title must never change the outcome of a response. */
+        }
+      }
     }
   }
 

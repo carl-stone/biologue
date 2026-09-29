@@ -54,7 +54,7 @@ export function workspaceTools(
     {
       name: "list_files",
       label: "List project files",
-      description: "List project files.",
+      description: "List project files and untitled working documents.",
       parameters: Type.Object({
         offset: Type.Optional(
           Type.Integer({ minimum: 0, description: "File index (0-based; default 0)." }),
@@ -62,7 +62,7 @@ export function workspaceTools(
       }),
       execute: async (_id, raw) => {
         const { offset } = z.object({ offset: z.number().int().min(0).default(0) }).parse(raw);
-        const files = documents.list();
+        const files = documents.listWorking();
         const page: string[] = [];
         let remaining = 12_000;
         for (const file of files.slice(offset, offset + 200)) {
@@ -106,7 +106,7 @@ export function workspaceTools(
             characterOffset: z.number().int().min(0).default(0),
           })
           .parse(raw);
-        let source: { path: string; version?: number; content: string };
+        let source: { path: string; version?: number; content: string; savedAs?: string };
         try {
           source = documents.open(projectPath(args.path));
         } catch (error) {
@@ -133,7 +133,9 @@ export function workspaceTools(
               ? `offset=${args.offset + args.limit}`
               : undefined;
         const heading =
-          source.version === undefined ? "" : `${source.path} (version ${source.version})\n`;
+          source.version === undefined
+            ? ""
+            : `${source.path} (version ${source.version})${source.savedAs ? ` — saved as ${source.savedAs}; read that file for current work` : ""}\n`;
         return textResult(
           `${heading}${content}${continuation ? `\n\n[More: read ${continuation}.]` : ""}`,
         );

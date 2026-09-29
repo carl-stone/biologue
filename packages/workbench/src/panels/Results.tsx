@@ -211,16 +211,7 @@ export function Plots() {
           <button onClick={page.retry}>Try again</button>
         </Empty>
       ) : (
-        <Empty icon={<Image size={30} strokeWidth={1.4} />}>
-          <strong>Room for your results</strong>
-          <p>
-            Figures from your {languageName(language)} session appear here with the code that
-            produced them.
-          </p>
-          <button className="text-button" onClick={() => showPanel("editor")}>
-            Open the editor <ArrowUpRight size={14} />
-          </button>
-        </Empty>
+        <div className="pane-toolbar">Plots</div>
       )}
     </div>
   );

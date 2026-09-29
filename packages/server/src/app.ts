@@ -118,7 +118,7 @@ export async function createApp(options: AppOptions) {
     return {
       project: documents.root,
       files: documents.list(),
-      documents: store.list<Document>("document"),
+      documents: store.list<Document>("document").filter((doc) => !doc.savedAs),
       executions: history.items,
       executionCursor: history.next,
       conversations: store.list<Conversation>("conversation"),
@@ -168,6 +168,21 @@ export async function createApp(options: AppOptions) {
   app.post("/api/documents", async (request, reply) =>
     reply.code(201).send(documents.create(pathSchema.parse(request.body).path)),
   );
+  app.post("/api/documents/untitled", async (request, reply) =>
+    reply
+      .code(201)
+      .send(documents.createUntitled(z.object({ language }).parse(request.body).language)),
+  );
+  app.post("/api/documents/save-as", async (request) => {
+    const body = z
+      .object({
+        path: z.string().min(1),
+        target: z.string().min(1).max(1000),
+        expectedVersion: z.number().int().positive(),
+      })
+      .parse(request.body);
+    return documents.saveAs(body.path, body.target, body.expectedVersion);
+  });
   app.put("/api/documents", async (request) => {
     const body = pathSchema
       .extend({
@@ -326,6 +341,12 @@ export async function createApp(options: AppOptions) {
   });
   app.post("/api/conversations", async (request) =>
     context.createConversation(
+      z.object({ title: z.string().trim().min(1).max(120).optional() }).parse(request.body).title,
+    ),
+  );
+  app.patch("/api/conversations/:id", async (request) =>
+    context.renameConversation(
+      z.object({ id: z.string().uuid() }).parse(request.params).id,
       z.object({ title: z.string().trim().min(1).max(120) }).parse(request.body).title,
     ),
   );
@@ -378,6 +399,7 @@ export async function createApp(options: AppOptions) {
   });
   app.addHook("onClose", async () => {
     documents.close();
+    context.close();
     try {
       const results = await Promise.allSettled([supervisor.close(), execution.close()]);
       const failed = results.find((result) => result.status === "rejected");

@@ -43,7 +43,7 @@ for (const panel of ["Data", "Environment", "Plots"] as const) {
       };
     });
     await page.goto("/");
-    await page.getByRole("button", { name: `Open ${panel}`, exact: true }).click();
+    await page.getByRole("button", { name: `Focus ${panel}`, exact: true }).click();
     const pane = page.locator(
       panel === "Data" ? ".data-pane" : panel === "Plots" ? ".plots" : ".environment",
     );
@@ -54,7 +54,7 @@ for (const panel of ["Data", "Environment", "Plots"] as const) {
     fail = false;
     await pane.getByRole("button", { name: "Try again", exact: true }).click();
     await expect(
-      pane.getByText(panel === "Plots" ? "Room for your results" : "measurement", { exact: true }),
+      pane.getByText(panel === "Plots" ? "Plots" : "measurement", { exact: true }),
     ).toBeVisible();
     await expect(pane.getByText(/^Couldn’t load/)).toHaveCount(0);
     expect(
@@ -120,7 +120,7 @@ test("environment pages stay distinct from targeted agent inspections and unknow
     return undefined;
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Open Environment", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Environment", exact: true }).click();
   await expect(page.getByText("Objects 1–100", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Next objects" }).click();
   await expect(page.getByText("last_object", { exact: true })).toBeVisible();
@@ -153,7 +153,7 @@ test("environment pages stay distinct from targeted agent inspections and unknow
       error: "Interrupt did not confirm completion. Code may still be running.",
     },
   });
-  await page.getByRole("button", { name: "Open Console", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Console", exact: true }).click();
   await expect(page.locator("#execution-unknown .execution-status")).toHaveText(
     "Completion unknown",
   );
@@ -168,14 +168,14 @@ test("tabs appear only while arranging and regrouped panels survive reload", asy
     }
   });
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Run file", exact: true })).toBeVisible();
-  await expect(page.getByRole("tab")).toHaveCount(0);
-  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Run all", exact: true })).toBeVisible();
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Research context", exact: true })
     .fill("Keep this draft");
   await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
-  await expect(page.getByRole("tab")).toHaveCount(8);
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(7);
   await page
     .getByRole("tab", { name: "Research context", exact: true })
     .dragTo(page.getByRole("tab", { name: "Editor", exact: true }));
@@ -191,8 +191,8 @@ test("tabs appear only while arranging and regrouped panels survive reload", asy
   // Reload while the saved layout has visible headers. Arrangement mode is temporary.
   await page.reload();
   await expect(page.getByRole("button", { name: "Arrange panels", exact: true })).toBeEnabled();
-  await expect(page.getByRole("tab")).toHaveCount(0);
-  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
     "Keep this draft",
   );
@@ -201,20 +201,20 @@ test("tabs appear only while arranging and regrouped panels survive reload", asy
     editorGroup.getByRole("tab", { name: "Research context", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Reset panel layout", exact: true }).click();
-  await expect(page.getByRole("tab")).toHaveCount(8);
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(7);
   await page.getByRole("button", { name: "Done arranging panels", exact: true }).click();
-  await expect(page.getByRole("tab")).toHaveCount(0);
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Reset panel layout", exact: true }).click();
-  await expect(page.getByRole("tab")).toHaveCount(0);
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("tab")).toHaveCount(0);
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
   await page.setViewportSize({ width: 640, height: 760 });
-  await expect(page.getByRole("tab")).toHaveCount(0);
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 960 });
   await expect(page.getByRole("button", { name: "Arrange panels", exact: true })).toBeVisible();
-  await expect(page.getByRole("tab")).toHaveCount(0);
+  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
 });
 
 test("compact layouts, focus, and keyboard navigation retain local work", async ({ page }) => {
@@ -223,7 +223,7 @@ test("compact layouts, focus, and keyboard navigation retain local work", async 
   await page
     .getByRole("textbox", { name: "Message Biologue", exact: true })
     .fill("A question in progress");
-  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Research context", exact: true })
     .fill("Observation: the samples were collected on different days.");
@@ -233,7 +233,7 @@ test("compact layouts, focus, and keyboard navigation retain local work", async 
   await expect
     .poll(() => page.locator(".chat").evaluate((el) => el.clientWidth))
     .toBeGreaterThanOrEqual(280);
-  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
     /different days/,
   );
@@ -252,11 +252,11 @@ test("compact layouts, focus, and keyboard navigation retain local work", async 
     "A question in progress",
   );
   await page.reload();
-  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
     /different days/,
   );
-  await page.getByRole("button", { name: "Open Console", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Console", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Console code", exact: true })).toHaveValue(
     "print('draft')",
   );
@@ -275,7 +275,7 @@ test("file execution follows the script language and offline drafts remain edita
   await page.goto("/");
   await page.getByRole("combobox", { name: "Session language" }).selectOption("r");
   await expect(page.getByText("This file runs in Python. The console is viewing R.")).toBeVisible();
-  await page.getByRole("button", { name: "Run file", exact: true }).click();
+  await page.getByRole("button", { name: "Run all", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Session language" })).toHaveValue("python");
   expect(ui.requests.find((request) => request.path === "/executions")?.body).toEqual({
     language: "python",
@@ -284,11 +284,11 @@ test("file execution follows the script language and offline drafts remain edita
   });
   await ui.connect(false);
   await expect(page.getByText(/Connection lost\. Reconnecting/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Run file", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Run all", exact: true })).toBeDisabled();
   await page
     .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
     .fill("print('retained while offline')");
-  await expect(page.getByText("Edits retained offline", { exact: true })).toBeVisible();
+  await expect(page.getByText("Offline edits", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Save file", exact: true })).toBeDisabled();
   await ui.connect(true);
   await expect(page.getByRole("button", { name: "Save file", exact: true })).toBeEnabled();
@@ -307,11 +307,11 @@ test("version conflicts retain and expose both document and context versions", a
     document: { ...initialSnapshot.documents[0], content: "print('shared version')", version: 2 },
   });
   await expect(page.getByText("The working document changed.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Run file", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Run all", exact: true })).toBeDisabled();
   await page.getByText("Review working version · revision 2").click();
   await expect(page.locator(".conflict pre")).toHaveText("print('shared version')");
   await expect(page.locator(".cm-content")).toHaveText("print('my draft')");
-  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Research context", exact: true })
     .fill("My observed result");
@@ -369,7 +369,7 @@ test("saving context preserves changes typed while the request is in flight", as
     return { body: context };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   const notes = page.getByRole("textbox", { name: "Research context", exact: true });
   await notes.fill("Observation one");
   await page.getByRole("button", { name: "Save context", exact: true }).click();
@@ -419,10 +419,6 @@ test("conversation drafts are separate, sends are guarded, and new investigation
   release();
   await expect(input).toHaveValue("New thought while sending");
   await page.getByRole("button", { name: "New conversation", exact: true }).click();
-  await page
-    .getByRole("textbox", { name: "Investigation name" })
-    .fill("Understanding the batch effect");
-  await page.getByRole("button", { name: "Create conversation" }).click();
   await expect(page.getByRole("combobox", { name: "Conversation", exact: true })).toHaveValue(
     "conversation-3",
   );
@@ -465,7 +461,7 @@ test("permission review shows exact code, prevents duplicate decisions, and supp
     return { body: { ok: true } };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Open Conversation", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Conversation", exact: true }).click();
   await expect(page.locator(".permission-card pre")).toHaveText(request.code);
   await page.getByRole("button", { name: "Expand proposed code", exact: true }).click();
   await expect(page.getByRole("dialog").locator("pre")).toHaveText(request.code);
@@ -522,7 +518,7 @@ test("a failed approval stays visible in the code review dialog and can be retri
     return { body: { ok: true } };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Open Conversation", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Conversation", exact: true }).click();
   await page.getByRole("button", { name: "Expand proposed code", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Run once", exact: true }).click();
@@ -605,7 +601,7 @@ test("an older figure opens its own artifact and exact source", async ({ page })
   await page.locator(".execution").first().getByRole("button", { name: "View figure" }).click();
   await expect(page.locator(".figure-count")).toHaveText("Figure 1 of 2");
   await page.locator(".plots").getByRole("button", { name: "View source" }).click();
-  await expect(page.locator("#execution-figure-1 .code-record pre")).toHaveText(
+  await expect(page.locator("#execution-figure-1 .console-code")).toContainText(
     "print('source 1')",
   );
   await page.getByRole("button", { name: "Expand figure" }).click();
@@ -617,7 +613,13 @@ test("main panels and help dialog meet automated accessibility checks", async ({
   await page.goto("/");
   await expect(page.locator(".cm-content")).toContainText("Synthetic example");
   for (const panel of [null, "Research context", "Agent settings", "Data"] as const) {
-    if (panel) await page.getByRole("button", { name: `Open ${panel}`, exact: true }).click();
+    if (panel)
+      await page
+        .getByRole("button", {
+          name: panel === "Agent settings" ? panel : `Focus ${panel}`,
+          exact: true,
+        })
+        .click();
     const result = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
       .analyze();
@@ -765,7 +767,7 @@ test("disk conflicts expose the reviewed disk version and can be resolved in the
   await expect(page.getByRole("button", { name: "Save file", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Use disk version", exact: true }).click();
   await expect(page.locator(".cm-content")).toHaveText("external edit");
-  await expect(page.getByText("Saved to file", { exact: true })).toBeVisible();
+  await expect(page.locator(".save-feedback")).toBeVisible();
 });
 
 test("chat pages only the selected conversation and keeps the reading position when loading earlier messages", async ({

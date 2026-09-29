@@ -98,6 +98,8 @@ export async function fixture(
   const sessions = new ConversationSessions(root, stateDir, store, events);
   const model = await scriptedModel(options.settings);
   const pi = new PiAdapter({ project: root, stateDir, ...model.options });
+  // Title generation has its own tests; do not consume scripted agent responses.
+  pi.conversationTitle = async () => "";
   const supervisor = new Supervisor(
     store,
     events,

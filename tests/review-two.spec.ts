@@ -56,9 +56,9 @@ test("a changed document cannot be approved from an outdated inline or expanded 
     .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
     .fill("print('my correction')");
   await expect(page.getByRole("button", { name: "Apply edit", exact: true })).toBeDisabled();
-  await expect(page.locator(".editor-footer")).toContainText("Revision 1");
+  expect(ui.state.documents[0].version).toBe(1);
   release();
-  await expect(page.locator(".editor-footer")).toContainText("Revision 2");
+  await expect.poll(() => ui.state.documents[0].version).toBe(2);
   await expect(page.locator(".proposal-changed")).toContainText("document changed");
   const contained = await page
     .locator(".permission-code")
@@ -128,7 +128,7 @@ test("console retrieval failures can be retried without running code again", asy
           };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Open Console", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Console", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Retry loading output", exact: true }),
   ).toBeVisible();
@@ -144,23 +144,26 @@ test("console retrieval failures can be retried without running code again", asy
   await expect(page.getByRole("button", { name: "Retry loading code", exact: true })).toBeVisible();
   sourceFailed = false;
   await page.getByRole("button", { name: "Retry loading code", exact: true }).click();
-  await expect(page.locator(".code-record pre")).toHaveText(execution.code);
+  await expect(page.locator(".console-code")).toContainText("print('hello')");
   expect(
     ui.requests.filter((req) => req.path === "/executions" && req.method === "POST"),
   ).toHaveLength(0);
 });
 
-test("editing a script labels its earlier output with the recorded revision", async ({ page }) => {
+test("earlier output stays beside its recorded code, with source revisions only in details", async ({
+  page,
+}) => {
   await fixture(page, { executions: [execution] });
   await page.goto("/");
-  const output = page.getByRole("button", { name: "View output for latest run", exact: true });
-  await expect(output).toHaveText("Finished · View output");
+  await expect(page.locator(".editor-footer")).not.toContainText(/Revision|Finished|View output/);
   await page
     .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
     .fill("print('new code')");
-  await expect(output).toHaveText("Finished · revision 1 · View output");
-  await output.click();
-  await expect(page.locator(".code-record pre")).toHaveText(execution.code);
+  await expect(page.locator(".older-code")).toHaveText("Earlier code");
+  await expect(page.locator(".console-code")).toContainText("print('hello')");
+  await page.locator(".execution > details > summary").click();
+  await page.locator(".provenance > summary").click();
+  await expect(page.locator(".provenance")).toContainText("revision 1");
 });
 
 test("panel shortcuts move typing focus and retain drafts across narrow layouts", async ({
@@ -185,7 +188,6 @@ test("panel shortcuts move typing focus and retain drafts across narrow layouts"
     ["4", "Environment"],
     ["5", "Plots"],
     ["6", "Data"],
-    ["8", "Agent settings"],
   ]) {
     await page.keyboard.press(`Alt+${shortcut}`);
     await expect(page.getByRole("region", { name, exact: true })).toHaveCount(1);

@@ -54,7 +54,7 @@ test("discussion exposes recorded work, copies code, and gives a long correction
     .getByRole("button", { name: /Python code/ })
     .click();
   await expect(page.locator("#execution-work > details")).toHaveAttribute("open", "");
-  await expect(page.locator("#execution-work .code-record pre")).toHaveText(code);
+  await expect(page.locator("#execution-work .console-code")).toContainText(code.trim());
   expect(
     ui.requests.filter((request) => request.method === "POST" && request.path === "/executions"),
   ).toHaveLength(0);
@@ -82,17 +82,13 @@ test("editor undo survives file switches and layout changes, and run shortcuts k
   const editor = page.getByRole("textbox", { name: "Code editor: analysis.py", exact: true });
   await editor.press("ControlOrMeta+End");
   await page.keyboard.insertText("# undo survives\n");
-  await expect(page.getByText("Unsaved file", { exact: true })).toBeVisible();
-  await page
-    .getByRole("combobox", { name: "Project file", exact: true })
-    .selectOption("analysis.R");
-  await page
-    .getByRole("combobox", { name: "Project file", exact: true })
-    .selectOption("analysis.py");
+  await expect(page.locator(".save-file .unsaved-dot")).toBeVisible();
+  await page.getByRole("tab", { name: "analysis.R", exact: true }).click();
+  await page.getByRole("tab", { name: /analysis.py/ }).click();
   await editor.press("ControlOrMeta+z");
   await expect(editor).not.toContainText("undo survives");
   await page.setViewportSize({ width: 640, height: 760 });
-  await page.getByRole("button", { name: "Open Editor", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Editor", exact: true }).click();
   await editor.press("ControlOrMeta+y");
   await expect(editor).toContainText("undo survives");
   const source = 'x = 1\nprint(x)\nraise RuntimeError("outside selection")\n';
@@ -110,17 +106,14 @@ test("editor undo survives file switches and layout changes, and run shortcuts k
     document: { path: "analysis.py", selection: { from: 6, to: 14 } },
   });
   await expect(editor).toBeFocused();
-  await expect(
-    page.getByRole("button", { name: "View output for latest run", exact: true }),
-  ).toHaveText("Queued · View output");
-  await page.getByRole("button", { name: "Open Editor", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Editor", exact: true }).click();
   await expect(editor).toHaveText(source.replaceAll("\n", ""));
   await expect(page.getByRole("button", { name: "Run selection", exact: true })).toBeEnabled();
   await editor.press("Shift+Enter");
   await expect.poll(() => executions().length).toBe(2);
   expect(executions()[1].body.code).toBe("print(x)");
-  await page.getByRole("button", { name: "Open Editor", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Run selection", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Focus Editor", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Run current line", exact: true })).toBeEnabled();
   await editor.press("ControlOrMeta+Shift+Enter");
   await expect.poll(() => executions().length).toBe(3);
   expect(executions()[2].body.code).toBe(source);
@@ -132,17 +125,17 @@ test("resizing keeps a dialog draft and Escape closes editor search before the e
 }) => {
   await fixture(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "New conversation", exact: true }).click();
+  await page.getByRole("button", { name: "Rename conversation", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Investigation name", exact: true })
+    .getByRole("textbox", { name: "Conversation name", exact: true })
     .fill("Donor comparison");
   await page.setViewportSize({ width: 640, height: 760 });
-  await expect(page.getByRole("textbox", { name: "Investigation name", exact: true })).toHaveValue(
+  await expect(page.getByRole("textbox", { name: "Conversation name", exact: true })).toHaveValue(
     "Donor comparison",
   );
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.locator(".layout-narrow")).toBeVisible();
-  await page.getByRole("button", { name: "Open Editor", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Editor", exact: true }).click();
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.getByRole("button", { name: "Expand panel", exact: true }).click();
   await page
@@ -206,11 +199,11 @@ test("table filtering and export preserve quoted data and never execute code", a
       : undefined,
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Open Data", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Data", exact: true }).click();
   await page.getByRole("textbox", { name: "Filter table preview", exact: true }).fill("quote");
   await expect(page.locator(".table-meta")).toContainText("1 of 3 rows");
   await page.setViewportSize({ width: 1024, height: 768 });
-  await page.getByRole("button", { name: "Open Data", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Data", exact: true }).click();
   await expect(
     page.getByRole("textbox", { name: "Filter table preview", exact: true }),
   ).toHaveValue("quote");
@@ -294,7 +287,7 @@ test("figure browsing holds its place and recovers failed images and historical 
   await expect(page.locator(".figure-count")).toHaveText("Figure 1 of 3");
   await expect(page.locator(".figure img")).toHaveAttribute("src", /output-1\/png/);
   await page.setViewportSize({ width: 1024, height: 768 });
-  await page.getByRole("button", { name: "Open Plots", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Plots", exact: true }).click();
   await expect(page.locator(".figure img")).toHaveAttribute("src", /output-1\/png/);
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.getByRole("button", { name: "Earlier figures", exact: true }).click();

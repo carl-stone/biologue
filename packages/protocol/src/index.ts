@@ -106,6 +106,10 @@ export interface Page<T> {
 }
 export interface Document {
   path: string;
+  /** An unnamed working document, persisted in the workspace but not on disk. */
+  untitled?: boolean;
+  /** Retired identity after Save As; revisions remain available for execution provenance. */
+  savedAs?: string;
   content: string;
   version: number;
   savedVersion: number;
@@ -117,6 +121,8 @@ export interface Conversation {
   id: string;
   title: string;
   createdAt: string;
+  titleMode?: "automatic" | "manual";
+  titledThrough?: number;
 }
 export interface Message {
   /** Ordering within the rebuildable conversation display index. */

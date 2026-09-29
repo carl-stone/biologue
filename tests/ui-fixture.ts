@@ -172,7 +172,8 @@ export async function fixture(
       return;
     }
     let result: unknown = { ok: true };
-    if (request.path === "/snapshot") result = state;
+    if (request.path === "/snapshot")
+      result = { ...state, documents: state.documents.filter((doc) => !doc.savedAs) };
     else if (request.path.startsWith("/permissions/") && request.method === "GET")
       result = permissionRecords.get(request.path.split("/")[2]);
     else if (/^\/conversations\/[^/]+\/messages$/.test(request.path)) {
@@ -249,6 +250,33 @@ export async function fixture(
       };
       await emit({ type: "document", document });
       result = document;
+    } else if (request.path === "/documents/untitled") {
+      const document = {
+        path: `untitled:test-${state.documents.length}/Untitled-${state.documents.length + 1}.${request.body.language === "r" ? "R" : "py"}`,
+        content: "",
+        version: 1,
+        savedVersion: 0,
+        diskHash: "",
+        untitled: true,
+      };
+      state.documents.push(document);
+      await emit({ type: "document", document });
+      result = document;
+    } else if (request.path === "/documents/save-as") {
+      const old = state.documents.find((doc) => doc.path === request.body.path)!;
+      const document = {
+        path: request.body.target,
+        content: old.content,
+        version: 1,
+        savedVersion: 1,
+        diskHash: "saved",
+      };
+      old.savedAs = document.path;
+      await emit({ type: "document", document: old });
+      state.documents.push(document);
+      state.files.push(document.path);
+      await emit({ type: "document", document });
+      result = document;
     } else if (request.path === "/documents/save") {
       const document = state.documents.find((doc) => doc.path === request.body.path)!;
       document.savedVersion = document.version;
@@ -264,10 +292,18 @@ export async function fixture(
       };
       await emit({ type: "context", context: state.researchContext });
       result = state.researchContext;
+    } else if (request.path.startsWith("/conversations/") && request.method === "PATCH") {
+      const conversation = state.conversations.find(
+        (item) => item.id === request.path.split("/")[2],
+      )!;
+      conversation.title = request.body.title;
+      conversation.titleMode = "manual";
+      await emit({ type: "conversation", conversation });
+      result = conversation;
     } else if (request.path === "/conversations") {
       const conversation = {
         id: `conversation-${state.conversations.length + 1}`,
-        title: request.body.title,
+        title: request.body.title || "New conversation",
         createdAt: new Date().toISOString(),
       };
       state.conversations.push(conversation);

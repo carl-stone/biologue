@@ -73,12 +73,14 @@ test(
       }
       assert.equal(ready, true, "Jupyter should become ready");
       const model = await scriptedModel();
+      const pi = new PiAdapter({ project: root, stateDir: join(root, ".carl"), ...model.options });
+      pi.conversationTitle = async () => "";
       instance = await createApp({
         project: root,
         stateDir: join(root, ".carl"),
         repository: process.cwd(),
         kernel,
-        pi: new PiAdapter({ project: root, stateDir: join(root, ".carl"), ...model.options }),
+        pi,
       });
       const { app, execution } = instance;
       const headers = { "x-carl-client": "workbench" };

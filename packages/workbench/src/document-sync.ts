@@ -99,6 +99,7 @@ export class DocumentSync {
     clearTimeout(this.timers.get(path));
     if (this.disposed || !this.connected || !this.pending[path] || this.inflight.has(path)) return;
     const document = this.documents.get(path);
+    if (document?.savedAs) return;
     if (!document || document.version !== this.pending[path].baseVersion) return;
     this.timers.set(
       path,

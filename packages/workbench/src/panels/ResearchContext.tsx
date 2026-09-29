@@ -26,14 +26,17 @@ export function ResearchContext() {
       !current || current.text === submitted.text ? null : { ...current, version: result.version },
     );
     setSaved(true);
-    notify("Research context saved. New runs will use these notes.");
+    notify("Research context saved. Biologue will use these notes for your next question.");
   }
   return (
     <div className="pane research">
       <div className="research-body">
         <div className="research-intro">
           <h2>Research context</h2>
-          <p>Shared across this project’s conversations. Saved notes inform new runs.</p>
+          <p>
+            Shared across this project’s conversations. Save changes to give Biologue updated
+            context.
+          </p>
           <details className="context-guide">
             <summary>What belongs here?</summary>
             <dl>

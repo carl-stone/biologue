@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUpRight,
@@ -7,18 +7,15 @@ import {
   Play,
   Square,
   Table2,
-  Terminal,
+  MoreHorizontal,
 } from "lucide-react";
 import type { Execution, ExecutionSummary, Output, DisplayOutput, Page } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot, useResource, useOutputVersion } from "../state.tsx";
 import { stripAnsi } from "../outputs.ts";
 import {
-  Badge,
   CopyButton,
   Spinner,
   languageName,
-  modifier,
-  timeLabel,
   useAction,
   useFollowOutput,
   useProjectDraft,
@@ -94,6 +91,8 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
     "executionTarget",
     "expandExecution",
   );
+  const { documents } = useSnapshot("documents");
+  const currentDocument = documents.find((doc) => doc.path === item.document?.path);
   const action = useAction();
   const targeted = executionTarget === item.id;
   const [expanded, setExpanded] = useState(targeted && expandExecution);
@@ -107,7 +106,7 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
     version,
   );
   const outputs = page.data?.items ?? [];
-  const source = useResource<Execution>(expanded ? `/executions/${item.id}` : null);
+  const source = useResource<Execution>(`/executions/${item.id}`);
   const pending = ["running", "queued"].includes(item.status);
   const duration =
     item.startedAt && item.finishedAt
@@ -115,63 +114,85 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
       : null;
   return (
     <article className={`execution ${targeted ? "targeted" : ""}`} id={`execution-${item.id}`}>
-      <div className="execution-label">
-        <Badge>
-          {item.actor === "human" ? "You" : item.actor === "agent" ? "Biologue" : "System"}
-        </Badge>
-        {item.purpose === "inspection" && <span>Inspection</span>}
-        <span className={`execution-status ${item.status}`}>
-          {item.status === "running" && <span className="pulse" />}
-          {statuses[item.status]}
-        </span>
-        <span className="spacer" />
-        <time dateTime={item.createdAt}>{timeLabel(item.createdAt)}</time>
-        {duration !== null && <span>{duration.toFixed(1)}s</span>}
-        {pending && (
-          <button
-            className="text-button"
-            disabled={!connected || action.busy}
-            onClick={() => void action.run(() => api(`/executions/${item.id}/cancel`, "POST", {}))}
-          >
-            <Square size={11} />
-            {item.status === "running" ? "Interrupt" : "Cancel"}
-          </button>
-        )}
-      </div>
+      {(item.actor !== "human" || pending || item.status !== "succeeded") && (
+        <div className="execution-label">
+          {item.actor !== "human" && (
+            <span>
+              {item.actor === "agent" ? "Biologue" : "Workspace"}
+              {item.purpose === "inspection" ? " · object check" : ""}
+            </span>
+          )}
+          {item.status !== "succeeded" && (
+            <span className={`execution-status ${item.status}`}>
+              {pending && <Spinner />}
+              {statuses[item.status]}
+            </span>
+          )}
+          {pending && (
+            <button
+              className="text-button"
+              disabled={!connected || action.busy}
+              onClick={() =>
+                void action.run(() => api(`/executions/${item.id}/cancel`, "POST", {}))
+              }
+            >
+              <Square size={11} />
+              {item.status === "running" ? "Interrupt" : "Cancel"}
+            </button>
+          )}
+        </div>
+      )}
+      <pre className="console-code">
+        {(source.data?.code ?? item.codePreview ?? "").split("\n").map((line, index) => (
+          <span className="console-code-line" key={index}>
+            <span className="console-prompt" aria-hidden="true">
+              {index ? "" : item.language === "r" ? ">" : ">>>"}
+            </span>
+            {line}
+            {"\n"}
+          </span>
+        ))}
+      </pre>
+      {source.error && (
+        <div className="inline-error" role="status">
+          <p>{source.error}</p>
+          <button onClick={source.retry}>Retry loading code</button>
+        </div>
+      )}
       <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
         <summary>
           <ChevronRight size={13} />
-          <span>
-            {item.document
-              ? `${item.document.path} · ${item.document.selection ? "selection · " : ""}revision ${item.document.version}`
-              : item.codePreview}
-          </span>
+          <span>{item.document ? item.document.path.split("/").pop() : "Code details"}</span>
+          {item.document &&
+            currentDocument &&
+            currentDocument.version !== item.document.version && (
+              <span className="older-code">Earlier code</span>
+            )}
         </summary>
-        <div className="code-record">
-          <div className="code-record-heading">
-            <span>
-              {["queued", "cancelled", "not_executed"].includes(item.status)
-                ? "Proposed code · not run"
-                : "Recorded code"}
-            </span>
-            {source.data && <CopyButton text={source.data.code} />}
-          </div>
-          {source.data ? (
-            <pre>{source.data.code}</pre>
-          ) : source.error ? (
-            <div className="inline-error" role="status">
-              <p>{source.error}</p>
-              <button onClick={source.retry}>Retry loading code</button>
-            </div>
-          ) : (
-            <p role="status">
-              <Spinner /> Loading exact source…
-            </p>
-          )}
+        <div className="code-record-heading">
+          <span>Recorded code</span>
+          {source.data && <CopyButton text={source.data.code} />}
         </div>
         <details className="provenance">
           <summary>Execution details</summary>
           <dl>
+            <dt>Submitted</dt>
+            <dd>{new Date(item.createdAt).toLocaleString()}</dd>
+            {duration !== null && (
+              <>
+                <dt>Duration</dt>
+                <dd>{duration.toFixed(1)}s</dd>
+              </>
+            )}
+            {item.document && (
+              <>
+                <dt>Source</dt>
+                <dd>
+                  {item.document.path} · revision {item.document.version}
+                  {item.document.selection ? " · selection" : ""}
+                </dd>
+              </>
+            )}
             <dt>Execution</dt>
             <dd>{item.id}</dd>
             <dt>SHA-256</dt>
@@ -207,9 +228,6 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
       {item.error && !outputs.some((output) => output.kind === "error") && (
         <pre className="output-error">{item.error}</pre>
       )}
-      {item.status === "succeeded" && page.data && !outputs.length && (
-        <p className="output-note">Finished with no output.</p>
-      )}
     </article>
   );
 });
@@ -226,6 +244,14 @@ export function Console() {
   const [drafts, setDrafts] = useProjectDraft<Record<string, string>>("console", {});
   const code = drafts[language] || "";
   const [inspections, setInspections] = useState(false);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const historyDraft = useRef("");
+  const languageRef = useRef(language);
+  languageRef.current = language;
+  useEffect(() => {
+    setHistoryIndex(-1);
+    historyDraft.current = "";
+  }, [language]);
   const action = useAction();
   const all = snapshot!.executions.filter((item) => item.language === language);
   const executions = all.filter(
@@ -238,10 +264,45 @@ export function Console() {
     language,
     executions.length > 0,
   );
+  const transcript = useRef<HTMLDivElement>(null);
+  const options = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const element = transcript.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      if (!scroll.away) scroll.toLatest();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [scroll.away]);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (options.current && !options.current.contains(event.target as Node))
+        options.current.open = false;
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, []);
   useEffect(() => {
     if (executionTarget)
       document.getElementById(`execution-${executionTarget}`)?.scrollIntoView({ block: "nearest" });
   }, [executionTarget, executions.some((item) => item.id === executionTarget)]);
+  const history = all
+    .filter((item) => item.actor === "human" && item.purpose === "analysis" && !item.document)
+    .slice()
+    .reverse();
+  async function recall(direction: number) {
+    const next = Math.max(-1, Math.min(history.length - 1, historyIndex + direction));
+    if (next === historyIndex) return;
+    if (historyIndex === -1) historyDraft.current = code;
+    const text =
+      next === -1
+        ? historyDraft.current
+        : (await api<Execution>(`/executions/${history[next].id}`)).code;
+    if (languageRef.current !== language) return;
+    setHistoryIndex(next);
+    setDrafts((current) => ({ ...current, [language]: text }));
+  }
   async function submit() {
     if (!code.trim() || !connected) return;
     const submitted = code;
@@ -250,6 +311,7 @@ export function Console() {
       ...current,
       [language]: current[language] === submitted ? "" : current[language],
     }));
+    setHistoryIndex(-1);
     scroll.toLatest();
   }
   return (
@@ -257,22 +319,37 @@ export function Console() {
       <div className="pane-toolbar console-toolbar">
         <span className={`status-dot ${pending.length ? "waiting" : connected ? "online" : ""}`} />
         <span>{languageName(language)} console</span>
-        <span className="small-note">
-          {pending.length
-            ? `${pending.length} active / queued`
-            : executions.length
-              ? `${executions.length} ${executions.length === 1 ? "execution" : "executions"}`
-              : "Ready when you are"}
-        </span>
+        {pending.length > 0 && <span className="small-note">Running code…</span>}
         <span className="spacer" />
-        <label className="check-label">
-          <input
-            type="checkbox"
-            checked={inspections}
-            onChange={(event) => setInspections(event.target.checked)}
-          />
-          Show inspections
-        </label>
+        <details
+          className="console-options"
+          ref={options}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }
+          }}
+        >
+          <summary aria-label="Console options" title="Console options">
+            <MoreHorizontal size={16} />
+          </summary>
+          <div className="console-options-menu">
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={inspections}
+                onChange={(event) => setInspections(event.target.checked)}
+              />
+              Include object checks
+            </label>
+            <p>
+              Show the code Biologue and the Environment panel use to inspect variables and tables.
+            </p>
+          </div>
+        </details>
       </div>
       <div
         className="console-scroll"
@@ -282,28 +359,68 @@ export function Console() {
         role="region"
         aria-label="Execution history"
       >
-        {!executions.length && (
-          <div className="console-welcome">
-            <Terminal size={20} />
-            <div>
-              <strong>A shared {languageName(language)} session</strong>
-              <p>
-                Run a script or try an expression. You and Biologue work with the same live objects.
-              </p>
-              <span className="small-note">
-                {modifier}+Enter to execute · Shift+Enter for a new line
-              </span>
-            </div>
-          </div>
-        )}
-        {snapshot.executionCursor && (
-          <button className="text-button" onClick={() => void action.run(loadExecutions)}>
-            Earlier executions
-          </button>
-        )}
-        {executions.map((item) => (
-          <ExecutionItem key={item.id} item={item} />
-        ))}
+        <div className="console-transcript" ref={transcript}>
+          {snapshot.executionCursor && (
+            <button className="text-button" onClick={() => void action.run(loadExecutions)}>
+              Earlier executions
+            </button>
+          )}
+          {executions.map((item) => (
+            <ExecutionItem key={item.id} item={item} />
+          ))}
+          <form
+            className="console-input"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void action.run(submit);
+            }}
+          >
+            <span aria-hidden="true">{language === "r" ? ">" : ">>>"}</span>
+            <textarea
+              aria-label="Console code"
+              rows={Math.min(5, code.split("\n").length)}
+              value={code}
+              onChange={(event) =>
+                setDrafts((current) => ({ ...current, [language]: event.target.value }))
+              }
+              placeholder=""
+              title="Enter to run · Shift+Enter for a new line · ↑↓ command history"
+              onKeyDown={(event) => {
+                if (
+                  event.key === "ArrowUp" &&
+                  event.currentTarget.selectionStart === 0 &&
+                  !event.shiftKey
+                ) {
+                  event.preventDefault();
+                  void action.run(() => recall(1));
+                } else if (
+                  event.key === "ArrowDown" &&
+                  event.currentTarget.selectionEnd === code.length &&
+                  !event.shiftKey
+                ) {
+                  event.preventDefault();
+                  void action.run(() => recall(-1));
+                } else if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  void action.run(submit);
+                }
+              }}
+            />
+            <button
+              className="console-submit"
+              disabled={!code.trim() || action.busy || !connected}
+              aria-label="Run console code"
+              title={`Run in ${languageName(language)} (Enter)`}
+            >
+              {action.busy ? <Spinner /> : <Play size={13} fill="currentColor" />}
+              <span>Run</span>
+            </button>
+          </form>
+        </div>
       </div>
       {scroll.away && (
         <button className="jump-latest" onClick={scroll.toLatest}>
@@ -311,39 +428,6 @@ export function Console() {
           Latest output
         </button>
       )}
-      <form
-        className="console-input"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void action.run(submit);
-        }}
-      >
-        <span aria-hidden="true">›</span>
-        <textarea
-          aria-label="Console code"
-          rows={Math.min(5, code.split("\n").length)}
-          value={code}
-          onChange={(event) =>
-            setDrafts((current) => ({ ...current, [language]: event.target.value }))
-          }
-          placeholder={language === "python" ? "Enter Python code…" : "Enter R code…"}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-              event.preventDefault();
-              void action.run(submit);
-            }
-          }}
-        />
-        <button
-          className="console-submit"
-          disabled={!code.trim() || action.busy || !connected}
-          aria-label="Run console code"
-          title={`Run in ${languageName(language)} (${modifier}+Enter)`}
-        >
-          {action.busy ? <Spinner /> : <Play size={13} fill="currentColor" />}
-          <span>Run</span>
-        </button>
-      </form>
     </div>
   );
 }

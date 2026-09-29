@@ -1104,3 +1104,39 @@ test(
     }
   },
 );
+
+test(
+  "agent discovery and reading include untitled work without creating a project file",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      const initial = f.documents.createUntitled("python");
+      const doc = f.documents.edit(
+        initial.path,
+        "# scientist's unsaved work\nx = 42",
+        initial.version,
+      );
+      assert.ok(!f.documents.list().includes(doc.path));
+      f.faux.setResponses([
+        call("list_files", {}),
+        call("read", { path: doc.path }),
+        fauxAssistantMessage("The working document contains x = 42."),
+      ]);
+      await f.run("Read my untitled script.");
+      const results = toolResults(f.requests.at(-1)!);
+      assert.match(contentText(results[0].content), /Untitled-1.py/);
+      assert.equal(
+        contentText(results[1].content),
+        `${doc.path} (version ${doc.version})\n${doc.content}`,
+      );
+      f.documents.saveAs(doc.path, "saved.py", doc.version);
+      assert.ok(!f.documents.listWorking().includes(doc.path));
+      assert.ok(f.documents.listWorking().includes("saved.py"));
+      assert.throws(() => f.documents.edit(doc.path, "x = 99", doc.version), /saved as saved.py/);
+      assert.equal(f.documents.open("saved.py").content, doc.content);
+    } finally {
+      await f.close();
+    }
+  },
+);

@@ -114,3 +114,73 @@ test("selected execution verifies exact revision offsets and records only the se
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("untitled documents survive reconnects, execute with exact identity, and save without overwriting files", async () => {
+  const root = mkdtempSync(join(tmpdir(), "biologue-untitled-"));
+  const f = await createApp({
+    project: root,
+    stateDir: join(root, ".carl"),
+    repository: process.cwd(),
+    kernel: { execute: async () => {}, interrupt: async () => {} },
+  });
+  const headers = { "x-carl-client": "workbench" };
+  try {
+    const response = await f.app.inject({
+      method: "POST",
+      url: "/api/documents/untitled",
+      headers,
+      payload: { language: "python" },
+    });
+    assert.equal(response.statusCode, 201);
+    const initial = response.json();
+    assert.equal(initial.untitled, true);
+    assert.deepEqual(f.documents.list(), []);
+    const doc = f.documents.edit(initial.path, "print(42)", initial.version);
+    assert.equal(f.documents.open(doc.path).content, "print(42)");
+    const snapshot = (await f.app.inject({ url: "/api/snapshot" })).json();
+    assert.equal(snapshot.documents[0].path, doc.path);
+    const reference = { path: doc.path, version: doc.version };
+    const submitted = await f.app.inject({
+      method: "POST",
+      url: "/api/executions",
+      headers,
+      payload: { language: "python", code: doc.content, document: reference },
+    });
+    assert.equal(submitted.statusCode, 202);
+    await f.execution.wait(submitted.json().id);
+    writeFileSync(join(root, "existing.py"), "keep me");
+    for (const [target, expectedVersion, status] of [
+      ["existing.py", doc.version, 409],
+      ["../escape.py", doc.version, 400],
+      ["result.py", doc.version - 1, 409],
+    ] as const) {
+      const rejected = await f.app.inject({
+        method: "POST",
+        url: "/api/documents/save-as",
+        headers,
+        payload: { path: doc.path, target, expectedVersion },
+      });
+      assert.equal(rejected.statusCode, status);
+    }
+    const saved = await f.app.inject({
+      method: "POST",
+      url: "/api/documents/save-as",
+      headers,
+      payload: { path: doc.path, target: "result.py", expectedVersion: doc.version },
+    });
+    assert.equal(saved.statusCode, 200);
+    assert.equal(readFileSync(join(root, "result.py"), "utf8"), "print(42)");
+    assert.equal(readFileSync(join(root, "existing.py"), "utf8"), "keep me");
+    assert.equal(saved.json().untitled, undefined);
+    assert.deepEqual(f.execution.get(submitted.json().id)!.document, reference);
+    assert.doesNotThrow(() => f.documents.verifyReference(doc.path, doc.version, doc.content));
+    const after = (await f.app.inject({ url: "/api/snapshot" })).json();
+    assert.equal(
+      after.documents.some((item: { path: string }) => item.path === doc.path),
+      false,
+    );
+  } finally {
+    await f.app.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

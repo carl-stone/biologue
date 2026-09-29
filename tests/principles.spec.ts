@@ -66,7 +66,7 @@ test("a review notification opens the correct conversation and the decision rema
   });
   await page.goto("/");
   await expect(page.locator(".permission-card")).toHaveCount(0);
-  await page.getByRole("button", { name: "Open Agent settings", exact: true }).click();
+  await page.getByRole("button", { name: "Agent settings", exact: true }).click();
   await expect(page.locator(".controls .permission-card")).toHaveCount(0);
   await page.setViewportSize({ width: 640, height: 760 });
   await page.getByRole("button", { name: "1 request awaiting review", exact: true }).click();
@@ -147,7 +147,7 @@ test("requesting changes keeps exact document versions and feedback together, in
     .getByRole("textbox", { name: "What should Biologue change?", exact: true })
     .fill(feedback);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Open Conversation", exact: true }).click();
+  await page.getByRole("button", { name: "Focus Conversation", exact: true }).click();
   await expect(
     page.getByRole("textbox", { name: "What should Biologue change?", exact: true }),
   ).toHaveValue(feedback);

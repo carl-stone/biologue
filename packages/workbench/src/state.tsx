@@ -57,9 +57,10 @@ export function applyEvent(state: Snapshot, event: AppEvent): Snapshot {
     case "document":
       return {
         ...state,
-        files: state.files.includes(event.document.path)
-          ? state.files
-          : [...state.files, event.document.path].sort(),
+        files:
+          event.document.untitled || state.files.includes(event.document.path)
+            ? state.files
+            : [...state.files, event.document.path].sort(),
         documents: state.documents.some((doc) => doc.path === event.document.path)
           ? state.documents.map((doc) =>
               doc.path === event.document.path && event.document.version >= doc.version
@@ -220,7 +221,16 @@ class WorkbenchStore {
       tablePreview: null,
       setError: set("error"),
       setLanguage: set("language"),
-      setFile: set("file"),
+      setFile: (file) => {
+        this.update({ file });
+        if (this.project) {
+          try {
+            localStorage.setItem(`carl-active-file:${this.project}`, file);
+          } catch {
+            /* Document recovery storage reports persistence failures separately. */
+          }
+        }
+      },
       setConversation: (conversation) => {
         this.update({ conversation });
         void this.history.select(conversation);
@@ -340,7 +350,17 @@ class WorkbenchStore {
       },
       changed: (documents, drafts) => {
         const snapshot = this.state.snapshot;
-        this.update({ drafts, ...(snapshot ? { snapshot: { ...snapshot, documents } } : {}) });
+        this.update({
+          drafts,
+          ...(snapshot
+            ? {
+                snapshot: {
+                  ...snapshot,
+                  documents: documents.filter((doc) => !doc.savedAs || drafts[doc.path]),
+                },
+              }
+            : {}),
+        });
       },
       persist: (path, edit) => {
         if (!this.project) return;
@@ -377,6 +397,14 @@ class WorkbenchStore {
     this.documents.connection(connected);
   }
   snapshot(snapshot: Snapshot) {
+    let preferred = this.state.file;
+    if (this.project !== snapshot.project) {
+      try {
+        preferred = localStorage.getItem(`carl-active-file:${snapshot.project}`) ?? preferred;
+      } catch {
+        /* Use the default file. */
+      }
+    }
     this.update({
       snapshot,
       ready: true,
@@ -384,7 +412,11 @@ class WorkbenchStore {
         ? this.state.conversation
         : snapshot.conversations[0]?.id || "",
       streaming: {},
-      file: snapshot.files.includes(this.state.file) ? this.state.file : snapshot.files[0] || "",
+      file:
+        snapshot.files.includes(preferred) ||
+        snapshot.documents.some((doc) => doc.path === preferred)
+          ? preferred
+          : snapshot.files[0] || snapshot.documents[0]?.path || "",
     });
     void this.history.select(this.state.conversation, true);
     if (this.project !== snapshot.project) {
@@ -428,6 +460,12 @@ class WorkbenchStore {
       void this.history.select(event.conversationId, true);
     if (event.type === "permission-resolved" && event.error) this.error(new Error(event.error));
     if (event.type === "document") {
+      if (
+        event.document.savedAs &&
+        this.state.file === event.document.path &&
+        !this.state.drafts[event.document.path]
+      )
+        this.state.setFile(event.document.savedAs);
       if (this.state.snapshot) this.update({ snapshot: applyEvent(this.state.snapshot, event) });
       this.documents.receive(event.document);
       return;

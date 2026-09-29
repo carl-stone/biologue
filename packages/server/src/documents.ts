@@ -73,6 +73,15 @@ export class Documents {
             );
     return walk(this.root, 0).sort().slice(0, 1000);
   }
+  listWorking(): string[] {
+    return [
+      ...this.list(),
+      ...this.store
+        .list<Document>("document")
+        .filter((doc) => doc.untitled && !doc.savedAs)
+        .map((doc) => doc.path),
+    ];
+  }
   private readDisk(path: string): { content: string; hash: string } | null {
     const full = this.resolve(path);
     if (!existsSync(full)) return null;
@@ -119,8 +128,9 @@ export class Documents {
     return doc;
   }
   open(path: string): Document {
-    this.resolve(path);
     const old = this.store.get<Document>("document", path);
+    if (old?.untitled) return old;
+    this.resolve(path);
     const disk = this.readDisk(path);
     this.observe(path);
     if (!old) {
@@ -178,8 +188,60 @@ export class Documents {
     }
     return this.open(path);
   }
+  createUntitled(language: "r" | "python"): Document {
+    const number = this.store.list<Document>("document").filter((doc) => doc.untitled).length + 1;
+    return this.publish(
+      {
+        path: `untitled:${randomUUID()}/Untitled-${number}.${language === "r" ? "R" : "py"}`,
+        untitled: true,
+        content: "",
+        version: 1,
+        savedVersion: 0,
+        diskHash: "",
+      },
+      true,
+    );
+  }
+  saveAs(path: string, target: string, expectedVersion: number): Document {
+    const doc = this.open(path);
+    if (!doc.untitled) throw new InvalidPath("Only untitled documents need a first file name.");
+    if (doc.savedAs) throw new Conflict(`This document was already saved as ${doc.savedAs}.`);
+    if (doc.version !== expectedVersion)
+      throw new Conflict("The document changed. Try saving again.");
+    const full = this.resolve(target);
+    if (existsSync(full) || this.store.get("document", target))
+      throw new Conflict("A file already uses this name. Choose another name.");
+    // Never overwrite an existing project file, including one created concurrently.
+    try {
+      writeFileSync(full, doc.content, { flag: "wx", mode: 0o644 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+        throw new Conflict("A file already uses this name. Choose another name.");
+      throw error;
+    }
+    const saved: Document = {
+      path: target,
+      content: doc.content,
+      version: 1,
+      savedVersion: 1,
+      diskHash: digest(doc.content),
+    };
+    this.store.transaction(() => {
+      this.store.put("document", path, { ...doc, savedAs: target });
+      this.store.put("document", target, saved);
+      this.store.put("document-revision", `${target}:1`, saved);
+    });
+    this.events.emit({ type: "document", document: { ...doc, savedAs: target } });
+    this.events.emit({ type: "document", document: saved });
+    this.observe(target);
+    return saved;
+  }
   edit(path: string, content: string, expectedVersion: number, editId?: string): Document {
     const previous = this.open(path);
+    if (previous.savedAs)
+      throw new Conflict(
+        `This document was saved as ${previous.savedAs}. Open that file to continue.`,
+      );
     // A lost HTTP acknowledgement may be retried after a reconnect.
     if (editId && previous.editId === editId && previous.content === content) return previous;
     if (previous.version !== expectedVersion)
@@ -192,6 +254,7 @@ export class Documents {
   }
   save(path: string, expectedVersion: number): Document {
     const doc = this.open(path);
+    if (doc.untitled) throw new InvalidPath("Choose a file name to save this document.");
     if (doc.version !== expectedVersion)
       throw new Conflict("The document changed. Review the current version before saving.");
     if (doc.diskConflict)
@@ -226,6 +289,7 @@ export class Documents {
     choice: "disk" | "working",
   ): Document {
     const doc = this.open(path);
+    if (doc.untitled) throw new InvalidPath("Choose a file name to save this document.");
     const disk = this.readDisk(path);
     if (doc.version !== expectedVersion || (disk?.hash ?? null) !== expectedDiskHash)
       throw new Conflict(

@@ -14,23 +14,30 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { api, useWorkbench, useSnapshot, type PanelId } from "./state.tsx";
+import {
+  api,
+  useWorkbench,
+  useSnapshot,
+  useResource,
+  useOutputVersion,
+  type PanelId,
+} from "./state.tsx";
+import type { DisplayOutput, Page } from "@carl/protocol";
 import { Dialog, Spinner, modifier } from "./ui.tsx";
 import { Chat } from "./panels/Chat.tsx";
 import { Editor } from "./panels/Editor.tsx";
 import { Console } from "./panels/Console.tsx";
-import { Controls } from "./panels/Controls.tsx";
 import { ResearchContext } from "./panels/ResearchContext.tsx";
 import { Data, Environment, Plots } from "./panels/Results.tsx";
 
 const components = {
   chat: Chat,
+  controls: () => null, // Read old saved layouts, then migrate this panel into conversation settings.
   editor: Editor,
   console: Console,
   plots: Plots,
   environment: Environment,
   context: ResearchContext,
-  controls: Controls,
   data: Data,
 };
 const workspaceTheme = { ...themeLight, gap: 1 };
@@ -42,7 +49,6 @@ const panels = [
   { id: "plots", title: "Plots", label: "Plots" },
   { id: "data", title: "Data", label: "Data" },
   { id: "context", title: "Research context", label: "Research" },
-  { id: "controls", title: "Agent settings", label: "Settings" },
 ] as const;
 type LayoutMode = "wide" | "compact" | "narrow";
 type Layouts = Partial<Record<LayoutMode, SerializedDockview>>;
@@ -69,9 +75,8 @@ function defaultLayout(layout: WorkspaceApi, mode: LayoutMode) {
     add("editor", "chat", "right");
     add("environment", "editor", "right");
     add("context", "environment", "within", true);
-    add("controls", "environment", "within", true);
     add("console", "editor", "below");
-    add("plots", "environment", "below");
+    add("plots", "environment", "within", true);
     add("data", "plots", "within", true);
     layout.getPanel("chat")!.api.setSize({
       width: Math.min(620, Math.round((window.innerWidth - 340) * 0.45)),
@@ -80,18 +85,15 @@ function defaultLayout(layout: WorkspaceApi, mode: LayoutMode) {
     layout
       .getPanel("console")!
       .api.setSize({ height: Math.max(240, Math.round(window.innerHeight * 0.31)) });
-    layout.getPanel("plots")!.api.setSize({ height: Math.round(window.innerHeight * 0.4) });
   } else {
     if (mode === "compact") {
       add("chat");
       add("context", "chat", "within", true);
-      add("controls", "chat", "within", true);
       add("editor", "chat", "right");
     } else {
       add("editor");
       add("chat", "editor", "within", true);
       add("context", "editor", "within", true);
-      add("controls", "editor", "within", true);
     }
     add("console", "editor", mode === "narrow" ? "within" : "below", mode === "narrow");
     add("environment", "console", "within", true);
@@ -133,6 +135,14 @@ export function App() {
   const [isArranging, setIsArranging] = useState(false);
   const [help, setHelp] = useState(false);
   const [layoutMode, setLayoutMode] = useState(mode.current);
+  const plotVersion = useOutputVersion(wb.language);
+  const plotPage = useResource<Page<DisplayOutput>>(
+    wb.ready ? `/outputs?language=${wb.language}&kind=plots&limit=1` : null,
+    plotVersion,
+  );
+  const revealedPlots = useRef(new Set<string>());
+  const migrateEmptyPlots = useRef(true);
+  const [layoutReady, setLayoutReady] = useState(0);
   const reviewRequests = (wb.snapshot?.permissions ?? []).filter(
     (request) =>
       active !== "chat" ||
@@ -160,11 +170,31 @@ export function App() {
     layout.current?.groups.forEach(updateHeader);
   }
   function reveal(id: PanelId, maximize = false) {
-    const target = layout.current?.getPanel(id);
+    const target = layout.current?.getPanel(id === "controls" ? "chat" : id);
     if (!target) return;
     if (layout.current!.hasMaximizedGroup()) layout.current!.exitMaximizedGroup();
     target.api.setActive();
     if (maximize) target.api.maximize();
+  }
+  function focusPanel(id: PanelId) {
+    requestAnimationFrame(() => {
+      const destinations: Record<PanelId, string> = {
+        chat: '.chat textarea[aria-label="Message Biologue"]',
+        editor: ".editor-pane .cm-content",
+        console: ".console-input textarea",
+        context: "#research-notes",
+        environment: ".environment",
+        plots: ".plots",
+        data: ".data-pane",
+        controls: ".controls",
+      };
+      const content = document.querySelector<HTMLElement>(destinations[id]);
+      const destination =
+        (content?.matches(".pane") ? content.closest<HTMLElement>('[role="tabpanel"]') : content) ??
+        document.querySelector<HTMLElement>(`button[data-panel="${id}"]`);
+      if (destination?.getAttribute("role") === "tabpanel") destination.tabIndex = -1;
+      destination?.focus({ preventScroll: true });
+    });
   }
   function toggleFocus() {
     if (!layout.current) return;
@@ -178,30 +208,11 @@ export function App() {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
-      if (event.altKey && !event.ctrlKey && !event.metaKey && /^[1-8]$/.test(event.key)) {
+      if (event.altKey && !event.ctrlKey && !event.metaKey && /^[1-7]$/.test(event.key)) {
         event.preventDefault();
         const panel = panels[Number(event.key) - 1];
         reveal(panel.id);
-        requestAnimationFrame(() => {
-          const destinations: Record<PanelId, string> = {
-            chat: '.chat textarea[aria-label="Message Biologue"]',
-            editor: ".editor-pane .cm-content",
-            console: ".console-input textarea",
-            context: "#research-notes",
-            environment: ".environment",
-            plots: ".plots",
-            data: ".data-pane",
-            controls: ".controls",
-          };
-          const content = document.querySelector<HTMLElement>(destinations[panel.id]);
-          const destination =
-            (content?.matches(".pane")
-              ? content.closest<HTMLElement>('[role="tabpanel"]')
-              : content) ??
-            document.querySelector<HTMLElement>(`button[aria-label="Open ${panel.title}"]`);
-          if (destination?.getAttribute("role") === "tabpanel") destination.tabIndex = -1;
-          destination?.focus({ preventScroll: true });
-        });
+        focusPanel(panel.id);
       } else if (event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         toggleFocus();
@@ -219,8 +230,10 @@ export function App() {
     layout.current = view;
     const persisted = wb.snapshot?.layout as
       { version?: number; layouts?: Layouts; grid?: unknown } | undefined;
+    migrateEmptyPlots.current = persisted?.version !== 4;
     savedLayouts.current =
-      (persisted?.version === 2 || persisted?.version === 3) && persisted.layouts
+      (persisted?.version === 2 || persisted?.version === 3 || persisted?.version === 4) &&
+      persisted.layouts
         ? persisted.layouts
         : persisted?.grid
           ? { wide: persisted as SerializedDockview }
@@ -240,6 +253,8 @@ export function App() {
         const saved = savedLayouts.current[next];
         if (saved) {
           view.fromJSON(saved);
+          const legacyControls = view.getPanel("controls");
+          if (legacyControls) view.removePanel(legacyControls);
           if (panels.some((panel) => !view.getPanel(panel.id)))
             throw new Error("Incomplete layout");
         } else defaultLayout(view, next);
@@ -251,6 +266,7 @@ export function App() {
       setMaximized(view.hasMaximizedGroup());
       setActive((view.activePanel?.id || "editor") as PanelId);
       restoring = false;
+      setLayoutReady((value) => value + 1);
     }
     restore(windowMode());
     const subscriptions = [
@@ -265,7 +281,7 @@ export function App() {
         timer = setTimeout(() => {
           if (disposed) return;
           savedLayouts.current[mode.current] = view.toJSON();
-          void api("/layout", "PUT", { version: 3, layouts: savedLayouts.current }).catch(() => {});
+          void api("/layout", "PUT", { version: 4, layouts: savedLayouts.current }).catch(() => {});
         }, 500);
       }),
     ];
@@ -294,6 +310,40 @@ export function App() {
       window.removeEventListener("resize", resize);
     };
   }
+  useEffect(() => {
+    const view = layout.current;
+    if (!view || !plotPage.data) return;
+    const plots = view.getPanel("plots"),
+      environment = view.getPanel("environment");
+    if (!plots || !environment) return;
+    if (!plotPage.data.items.length) {
+      // Retire the old, permanently empty results split when restoring an older layout.
+      if (
+        migrateEmptyPlots.current &&
+        mode.current === "wide" &&
+        plots.group !== environment.group &&
+        plots.group.panels.every((panel) => ["plots", "data"].includes(panel.id))
+      ) {
+        const focused = view.activePanel;
+        const previousRightPanel = environment.group.activePanel;
+        view.getPanel("data")?.api.moveTo({ group: environment.group, skipSetActive: true });
+        plots.api.moveTo({ group: environment.group, skipSetActive: true });
+        previousRightPanel?.api.setActive();
+        focused?.api.setActive();
+      }
+      if (mode.current === "wide") migrateEmptyPlots.current = false;
+      return;
+    }
+    if (mode.current !== "wide" || revealedPlots.current.has(wb.language)) return;
+    revealedPlots.current.add(wb.language);
+    if (mode.current === "wide") {
+      if (plots.group === environment.group) {
+        plots.api.moveTo({ group: environment.group, position: "bottom", skipSetActive: true });
+        plots.api.setSize({ height: Math.round(window.innerHeight * 0.4) });
+      }
+      // Moving into a new group reveals the figure without moving typing focus.
+    }
+  }, [plotPage.data, layoutReady, wb.language]);
   const pending =
     wb.snapshot?.executions.filter(
       (item) => item.language === wb.language && ["queued", "running"].includes(item.status),
@@ -310,10 +360,6 @@ export function App() {
           <span>{wb.snapshot?.project.split("/").pop() || "Opening workspace"}</span>
         </div>
         <div className="header-actions">
-          <span className="connection-state">
-            <span className={`status-dot ${wb.connected ? "online" : ""}`} />
-            {wb.connected ? "Workspace connected" : "Reconnecting"}
-          </span>
           {reviewCount > 0 && (
             <button className="review-badge" onClick={() => wb.revealPermission(reviewRequests[0])}>
               <ShieldCheck size={14} />
@@ -342,8 +388,8 @@ export function App() {
         <div className="connection-banner" role="status">
           <WifiOff size={16} />
           <span>
-            Connection lost. Reconnecting… You can keep editing; runs and saves will be available
-            when connected.
+            Connection lost. Reconnecting… You can keep editing; sending messages, running code, and
+            saving will be available when connected.
           </span>
         </div>
       )}
@@ -390,11 +436,15 @@ export function App() {
             <button
               key={panel.id}
               className={`nav-button ${active === panel.id ? "active" : ""}`}
-              aria-label={`Open ${panel.title}`}
+              aria-label={`Focus ${panel.title}`}
+              data-panel={panel.id}
               aria-pressed={active === panel.id}
-              title={`${panel.title} (Alt+${index + 1})`}
+              title={`Show and focus ${panel.title} (Alt+${index + 1})`}
               disabled={!wb.snapshot}
-              onClick={() => reveal(panel.id)}
+              onClick={() => {
+                reveal(panel.id);
+                focusPanel(panel.id);
+              }}
             >
               {panel.label}
               {panel.id === "chat" && reviewCount > 0 && (
@@ -449,6 +499,8 @@ export function App() {
             disabled={!wb.snapshot}
             onClick={() => {
               if (layout.current) {
+                revealedPlots.current.clear();
+                setLayoutReady((value) => value + 1);
                 defaultLayout(layout.current, mode.current);
                 layout.current.groups.forEach(updateHeader);
                 wb.notify("Panel layout reset. Your work is retained.");
@@ -484,14 +536,14 @@ export function App() {
           <div className="help-section">
             <h3>Keep your work in view</h3>
             <p>
-              Use the bottom navigation to open any panel. Expand panel gives it the full workspace;
-              Escape brings the workspace back.
+              Use the bottom navigation to show a panel and move keyboard focus into it. Expand
+              panel gives it the full workspace; Escape brings the workspace back.
             </p>
           </div>
           <div className="help-section">
             <h3>Keyboard shortcuts</h3>
             <dl className="shortcut-list">
-              <dt>Run selected code, or the file / console input</dt>
+              <dt>Run selection or current editor line / console input</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>Enter</kbd>
               </dd>
@@ -499,7 +551,7 @@ export function App() {
               <dd>
                 <kbd>Shift</kbd> <kbd>Enter</kbd>
               </dd>
-              <dt>Run the entire file with a selection active</dt>
+              <dt>Run the entire file</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>Shift</kbd> <kbd>Enter</kbd>
               </dd>
@@ -515,9 +567,9 @@ export function App() {
               <dd>
                 <kbd>{modifier}</kbd> <kbd>Enter</kbd>
               </dd>
-              <dt>Open a panel in navigation order</dt>
+              <dt>Focus a panel in navigation order</dt>
               <dd>
-                <kbd>Alt</kbd> <kbd>1–8</kbd>
+                <kbd>Alt</kbd> <kbd>1–7</kbd>
               </dd>
               <dt>Expand active panel</dt>
               <dd>

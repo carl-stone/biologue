@@ -1,7 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowDown, ArrowUp, ArrowUpRight, NotebookPen, Plus, Square } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpRight,
+  NotebookPen,
+  Plus,
+  Square,
+  Pencil,
+  Settings2,
+} from "lucide-react";
 import type {
   Conversation,
   Message,
@@ -11,6 +20,7 @@ import type {
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
 import { RunActivity } from "./RunActivity.tsx";
 import { PermissionCard } from "./PermissionCard.tsx";
+import { Controls } from "./Controls.tsx";
 import {
   Dialog,
   CopyButton,
@@ -74,6 +84,7 @@ export function Chat() {
     "permissionTarget",
     "revealPermission",
     "loadMessages",
+    "panelRequest",
   );
   const { conversation, setConversation, streaming, connected } = wb;
   const snapshot = useSnapshot(
@@ -87,7 +98,40 @@ export function Chat() {
   );
   const [drafts, setDrafts] = useProjectDraft<Record<string, string>>("messages", {});
   const text = drafts[conversation] || "";
-  const [creating, setCreating] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [settings, setSettings] = useState(false);
+  useEffect(() => {
+    if (wb.panelRequest?.id === "controls") setSettings(true);
+  }, [wb.panelRequest]);
+  const settingsPanel = useRef<HTMLDivElement>(null);
+  const settingsButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    setSettings(false);
+  }, [conversation, wb.permissionTarget]);
+  useEffect(() => {
+    if (!settings) return;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setSettings(false);
+        settingsButton.current?.focus();
+      }
+    };
+    const outside = (event: PointerEvent) => {
+      if (
+        !settingsPanel.current?.contains(event.target as Node) &&
+        !settingsButton.current?.contains(event.target as Node)
+      )
+        setSettings(false);
+    };
+    document.addEventListener("keydown", keydown, true);
+    document.addEventListener("pointerdown", outside);
+    return () => {
+      document.removeEventListener("keydown", keydown, true);
+      document.removeEventListener("pointerdown", outside);
+    };
+  }, [settings]);
   const [title, setTitle] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
   const sendAction = useAction();
@@ -251,23 +295,36 @@ export function Chat() {
           ))}
         </select>
         <button
+          className="icon"
+          aria-label="Rename conversation"
+          title="Rename conversation"
+          disabled={!connected || !conversation}
+          onClick={() => {
+            setTitle(snapshot.conversations.find((item) => item.id === conversation)?.title || "");
+            setRenaming(true);
+          }}
+        >
+          <Pencil size={14} />
+        </button>
+        <button
           className="text-button"
           title="New conversation"
           aria-label="New conversation"
-          disabled={!connected}
-          onClick={() => {
-            setTitle("");
-            setCreating(true);
-          }}
+          disabled={!connected || createAction.busy}
+          onClick={() =>
+            void createAction.run(async () => {
+              const created = await api<Conversation>("/conversations", "POST", {});
+              setConversation(created.id);
+              requestAnimationFrame(() => input.current?.focus());
+            })
+          }
         >
           <Plus size={14} /> New
         </button>
       </div>
       <button className="context-link" onClick={() => wb.showPanel("context")}>
         <NotebookPen size={14} />
-        {snapshot!.researchContext.version
-          ? `Research context · v${snapshot!.researchContext.version}`
-          : "Add your research context"}
+        {snapshot!.researchContext.version ? "Research context" : "Add your research context"}
         <ArrowUpRight size={13} />
       </button>
       <div className="chat-transcript">
@@ -357,7 +414,7 @@ export function Chat() {
           {active && <RunActivity runId={active.id} />}
           {latest?.error && !active && (
             <div className="inline-error" role="status">
-              <strong>The run could not finish.</strong>
+              <strong>Biologue couldn’t finish responding.</strong>
               <p>{latest.error}</p>
               <span>Your conversation is retained. You can send a follow-up.</span>
             </div>
@@ -400,8 +457,8 @@ export function Chat() {
           <span className="spacer" />
           <button
             className="text-button"
-            aria-label="Stop agent run"
-            title="Stop agent run"
+            aria-label="Stop response"
+            title="Stop response"
             disabled={!connected || stopAction.busy}
             onClick={() =>
               void stopAction.run(() => api(`/agent/runs/${active.id}/cancel`, "POST", {}))
@@ -436,23 +493,25 @@ export function Chat() {
           }}
         />
         <div className="composer-bottom">
-          {!snapshot!.agent.enabled ? (
-            <button
-              type="button"
-              className="text-button setup-link"
-              onClick={() => wb.showPanel("controls")}
-            >
-              Model setup <ArrowUpRight size={13} />
-            </button>
-          ) : (
-            <span>
-              {reviewing
-                ? "Sent after your decision"
-                : active
-                  ? "Send a correction or follow-up"
-                  : `${modifier}+Enter to send`}
-            </span>
-          )}
+          <button
+            type="button"
+            className="text-button model-settings"
+            ref={settingsButton}
+            aria-label="Agent settings"
+            title="Model and workspace access"
+            aria-expanded={settings}
+            onClick={() => setSettings(!settings)}
+          >
+            <Settings2 size={14} />
+            <span>{snapshot.agent.enabled ? snapshot.agent.model : "Model setup"}</span>
+          </button>
+          <span className="composer-hint">
+            {reviewing
+              ? "Sent after your decision"
+              : active
+                ? "Send a follow-up"
+                : `${modifier}+Enter`}
+          </span>
           <button
             className="send"
             aria-label={active ? "Send context" : "Send message"}
@@ -460,7 +519,7 @@ export function Chat() {
               !connected
                 ? "Reconnect to send"
                 : !snapshot!.agent.enabled
-                  ? "Set up a model in the Agent panel to send"
+                  ? "Set up a model to send"
                   : "Send message"
             }
             disabled={
@@ -476,24 +535,38 @@ export function Chat() {
           </button>
         </div>
       </form>
-      {creating && (
-        <Dialog title="New conversation" onClose={() => setCreating(false)}>
-          <p>
-            Give this investigation a name. Conversations share this project’s research context.
-          </p>
+      {settings && (
+        <div
+          className="conversation-settings"
+          ref={settingsPanel}
+          role="region"
+          aria-label="Conversation settings"
+        >
+          <div className="pane-toolbar">
+            <strong>Agent settings</strong>
+            <span className="spacer" />
+            <button className="text-button" onClick={() => setSettings(false)}>
+              Done
+            </button>
+          </div>
+          <Controls />
+        </div>
+      )}
+      {renaming && (
+        <Dialog title="Rename conversation" onClose={() => setRenaming(false)}>
+          <p>A name you choose stays fixed. Automatic names update as the conversation develops.</p>
           <form
             onSubmit={(event) => {
               event.preventDefault();
               if (!title.trim()) return;
               void createAction.run(async () => {
-                const created = await api<Conversation>("/conversations", "POST", { title });
-                setConversation(created.id);
-                setCreating(false);
+                await api<Conversation>(`/conversations/${conversation}`, "PATCH", { title });
+                setRenaming(false);
               });
             }}
           >
             <label className="field-label" htmlFor="conversation-title">
-              Investigation name
+              Conversation name
             </label>
             <input
               id="conversation-title"
@@ -504,14 +577,14 @@ export function Chat() {
               onChange={(event) => setTitle(event.target.value)}
             />
             <div className="dialog-actions">
-              <button type="button" onClick={() => setCreating(false)}>
+              <button type="button" onClick={() => setRenaming(false)}>
                 Cancel
               </button>
               <button
                 className="primary"
                 disabled={!title.trim() || createAction.busy || !connected}
               >
-                {createAction.busy && <Spinner />}Create conversation
+                {createAction.busy && <Spinner />}Save name
               </button>
             </div>
           </form>

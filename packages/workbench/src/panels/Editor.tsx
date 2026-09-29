@@ -1,23 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror, { Prec, type EditorState, type ViewUpdate } from "@uiw/react-codemirror";
-import { historyField } from "@codemirror/commands";
+import { historyField, undo, redo } from "@codemirror/commands";
+import { openSearchPanel } from "@codemirror/search";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { r } from "@codemirror/legacy-modes/mode/r";
 import { keymap, EditorView } from "@codemirror/view";
-import { FileCode2, FilePlus2, Play, Save, Square, Download, ChevronDown } from "lucide-react";
+import {
+  FileCode2,
+  FilePlus2,
+  Play,
+  Save,
+  Square,
+  Download,
+  FolderOpen,
+  X,
+  Search,
+  Undo2,
+  Redo2,
+  ChevronsRight,
+} from "lucide-react";
 import type { Document, Execution, Language } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
 import {
   Empty,
   Dialog,
-  SavedLabel,
   Spinner,
   downloadText,
   languageName,
   modifier,
   useAction,
+  useProjectDraft,
 } from "../ui.tsx";
 
 const editorSetup = { foldGutter: true, autocompletion: true, highlightActiveLine: true };
@@ -67,37 +81,54 @@ export function Editor() {
   const active = snapshot?.executions.find(
     (item) => item.language === fileLanguage && item.status === "running",
   );
-  const lastRun = [...snapshot.executions]
-    .reverse()
-    .find(
-      (execution) =>
-        execution.actor === "human" &&
-        execution.document?.path === file &&
-        execution.purpose === "analysis",
-    );
-  const runLabel =
-    lastRun &&
-    {
-      queued: "Queued",
-      running: "Running",
-      succeeded: "Finished",
-      failed: "Failed",
-      cancelled: "Stopped",
-      interrupted: "Stopped",
-      abandoned: "Session ended",
-      completion_unknown: "Check output",
-      not_executed: "Not run",
-    }[lastRun.status];
   const action = useAction();
   const createAction = useAction();
-  const [creating, setCreating] = useState(false);
+  const [savingAs, setSavingAs] = useState(false);
+  const [tabs, setTabs] = useProjectDraft<string[]>(
+    "editor-tabs",
+    snapshot.files.filter((path) => /\.(py|r)$/i.test(path)),
+  );
+  const [opening, setOpening] = useState(false);
+  const [fileQuery, setFileQuery] = useState("");
+  const availableFiles = [
+    ...new Set([
+      ...snapshot.files,
+      ...Object.keys(drafts),
+      ...snapshot.documents
+        .filter((item) => !item.savedAs || drafts[item.path])
+        .map((item) => item.path),
+    ]),
+  ];
+  const openTabs = [...new Set(tabs)].filter((path) => availableFiles.includes(path));
+  useEffect(() => {
+    if (file && !tabs.includes(file))
+      setTabs((current) => (current.includes(file) ? current : [...current, file]));
+  }, [file, tabs]);
+  function chooseFile(path: string) {
+    wb.setFile(path);
+    if (/\.r$/i.test(path)) wb.setLanguage("r");
+    else if (/\.py$/i.test(path)) wb.setLanguage("python");
+  }
+  function closeTab(path: string) {
+    const next = openTabs.filter((item) => item !== path);
+    setTabs(next);
+    if (file === path) chooseFile(next[Math.min(openTabs.indexOf(path), next.length - 1)] || "");
+    const closed = snapshot.documents.find((item) => item.path === path);
+    if (drafts[path] || (closed && closed.version !== closed.savedVersion))
+      wb.notify("Tab closed. Unsaved work is retained in Open file.");
+  }
+  async function newFile() {
+    const created = await api<Document>("/documents/untitled", "POST", { language });
+    await wb.open(created.path);
+    chooseFile(created.path);
+    requestAnimationFrame(() => editorView.current?.focus());
+  }
   const [newPath, setNewPath] = useState("");
   const [createError, setCreateError] = useState("");
   const [openFailure, setOpenFailure] = useState<{ path: string; message: string } | null>(null);
   const fileError = openFailure?.path === file ? openFailure.message : "";
   const [position, setPosition] = useState({ line: 1, column: 1, selected: false });
   const editorView = useRef<EditorView | null>(null);
-  const runMenu = useRef<HTMLDetailsElement>(null);
   const memoryKey = `${snapshot.project}:${file}`;
   const initialState = useMemo(() => {
     const saved = editorMemory.get(memoryKey);
@@ -105,8 +136,8 @@ export function Editor() {
       ? { json: saved.state.toJSON({ history: historyField }), fields: { history: historyField } }
       : undefined;
   }, [memoryKey, !!doc]);
-  const conflict = !!(doc && draft && draft.baseVersion !== doc.version);
-  const dirty = !!(draft || (doc && doc.version !== doc.savedVersion));
+  const conflict = !!doc?.savedAs || !!(doc && draft && draft.baseVersion !== doc.version);
+  const dirty = !!(draft || (doc && (doc.untitled || doc.version !== doc.savedVersion)));
   useEffect(() => {
     let cancelled = false;
     setOpenFailure(null);
@@ -133,6 +164,12 @@ export function Editor() {
   }
   async function save() {
     if (!doc || conflict || doc.diskConflict || !connected) return;
+    if (doc.untitled) {
+      setNewPath("");
+      setCreateError("");
+      setSavingAs(true);
+      return;
+    }
     const current = await wb.flush(doc);
     await api<Document>("/documents/save", "POST", {
       path: current.path,
@@ -142,7 +179,6 @@ export function Editor() {
   }
   async function run(scope: "file" | "selection" | "line" = "file") {
     if (!doc || !fileLanguage || conflict || !connected) return;
-    if (runMenu.current) runMenu.current.open = false;
     const state = editorView.current?.state;
     const selected = state?.selection.main;
     const line = state && selected ? state.doc.lineAt(selected.head) : undefined;
@@ -170,6 +206,13 @@ export function Editor() {
       },
     });
     wb.revealExecution(execution, { expand: false, activate: false });
+    const view = editorView.current;
+    if (scope === "line" && view && line && view.state.doc.toString() === text) {
+      const next =
+        line.number < view.state.doc.lines ? view.state.doc.line(line.number + 1).from : line.to;
+      view.dispatch({ selection: { anchor: next }, scrollIntoView: true });
+    }
+    view?.focus();
   }
   // Streaming and kernel events should not reconfigure the editor on every event.
   // Stable extensions read the current document/actions through this ref.
@@ -192,7 +235,7 @@ export function Editor() {
             run: (view) => {
               const current = commands.current;
               void current.action.run(() =>
-                current.run(view.state.selection.main.empty ? "file" : "selection"),
+                current.run(view.state.selection.main.empty ? "line" : "selection"),
               );
               return true;
             },
@@ -250,57 +293,171 @@ export function Editor() {
     },
     [memoryKey],
   );
-  useEffect(() => {
-    const close = (event: MouseEvent) => {
-      if (!runMenu.current?.contains(event.target as Node) && runMenu.current)
-        runMenu.current.open = false;
-    };
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, []);
   return (
     <div className="pane editor-pane">
-      <div className="pane-toolbar editor-toolbar">
-        <FileCode2 size={16} aria-hidden="true" />
-        <select
-          aria-label="Project file"
-          title={file}
-          value={file}
-          onChange={(event) => {
-            wb.setFile(event.target.value);
-            if (/\.r$/i.test(event.target.value)) wb.setLanguage("r");
-            else if (/\.py$/i.test(event.target.value)) wb.setLanguage("python");
-          }}
-        >
-          {!snapshot?.files.length && <option value="">No project files</option>}
-          {snapshot?.files.map((path) => (
-            <option key={path}>{path}</option>
-          ))}
-        </select>
+      <div className="editor-tab-strip">
+        <div className="file-tabs" role="tablist" aria-label="Open files">
+          {openTabs.map((path, index) => {
+            const item = snapshot.documents.find((item) => item.path === path);
+            const unsaved = !!drafts[path] || !!(item && item.version !== item.savedVersion);
+            return (
+              <div className={`file-tab ${path === file ? "selected" : ""}`} key={path}>
+                <button
+                  role="tab"
+                  aria-selected={path === file}
+                  aria-label={path.split("/").pop()}
+                  aria-description={`${unsaved ? "Unsaved changes. " : ""}Press Delete to close this tab; unsaved work is retained.`}
+                  aria-controls="editor-document"
+                  aria-keyshortcuts="Delete"
+                  tabIndex={path === file ? 0 : -1}
+                  id={`file-tab-${index}`}
+                  title={item?.untitled ? "Untitled document" : path}
+                  onClick={() => chooseFile(path)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Delete") {
+                      event.preventDefault();
+                      closeTab(path);
+                      requestAnimationFrame(() =>
+                        document
+                          .querySelector<HTMLElement>('.file-tab.selected [role="tab"]')
+                          ?.focus(),
+                      );
+                      return;
+                    }
+                    const next =
+                      event.key === "ArrowRight"
+                        ? (index + 1) % openTabs.length
+                        : event.key === "ArrowLeft"
+                          ? (index + openTabs.length - 1) % openTabs.length
+                          : event.key === "Home"
+                            ? 0
+                            : event.key === "End"
+                              ? openTabs.length - 1
+                              : -1;
+                    if (next >= 0) {
+                      event.preventDefault();
+                      chooseFile(openTabs[next]);
+                      document.getElementById(`file-tab-${next}`)?.focus();
+                    }
+                  }}
+                >
+                  <FileCode2 size={13} />
+                  <span>{path.split("/").pop()}</span>
+                  {unsaved && <span className="unsaved-dot" aria-label="Unsaved changes" />}
+                  <span
+                    className="tab-close"
+                    aria-hidden="true"
+                    title={`Close ${path.split("/").pop()}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeTab(path);
+                    }}
+                  >
+                    <X size={12} />
+                  </span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
         <button
           className="icon"
           aria-label="New file"
-          title="New file"
-          disabled={!connected}
-          onClick={() => {
-            setNewPath("");
-            setCreateError("");
-            setCreating(true);
-          }}
+          title="New untitled file"
+          disabled={!connected || createAction.busy}
+          onClick={() => void createAction.run(newFile)}
         >
           <FilePlus2 size={15} />
         </button>
-        <span className="spacer" />
         <button
-          className="save-file"
+          className="icon"
+          aria-label="Open file"
+          title="Open project file"
+          onClick={() => {
+            setFileQuery("");
+            setOpening(true);
+          }}
+        >
+          <FolderOpen size={15} />
+        </button>
+      </div>
+      <div className="pane-toolbar editor-toolbar">
+        <button
+          className={`save-file ${dirty ? "has-changes" : ""}`}
           aria-label="Save file"
+          aria-description={dirty ? "Unsaved changes" : "File is saved"}
           title={`Save file (${modifier}+S)`}
           disabled={!doc || !dirty || conflict || !!doc.diskConflict || action.busy || !connected}
           onClick={() => void action.run(save)}
         >
           <Save size={15} />
           <span>Save</span>
+          {dirty && <span className="unsaved-dot" aria-label="Unsaved changes" />}
         </button>
+        {doc && (draft || conflict || !dirty) && (
+          <span className="save-feedback" role="status">
+            {conflict
+              ? "Review edits"
+              : draft
+                ? connected
+                  ? "Syncing…"
+                  : "Offline edits"
+                : "Saved"}
+          </span>
+        )}
+        <button
+          className="icon"
+          aria-label="Undo"
+          title={`Undo (${modifier}+Z)`}
+          disabled={!doc}
+          onClick={() => {
+            if (editorView.current) {
+              undo(editorView.current);
+              editorView.current.focus();
+            }
+          }}
+        >
+          <Undo2 size={14} />
+        </button>
+        <button
+          className="icon"
+          aria-label="Redo"
+          title={`Redo (${modifier}+Shift+Z)`}
+          disabled={!doc}
+          onClick={() => {
+            if (editorView.current) {
+              redo(editorView.current);
+              editorView.current.focus();
+            }
+          }}
+        >
+          <Redo2 size={14} />
+        </button>
+        <button
+          className="icon"
+          aria-label="Find and replace"
+          title={`Find and replace (${modifier}+F)`}
+          disabled={!doc}
+          onClick={() => {
+            if (editorView.current) openSearchPanel(editorView.current);
+          }}
+        >
+          <Search size={14} />
+        </button>
+        <span className="spacer" />
+        {active && (
+          <button
+            className="icon interrupt"
+            aria-label="Interrupt code"
+            title="Interrupt running code"
+            disabled={!connected}
+            onClick={() =>
+              void action.run(() => api(`/executions/${active.id}/cancel`, "POST", {}))
+            }
+          >
+            <Square size={13} fill="currentColor" />
+          </button>
+        )}
         <button
           className="run"
           disabled={
@@ -311,41 +468,29 @@ export function Editor() {
             conflict ||
             !connected
           }
-          title={`Run ${position.selected ? "selected code" : "the entire file"} in ${languageName(fileLanguage || language)} (${modifier}+Enter)`}
-          onClick={() => void action.run(() => run(position.selected ? "selection" : "file"))}
+          aria-label={position.selected ? "Run selection" : "Run current line"}
+          title={`Run ${position.selected ? "selected code" : "current line"} in ${languageName(fileLanguage || language)} (${modifier}+Enter)`}
+          onClick={() => void action.run(() => run(position.selected ? "selection" : "line"))}
         >
           {action.busy ? <Spinner /> : <Play size={13} fill="currentColor" />}
-          {position.selected ? "Run selection" : "Run file"}
+          Run
         </button>
-        <details
-          className="editor-run-menu"
-          ref={runMenu}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              event.currentTarget.open = false;
-              event.currentTarget.querySelector("summary")?.focus();
-            }
-          }}
+        <button
+          className="run-all"
+          title={`Run entire file (${modifier}+Shift+Enter)`}
+          disabled={
+            !doc ||
+            !fileLanguage ||
+            conflict ||
+            !connected ||
+            action.busy ||
+            !(draft?.content ?? doc.content).trim()
+          }
+          onClick={() => void action.run(() => run("file"))}
         >
-          <summary aria-label="Run options" title="Run options">
-            <ChevronDown size={14} />
-          </summary>
-          <div className="editor-menu-content">
-            <button
-              disabled={!doc || !fileLanguage || conflict || !connected || action.busy}
-              onClick={() => void action.run(() => run("file"))}
-            >
-              Run entire file <kbd>{modifier}+Shift+Enter</kbd>
-            </button>
-            <button
-              disabled={!doc || !fileLanguage || conflict || !connected || action.busy}
-              onClick={() => void action.run(() => run("line"))}
-            >
-              Run current line <kbd>Shift+Enter</kbd>
-            </button>
-          </div>
-        </details>
+          <ChevronsRight size={15} />
+          Run all
+        </button>
       </div>
       {doc && fileError && (
         <div className="panel-notice" role="status">
@@ -364,7 +509,39 @@ export function Editor() {
           </button>
         </div>
       )}
-      {conflict && (
+      {doc?.savedAs && draft && (
+        <div className="conflict" role="status">
+          <strong>This document was saved as {doc.savedAs}.</strong>
+          <p>
+            Your local edits are retained. Keep them in a new untitled document or open the saved
+            file.
+          </p>
+          <div className="button-row">
+            <button
+              disabled={!connected || createAction.busy}
+              onClick={() =>
+                void createAction.run(async () => {
+                  const created = await api<Document>("/documents/untitled", "POST", {
+                    language: fileLanguage || language,
+                  });
+                  await wb.open(created.path);
+                  wb.draft(created, draft.content);
+                  await wb.flush(created);
+                  wb.discardDraft(doc.path);
+                  chooseFile(created.path);
+                })
+              }
+            >
+              Keep as untitled
+            </button>
+            <button onClick={() => chooseFile(doc.savedAs!)}>Open saved file</button>
+            <button onClick={() => downloadText(draft.content, `${file.split("/").pop()}.draft`)}>
+              Download my draft
+            </button>
+          </div>
+        </div>
+      )}
+      {conflict && !doc?.savedAs && (
         <div className="conflict" role="status">
           <strong>The working document changed.</strong>
           <p>Your edits are retained on this device. Review both versions before continuing.</p>
@@ -413,6 +590,9 @@ export function Editor() {
         <CodeMirror
           key={file}
           className="editor"
+          id="editor-document"
+          role="tabpanel"
+          aria-labelledby={`file-tab-${openTabs.indexOf(file)}`}
           aria-label={`Code editor: ${file}`}
           value={draft?.content ?? doc.content}
           onChange={change}
@@ -457,14 +637,7 @@ export function Editor() {
             </button>
           )}
           {!file && (
-            <button
-              disabled={!connected}
-              onClick={() => {
-                setNewPath("");
-                setCreateError("");
-                setCreating(true);
-              }}
-            >
+            <button disabled={!connected} onClick={() => void createAction.run(newFile)}>
               <FilePlus2 size={14} />
               Create a file
             </button>
@@ -472,61 +645,55 @@ export function Editor() {
         </Empty>
       )}
       <div className="editor-footer">
-        <span>
-          {fileLanguage ? languageName(fileLanguage) : "Text"}
-          <span className="separator">/</span>
-          {doc ? `Revision ${doc.version}` : "No file"}
-        </span>
+        <span>{fileLanguage ? languageName(fileLanguage) : "Text"}</span>
         {doc && (
           <span className="cursor-position">
             Ln {position.line}, Col {position.column}
           </span>
         )}
-        {doc && (
-          <SavedLabel dirty={dirty}>
-            {draft
-              ? conflict
-                ? "Edits need review"
-                : connected
-                  ? "Syncing edits…"
-                  : "Edits retained offline"
-              : dirty
-                ? "Unsaved file"
-                : "Saved to file"}
-          </SavedLabel>
-        )}
-        {active ? (
-          <button
-            className="text-button"
-            disabled={!connected}
-            onClick={() =>
-              void action.run(() => api(`/executions/${active.id}/cancel`, "POST", {}))
-            }
-          >
-            <Square size={11} />
-            Interrupt
-          </button>
-        ) : lastRun ? (
-          <button
-            className="text-button"
-            aria-label="View output for latest run"
-            onClick={() => wb.revealExecution(lastRun)}
-          >
-            {runLabel}
-            {(draft || lastRun.document?.version !== doc?.version) &&
-              ` · revision ${lastRun.document?.version}`}
-            {" · View output"}
-          </button>
-        ) : (
-          <span className="shortcut-hint">
-            <kbd>{modifier}</kbd>
-            <kbd>↵</kbd> {position.selected ? "run selection" : "run file"}
-          </span>
-        )}
+        <span className="shortcut-hint">
+          {modifier}+Enter · {position.selected ? "Run selection" : "Run line"}
+        </span>
       </div>
-      {creating && (
-        <Dialog title="New file" onClose={() => setCreating(false)}>
-          <p>Create a file in this project. Use .py for Python, .R for R, or .md for notes.</p>
+      {opening && (
+        <Dialog title="Open file" onClose={() => setOpening(false)}>
+          <label className="field-label" htmlFor="file-search">
+            Find a project file
+          </label>
+          <input
+            id="file-search"
+            autoFocus
+            value={fileQuery}
+            placeholder="Search files…"
+            onChange={(event) => setFileQuery(event.target.value)}
+          />
+          <div className="open-file-list">
+            {availableFiles
+              .filter((path) => path.toLowerCase().includes(fileQuery.toLowerCase()))
+              .map((path) => (
+                <button
+                  key={path}
+                  onClick={() => {
+                    chooseFile(path);
+                    setOpening(false);
+                  }}
+                >
+                  <FileCode2 size={15} />
+                  <span>{path.startsWith("untitled:") ? path.split("/").pop() : path}</span>
+                  {(drafts[path] ||
+                    snapshot.documents.some(
+                      (doc) => doc.path === path && doc.version !== doc.savedVersion,
+                    )) && <small>Unsaved</small>}
+                </button>
+              ))}
+          </div>
+        </Dialog>
+      )}
+      {savingAs && doc && (
+        <Dialog title="Save file" onClose={() => setSavingAs(false)}>
+          <p>
+            Choose a name in this project. Your untitled document is retained until you save it.
+          </p>
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -534,13 +701,20 @@ export function Editor() {
               void createAction.run(async () => {
                 setCreateError("");
                 try {
-                  const created = await api<Document>("/documents", "POST", {
-                    path: newPath.trim(),
+                  const current = await wb.flush(doc);
+                  const created = await api<Document>("/documents/save-as", "POST", {
+                    path: current.path,
+                    expectedVersion: current.version,
+                    target: newPath.trim(),
                   });
+                  await wb.open(created.path);
+                  setTabs((current) => [
+                    ...new Set(current.map((path) => (path === doc.path ? created.path : path))),
+                  ]);
                   wb.setFile(created.path);
                   if (/\.r$/i.test(created.path)) wb.setLanguage("r");
                   else if (/\.py$/i.test(created.path)) wb.setLanguage("python");
-                  setCreating(false);
+                  setSavingAs(false);
                   wb.showPanel("editor");
                 } catch (error) {
                   setCreateError(error instanceof Error ? error.message : String(error));
@@ -565,14 +739,14 @@ export function Editor() {
               </p>
             )}
             <div className="dialog-actions">
-              <button type="button" onClick={() => setCreating(false)}>
+              <button type="button" onClick={() => setSavingAs(false)}>
                 Cancel
               </button>
               <button
                 className="primary"
                 disabled={!newPath.trim() || !connected || createAction.busy}
               >
-                {createAction.busy && <Spinner />}Create file
+                {createAction.busy && <Spinner />}Save file
               </button>
             </div>
           </form>

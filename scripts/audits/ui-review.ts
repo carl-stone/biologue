@@ -36,7 +36,10 @@ async function capture(page: Page, name: string) {
   });
 }
 async function open(page: Page, panel: string) {
-  await page.getByRole("button", { name: `Open ${panel}`, exact: true }).click();
+  if (panel === "Agent settings") {
+    await page.getByRole("button", { name: "Focus Conversation", exact: true }).click();
+    await page.getByRole("button", { name: "Agent settings", exact: true }).click();
+  } else await page.getByRole("button", { name: `Focus ${panel}`, exact: true }).click();
 }
 async function newPage() {
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
@@ -73,6 +76,8 @@ try {
   await open(empty, "Conversation");
   await empty.getByRole("button", { name: "New conversation", exact: true }).click();
   await capture(empty, "04-new-conversation");
+  await empty.getByRole("button", { name: "Rename conversation", exact: true }).click();
+  await capture(empty, "04-rename-conversation");
   await empty.keyboard.press("Escape");
 
   // Exercise the real editor, runtime, plots, environment, and data viewer too.
@@ -81,7 +86,7 @@ try {
   await expect(live.getByRole("button", { name: "Reset panel layout" })).toBeEnabled();
   await live.getByRole("button", { name: "Reset panel layout" }).click();
   await expect(live.locator(".cm-content")).toContainText("Synthetic measurements");
-  await live.getByRole("button", { name: "Run file", exact: true }).click();
+  await live.getByRole("button", { name: "Run all", exact: true }).click();
   await expect(live.getByRole("img", { name: /^Plot from human/ })).toBeVisible({ timeout: 45000 });
   await live.getByRole("button", { name: "Inspect", exact: true }).click();
   await expect(live.locator(".object code", { hasText: "measurements" })).toBeVisible({

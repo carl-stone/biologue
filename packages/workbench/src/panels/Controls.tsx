@@ -1,20 +1,13 @@
-import { ArrowUpRight, Settings2, Eye, ShieldCheck, Square } from "lucide-react";
-import { api, useWorkbench, useSnapshot } from "../state.tsx";
-import { Badge, timeLabel, useAction } from "../ui.tsx";
+import { Eye, ShieldCheck } from "lucide-react";
+import { useSnapshot } from "../state.tsx";
+import { Badge } from "../ui.tsx";
 
 export function Controls() {
-  const wb = useWorkbench("connected", "showPanel", "setConversation", "revealPermission");
-  const { connected } = wb;
-  const snapshot = useSnapshot("agent", "permissions", "runs", "conversations");
-  const action = useAction();
+  const snapshot = useSnapshot("agent");
   return (
     <div className="pane controls">
       <div className="controls-content">
         <div className="control-section agent-heading">
-          <h2>
-            <Settings2 size={20} />
-            Agent settings
-          </h2>
           <div className="model-status">
             <span className={`status-dot ${snapshot!.agent.enabled ? "online" : ""}`} />
             {snapshot!.agent.enabled ? snapshot!.agent.model : "No model connected"}
@@ -62,63 +55,6 @@ export function Controls() {
             Requests appear in the conversation. Each approval applies to one action in your shared
             workspace.
           </p>
-        </div>
-        <div className="control-section">
-          <h3>Recent runs</h3>
-          {!snapshot!.runs.length && (
-            <p>No runs yet. Start with a question in your conversation.</p>
-          )}
-          {snapshot!.runs
-            .slice(-8)
-            .reverse()
-            .map((run) => (
-              <div className="run-row" key={run.id}>
-                <button
-                  className="run-conversation"
-                  onClick={() => {
-                    const request = snapshot.permissions.find((item) => item.runId === run.id);
-                    if (request) wb.revealPermission(request);
-                    else {
-                      wb.setConversation(run.conversationId);
-                      wb.showPanel("chat");
-                    }
-                  }}
-                >
-                  <span>
-                    {snapshot!.conversations.find((item) => item.id === run.conversationId)
-                      ?.title || "Investigation"}
-                    <ArrowUpRight size={12} />
-                  </span>
-                  <small>
-                    {timeLabel(run.startedAt)} · Context v{run.contextVersion}
-                  </small>
-                </button>
-                <Badge>
-                  {snapshot.permissions.some((item) => item.runId === run.id)
-                    ? "Waiting for you"
-                    : {
-                        running: "Working",
-                        completed: "Finished",
-                        failed: "Failed",
-                        cancelled: "Stopped",
-                        abandoned: "Session ended",
-                      }[run.status]}
-                </Badge>
-                {run.status === "running" && (
-                  <button
-                    className="icon"
-                    aria-label="Stop run"
-                    title="Stop this run"
-                    disabled={!connected || action.busy}
-                    onClick={() =>
-                      void action.run(() => api(`/agent/runs/${run.id}/cancel`, "POST", {}))
-                    }
-                  >
-                    <Square size={13} />
-                  </button>
-                )}
-              </div>
-            ))}
         </div>
       </div>
     </div>
