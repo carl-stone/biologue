@@ -20,6 +20,7 @@
     "test:integration": "tsx --test packages/server/test/integration/*.test.ts",
     "test:ui": "playwright test",
     "start": "node packages/server/dist/server.mjs",
+    "serve": "node scripts/dev.mjs --production",
     "desktop": "tauri dev",
     "desktop:build": "tauri build"
   },

@@ -2,8 +2,22 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { get } from "node:http";
 
 const root = process.cwd();
+const production = process.argv.includes("--production");
+if (process.env.CARL_SOCKET && !production) {
+  console.error("CARL_SOCKET requires npm run serve.");
+  process.exit(1);
+}
+if (
+  production &&
+  (!existsSync(resolve(root, "packages/server/dist/server.mjs")) ||
+    !existsSync(resolve(root, "packages/workbench/dist/index.html")))
+) {
+  console.error("Run npm run build before npm run serve.");
+  process.exit(1);
+}
 const project = resolve(process.env.CARL_PROJECT || "examples/sandbox");
 const token = process.env.JUPYTER_TOKEN || randomBytes(32).toString("hex");
 const jupyterPort = process.env.CARL_JUPYTER_PORT || "8889";
@@ -19,6 +33,25 @@ const env = {
 const children = [];
 let application;
 let stopping = false;
+function applicationReady() {
+  return new Promise((done) => {
+    const request = get(
+      {
+        host: "127.0.0.1",
+        port: process.env.CARL_PORT || 4317,
+        socketPath: process.env.CARL_SOCKET,
+        path: "/api/health",
+        timeout: 1000,
+      },
+      (response) => {
+        response.resume();
+        done(response.statusCode === 200);
+      },
+    );
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => done(false));
+  });
+}
 async function terminate(child, timeoutMs) {
   if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
   await new Promise((done) => {
@@ -56,6 +89,8 @@ function start(command, args) {
   });
   return child;
 }
+process.once("SIGINT", () => stop());
+process.once("SIGTERM", () => stop());
 if (!process.env.JUPYTER_URL) {
   const python = resolve(
     process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python",
@@ -96,17 +131,16 @@ if (!process.env.JUPYTER_URL) {
   }
 }
 if (!stopping) {
-  application = start(process.execPath, ["--import", "tsx", "packages/server/src/main.ts"]);
+  application = start(
+    process.execPath,
+    production
+      ? ["packages/server/dist/server.mjs"]
+      : ["--import", "tsx", "packages/server/src/main.ts"],
+  );
   let ready = false;
   for (let attempt = 0; attempt < 60 && !stopping; attempt++) {
     try {
-      if (
-        (
-          await fetch(`http://127.0.0.1:${process.env.CARL_PORT || 4317}/api/health`, {
-            signal: AbortSignal.timeout(1000),
-          })
-        ).ok
-      ) {
+      if (await applicationReady()) {
         ready = true;
         break;
       }
@@ -118,7 +152,7 @@ if (!stopping) {
     stop(1);
   }
 }
-if (!stopping) {
+if (!stopping && !production) {
   start(process.execPath, [
     "node_modules/vite/bin/vite.js",
     "--config",
@@ -128,5 +162,7 @@ if (!stopping) {
   ]);
   console.log(`Biologue workspace: http://127.0.0.1:${uiPort}`);
 }
-process.once("SIGINT", () => stop());
-process.once("SIGTERM", () => stop());
+if (!stopping && production)
+  console.log(
+    `Biologue workspace: ${process.env.CARL_EXTERNAL_ORIGIN || process.env.CARL_SOCKET || `http://127.0.0.1:${process.env.CARL_PORT || 4317}`}`,
+  );

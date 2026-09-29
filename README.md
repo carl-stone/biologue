@@ -13,6 +13,10 @@ The project was previously called Carl. For compatibility, the repository path,
 original names. Existing conversations, drafts, layouts, and Pi sign-in settings
 continue to use the same storage.
 
+To open the workbench from another computer over Tailscale, see
+[private browser access](docs/remote-access.md). Computation and project state
+remain on the server.
+
 ## Run it
 
 Requires Node 22.19+ and [uv](https://docs.astral.sh/uv/). On a normal local checkout:
@@ -93,7 +97,8 @@ work. See [development notes](docs/development.md) for R/Ark and verification.
 
 The application is a local, single-user prototype. Kernel code has the operating
 system permissions of its R/Python process; it is not sandboxed. The Node API is
-loopback-only and rejects foreign browser origins. Do not expose it publicly.
+local-only by default and rejects foreign browser origins. Private proxy access
+requires an explicitly configured HTTPS origin. Do not expose it publicly.
 
 Chat loads the selected conversation in pages of 50 messages, with earlier
 history available on demand. Pi owns the canonical transcript; a rebuildable

@@ -24,6 +24,7 @@ export interface AppOptions {
   repository: string;
   jupyterUrl?: string;
   jupyterToken?: string;
+  externalOrigin?: string;
   kernel?: KernelBackend;
   pi?: PiAdapter;
   logger?: boolean;
@@ -32,6 +33,12 @@ const language = z.enum(["python", "r"]);
 const pathSchema = z.object({ path: z.string().min(1).max(1000) });
 
 export async function createApp(options: AppOptions) {
+  const externalOrigin = options.externalOrigin ? new URL(options.externalOrigin) : undefined;
+  if (
+    externalOrigin &&
+    (externalOrigin.protocol !== "https:" || externalOrigin.origin !== options.externalOrigin)
+  )
+    throw new Error("externalOrigin must be an HTTPS origin without a path.");
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 2_100_000 });
   const events = new Events();
   const store = new Store(resolve(options.stateDir, "carl.sqlite"));
@@ -74,11 +81,15 @@ export async function createApp(options: AppOptions) {
     allowedOrigins.add(`http://${host}:${process.env.CARL_PORT || 4317}`);
     allowedOrigins.add(`http://${host}:${process.env.CARL_UI_PORT || 5173}`);
   }
+  if (externalOrigin) allowedOrigins.add(externalOrigin.origin);
 
   app.addHook("onRequest", async (request, reply) => {
     const host = new URL(`http://${request.headers.host || "localhost"}`).hostname;
-    if (!["localhost", "127.0.0.1", "[::1]"].includes(host))
-      return reply.code(403).send({ error: "This application accepts loopback hosts only." });
+    if (
+      !["localhost", "127.0.0.1", "[::1]"].includes(host) &&
+      request.headers.host !== externalOrigin?.host
+    )
+      return reply.code(403).send({ error: "Host is not allowed." });
     const origin = request.headers.origin;
     if (origin && !allowedOrigins.has(origin))
       return reply.code(403).send({ error: "Origin is not allowed." });

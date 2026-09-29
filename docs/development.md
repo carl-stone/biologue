@@ -21,6 +21,11 @@ Use your development environment's port forwarding to access port 5173, or run
 the checkout on your own desktop. The verification commands below run entirely
 inside the container.
 
+For private access from another computer, see [Tailscale setup](remote-access.md).
+`npm run serve` starts the built workbench and managed Jupyter runtime. Its optional
+`CARL_EXTERNAL_ORIGIN` admits one HTTPS browser origin, and `CARL_SOCKET` selects a
+Unix socket instead of the default loopback TCP listener.
+
 ## Verification
 
 ```bash
