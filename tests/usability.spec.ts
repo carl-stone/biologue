@@ -159,6 +159,64 @@ test("environment pages stay distinct from targeted agent inspections and unknow
   );
 });
 
+test("tabs appear only while arranging and regrouped panels survive reload", async ({ page }) => {
+  const ui = await fixture(page);
+  ui.handle(async (request) => {
+    if (request.path === "/layout" && request.method === "PUT") {
+      ui.state.layout = request.body;
+      return { body: { ok: true } };
+    }
+  });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Run file", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Research context", exact: true })
+    .fill("Keep this draft");
+  await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
+  await expect(page.getByRole("tab")).toHaveCount(8);
+  await page
+    .getByRole("tab", { name: "Research context", exact: true })
+    .dragTo(page.getByRole("tab", { name: "Editor", exact: true }));
+  const editorGroup = page.locator(".dv-groupview").filter({
+    has: page.getByRole("tab", { name: "Editor", exact: true }),
+  });
+  await expect(
+    editorGroup.getByRole("tab", { name: "Research context", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() => JSON.stringify(ui.state.layout))
+    .toMatch(/"views":\["(editor","context|context","editor)"\]/);
+  // Reload while the saved layout has visible headers. Arrangement mode is temporary.
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Arrange panels", exact: true })).toBeEnabled();
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
+    "Keep this draft",
+  );
+  await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
+  await expect(
+    editorGroup.getByRole("tab", { name: "Research context", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Reset panel layout", exact: true }).click();
+  await expect(page.getByRole("tab")).toHaveCount(8);
+  await page.getByRole("button", { name: "Done arranging panels", exact: true }).click();
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.getByRole("button", { name: "Reset panel layout", exact: true }).click();
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
+  await page.setViewportSize({ width: 640, height: 760 });
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await expect(page.getByRole("button", { name: "Arrange panels", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab")).toHaveCount(0);
+});
+
 test("compact layouts, focus, and keyboard navigation retain local work", async ({ page }) => {
   await fixture(page);
   await page.goto("/");

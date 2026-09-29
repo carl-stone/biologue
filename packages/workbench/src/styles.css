@@ -385,28 +385,8 @@ kbd {
   flex: 1;
   min-height: 0;
 }
-.mobile-panel-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  flex-shrink: 0;
-}
-.mobile-panel-heading strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-.mobile-panel-heading > span {
-  color: var(--muted);
-  font-size: 11px;
-}
-.layout-narrow .dv-tabs-and-actions-container {
-  display: none;
-}
 .app:has(.layout-narrow) .panel-focus,
+.app:has(.layout-narrow) .arrange-panels,
 .layout-narrow button[aria-label="Expand data"],
 .layout-narrow button[aria-label="Expand figure"],
 .workspace[data-expanded="true"] button[aria-label="Expand data"],
@@ -452,6 +432,10 @@ kbd {
   font-size: 11px;
   padding: 2px 6px;
   color: var(--muted);
+}
+.status-bar .arrange-panels[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--accent-dark);
 }
 .status-dot,
 .pulse {
@@ -578,6 +562,9 @@ kbd {
   display: none !important;
 }
 .dv-content-container {
+  border-top: 0;
+}
+.workspace[data-arranging="true"] .dv-content-container {
   border-top: 1px solid var(--border);
 }
 .pane {
@@ -1520,6 +1507,11 @@ kbd {
 .research-intro {
   padding: 14px 16px 0;
   flex-shrink: 0;
+}
+.research-intro h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 6px;
 }
 .research-intro p {
   font-size: 12px;

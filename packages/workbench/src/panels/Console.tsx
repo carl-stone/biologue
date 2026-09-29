@@ -228,7 +228,7 @@ export function Console() {
     <div className="pane console">
       <div className="pane-toolbar console-toolbar">
         <span className={`status-dot ${pending.length ? "waiting" : connected ? "online" : ""}`} />
-        <span>{languageName(language)}</span>
+        <span>{languageName(language)} console</span>
         <span className="small-note">
           {pending.length
             ? `${pending.length} active / queued`

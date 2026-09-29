@@ -9,6 +9,7 @@ import {
   LayoutTemplate,
   Maximize2,
   Minimize2,
+  PanelsTopLeft,
   ShieldCheck,
   WifiOff,
   X,
@@ -120,12 +121,26 @@ export function App() {
   const layout = useRef<WorkspaceApi | null>(null);
   const savedLayouts = useRef<Layouts>({});
   const mode = useRef<LayoutMode>(windowMode());
+  const arranging = useRef(false);
   const cleanup = useRef<() => void>(() => {});
   const [active, setActive] = useState<PanelId>("editor");
   const [maximized, setMaximized] = useState(false);
+  const [isArranging, setIsArranging] = useState(false);
   const [help, setHelp] = useState(false);
   const [layoutMode, setLayoutMode] = useState(mode.current);
   const reviewCount = wb.snapshot?.permissions.length || 0;
+  function updateHeader(group: WorkspaceApi["groups"][number]) {
+    const hidden = !arranging.current || mode.current === "narrow";
+    if (group.header.hidden === hidden) return;
+    group.header.hidden = hidden;
+    group.relayout();
+  }
+  function arrangePanels(enabled: boolean) {
+    arranging.current = enabled;
+    setIsArranging(enabled);
+    if (enabled) layout.current?.exitMaximizedGroup();
+    layout.current?.groups.forEach(updateHeader);
+  }
   function reveal(id: PanelId, maximize = false) {
     const target = layout.current?.getPanel(id);
     if (!target) return;
@@ -151,8 +166,10 @@ export function App() {
       } else if (event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         toggleFocus();
-      } else if (event.key === "Escape" && layout.current?.hasMaximizedGroup())
-        layout.current.exitMaximizedGroup();
+      } else if (event.key === "Escape") {
+        if (arranging.current) arrangePanels(false);
+        else if (layout.current?.hasMaximizedGroup()) layout.current.exitMaximizedGroup();
+      }
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
@@ -178,6 +195,7 @@ export function App() {
       restoring = true;
       mode.current = next;
       setLayoutMode(next);
+      if (next === "narrow") arrangePanels(false);
       view.exitMaximizedGroup();
       try {
         const saved = savedLayouts.current[next];
@@ -189,12 +207,15 @@ export function App() {
       } catch {
         defaultLayout(view, next);
       }
+      // Header visibility is temporary; a saved arrangement can contain either state.
+      view.groups.forEach(updateHeader);
       setMaximized(view.hasMaximizedGroup());
       setActive((view.activePanel?.id || "editor") as PanelId);
       restoring = false;
     }
     restore(windowMode());
     const subscriptions = [
+      view.onDidAddGroup(updateHeader),
       view.onDidActivePanelChange((event) => {
         if (event.panel) setActive(event.panel.id as PanelId);
       }),
@@ -286,14 +307,9 @@ export function App() {
         <main
           className={`workspace layout-${layoutMode}`}
           data-expanded={maximized}
+          data-arranging={isArranging}
           aria-label="Scientific workspace"
         >
-          {layoutMode === "narrow" && wb.snapshot && (
-            <div className="mobile-panel-heading">
-              <strong>{panels.find((panel) => panel.id === active)?.title}</strong>
-              <span>Workspace</span>
-            </div>
-          )}
           {wb.snapshot ? (
             <div className="dock-layout">
               <DockviewReact
@@ -372,6 +388,17 @@ export function App() {
             <span>{maximized ? "Restore layout" : "Expand panel"}</span>
           </button>
           <button
+            className="text-button arrange-panels"
+            aria-label={isArranging ? "Done arranging panels" : "Arrange panels"}
+            aria-pressed={isArranging}
+            title={isArranging ? "Finish arranging (Esc)" : "Show tabs to drag and regroup panels"}
+            disabled={!wb.snapshot}
+            onClick={() => arrangePanels(!arranging.current)}
+          >
+            {isArranging ? <Check size={14} /> : <PanelsTopLeft size={14} />}
+            <span>{isArranging ? "Done arranging" : "Arrange"}</span>
+          </button>
+          <button
             className="icon"
             aria-label="Reset panel layout"
             title="Reset layout for this window size"
@@ -379,6 +406,7 @@ export function App() {
             onClick={() => {
               if (layout.current) {
                 defaultLayout(layout.current, mode.current);
+                layout.current.groups.forEach(updateHeader);
                 wb.notify("Panel layout reset. Your work is retained.");
               }
             }}
@@ -405,8 +433,9 @@ export function App() {
       {help && (
         <Dialog title="Make yourself at home" onClose={() => setHelp(false)}>
           <p>
-            Drag tabs to arrange your workspace. The layout adapts to smaller windows and remembers
-            your arrangement at each size.
+            Choose Arrange in the bottom bar to reveal tabs, then drag them to move or group panels.
+            Choose Done arranging or press Escape to hide the tabs. The layout remembers your
+            arrangement at each window size.
           </p>
           <div className="help-section">
             <h3>Keep your work in view</h3>

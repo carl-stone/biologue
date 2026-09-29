@@ -32,7 +32,7 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("sample\tsignal\nA\t2.4");
-  await page.getByRole("tab", { name: "Research context", exact: true }).click();
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Research context", exact: true })
     .fill("These measurements are synthetic. No biological interpretation has been established.");
@@ -46,14 +46,14 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
   await expect(page.getByText("The working document changed.", { exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.locator(".cm-content")).toContainText("A retained unsaved buffer");
-  await page.getByRole("tab", { name: "Research context", exact: true }).click();
+  await page.getByRole("button", { name: "Open Research context", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
     "These measurements are synthetic. No biological interpretation has been established.",
   );
   await page.locator(".cm-content").click();
   await page.keyboard.press("ControlOrMeta+s");
   await expect(page.locator(".dirty-dot")).toHaveCount(0);
-  await page.getByRole("tab", { name: "Plots", exact: true }).click();
+  await page.getByRole("button", { name: "Open Plots", exact: true }).click();
   const download = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download figure", exact: true }).click();
   expect((await download).suggestedFilename()).toMatch(/^biologue-python-figure-.*\.png$/);

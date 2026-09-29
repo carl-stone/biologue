@@ -14,6 +14,11 @@ scripted conversation, approval, conflict, and connection states. No model calls
   bottom edge. Below 900 pixels, all eight panel choices remain visible in two
   rows and switch between full-height panels. Existing layouts and local drafts
   are retained.
+- Removed the duplicate top tab strips during normal work, recovering 32 pixels
+  per pane. Arrange in the bottom bar temporarily reveals tabs for dragging and
+  regrouping; Done arranging or Escape hides them. Resizing dividers remains
+  available throughout. Restored layouts always start with tabs hidden, and
+  small windows omit the redundant panel heading.
 - Simplified conversations into a readable transcript; labeled New, Send, and
   Stop actions. Kept research notes freeform with guidance distinguishing
   observations, interpretations, assumptions, and corrections. The Save footer
@@ -33,15 +38,17 @@ scripted conversation, approval, conflict, and connection states. No model calls
 
 ## Visual coverage
 
-The review captures 68 screenshots across 1440×960, 1024×768, 760×650, 640×760,
-and 390×844 windows. Coverage includes all eight panels; real plots, tables, and
-objects; populated Markdown conversations; expanded panels; code review, help,
+The review captures 73 screenshots across 1440×960, 1220×768, 1024×768, 900×768,
+760×650, 640×760, and 390×844 windows. Coverage includes arrangement mode;
+all eight panels; real plots, tables, and objects; populated Markdown
+conversations; expanded panels; code review, help,
 and new-conversation dialogs; empty projects; offline state; execution errors;
 document and context conflicts; result loading and retry; and object pagination.
 
 The automated browser suite additionally checks keyboard navigation, modal focus
-return, drafts, conflict handling, approval decisions, artifact provenance, and
-accessibility with axe. The native Tauri window and screen readers were not tested.
+return, dragging and restoring arrangements, drafts, conflict handling, approval
+decisions, artifact provenance, and accessibility with axe. The native Tauri
+window and screen readers were not tested.
 
 ## Reproduce
 

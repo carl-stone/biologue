@@ -32,6 +32,7 @@ export function ResearchContext() {
     <div className="pane research">
       <div className="research-body">
         <div className="research-intro">
+          <h2>Research context</h2>
           <p>Your question, observations, and corrections. Saved notes inform the next run.</p>
           <details className="context-guide">
             <summary>What belongs here?</summary>

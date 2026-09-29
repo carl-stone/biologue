@@ -21,8 +21,10 @@ browser UI with real Python output from the synthetic example project. See the
   follows the preference established in earlier UI reviews.
 
 The implementation retains visible keyboard focus, labeled navigation, resizable
-panes, and existing execution and review behavior. Usability with scientists still
-needs human evaluation; scripted UI checks cover interaction and accessibility.
+panes, and existing execution and review behavior. Panel navigation lives in the
+bottom bar; Arrange temporarily reveals top tabs for dragging and regrouping.
+Usability with scientists still needs human evaluation; scripted UI checks cover
+interaction and accessibility.
 
 ## Reference and generation
 

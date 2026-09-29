@@ -51,6 +51,17 @@ try {
     empty.getByRole("heading", { name: "What are you trying to understand?" }),
   ).toBeVisible();
   await capture(empty, "01-empty-workspace");
+  await empty.getByRole("button", { name: "Arrange panels", exact: true }).click();
+  await capture(empty, "01-arrange-panels");
+  await empty.getByRole("button", { name: "Done arranging panels", exact: true }).click();
+  for (const width of [900, 1220]) {
+    await empty.setViewportSize({ width, height: 768 });
+    await capture(empty, `01-${width}-workspace`);
+    await empty.getByRole("button", { name: "Arrange panels", exact: true }).click();
+    await capture(empty, `01-${width}-arrange-panels`);
+    await empty.getByRole("button", { name: "Done arranging panels", exact: true }).click();
+  }
+  await empty.setViewportSize({ width: 1440, height: 960 });
   for (const panel of ["Research context", "Agent", "Data"]) {
     await open(empty, panel);
     if (panel === "Agent") await empty.locator(".model-setup summary").click();
