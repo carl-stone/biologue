@@ -41,6 +41,7 @@ const components = {
   controls: Controls,
   data: Data,
 };
+const workspaceTheme = { ...themeLight, gap: 6 };
 const panels = [
   { id: "chat", title: "Conversation", icon: MessageCircle },
   { id: "editor", title: "Editor", icon: Code2 },
@@ -55,7 +56,7 @@ type LayoutMode = "wide" | "compact" | "narrow";
 type Layouts = Partial<Record<LayoutMode, SerializedDockview>>;
 type WorkspaceApi = DockviewReadyEvent["api"];
 const windowMode = (): LayoutMode =>
-  window.innerWidth < 760 ? "narrow" : window.innerWidth < 1220 ? "compact" : "wide";
+  window.innerWidth < 900 ? "narrow" : window.innerWidth < 1220 ? "compact" : "wide";
 
 function defaultLayout(layout: WorkspaceApi, mode: LayoutMode) {
   layout.clear();
@@ -80,8 +81,8 @@ function defaultLayout(layout: WorkspaceApi, mode: LayoutMode) {
     add("console", "editor", "below");
     add("plots", "environment", "below");
     add("data", "plots", "within", true);
-    layout.getPanel("chat")!.api.setSize({ width: 320 });
-    layout.getPanel("environment")!.api.setSize({ width: 352 });
+    layout.getPanel("chat")!.api.setSize({ width: 360 });
+    layout.getPanel("environment")!.api.setSize({ width: 340 });
     layout
       .getPanel("console")!
       .api.setSize({ height: Math.max(240, Math.round(window.innerHeight * 0.31)) });
@@ -98,14 +99,15 @@ function defaultLayout(layout: WorkspaceApi, mode: LayoutMode) {
       add("context", "editor", "within", true);
       add("controls", "editor", "within", true);
     }
-    add("console", "editor", "below");
+    add("console", "editor", mode === "narrow" ? "within" : "below", mode === "narrow");
     add("environment", "console", "within", true);
     add("plots", "console", "within", true);
     add("data", "console", "within", true);
     if (mode === "compact") layout.getPanel("chat")!.api.setSize({ width: 300 });
-    layout
-      .getPanel("console")!
-      .api.setSize({ height: Math.max(230, Math.round(window.innerHeight * 0.38)) });
+    if (mode === "compact")
+      layout
+        .getPanel("console")!
+        .api.setSize({ height: Math.max(230, Math.round(window.innerHeight * 0.38)) });
   }
   layout.getPanel("editor")!.api.setActive();
 }
@@ -171,11 +173,13 @@ export function App() {
     const persisted = wb.snapshot?.layout as
       { version?: number; layouts?: Layouts; grid?: unknown } | undefined;
     savedLayouts.current =
-      persisted?.version === 2 && persisted.layouts
+      (persisted?.version === 2 || persisted?.version === 3) && persisted.layouts
         ? persisted.layouts
         : persisted?.grid
           ? { wide: persisted as SerializedDockview }
           : {};
+    // Older narrow layouts split a small window into two cramped groups.
+    if (persisted?.version === 2) delete savedLayouts.current.narrow;
     let restoring = false;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -210,7 +214,7 @@ export function App() {
         timer = setTimeout(() => {
           if (disposed) return;
           savedLayouts.current[mode.current] = view.toJSON();
-          void api("/layout", "PUT", { version: 2, layouts: savedLayouts.current }).catch(() => {});
+          void api("/layout", "PUT", { version: 3, layouts: savedLayouts.current }).catch(() => {});
         }, 500);
       }),
     ];
@@ -222,7 +226,7 @@ export function App() {
       savedLayouts.current[mode.current] = view.toJSON();
       // Window resize fires before Dockview's ResizeObserver. Size the grid first
       // so pixel widths in the new layout are not scaled from the old viewport.
-      const element = document.querySelector<HTMLElement>(".workspace > div");
+      const element = document.querySelector<HTMLElement>(".workspace > .dock-layout");
       if (element) view.layout(element.clientWidth, element.clientHeight);
       restore(next);
     };
@@ -270,13 +274,13 @@ export function App() {
           </div>
           <button
             className="header-focus"
-            aria-label={maximized ? "Restore workspace" : "Focus active panel"}
-            title={maximized ? "Restore workspace (Esc)" : "Focus active panel (Alt+F)"}
+            aria-label={maximized ? "Restore layout" : "Expand panel"}
+            title={maximized ? "Restore layout (Esc)" : "Expand panel (Alt+F)"}
             disabled={!wb.snapshot}
             onClick={toggleFocus}
           >
             {maximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-            <span>{maximized ? "Restore" : "Focus"}</span>
+            <span>{maximized ? "Restore layout" : "Expand panel"}</span>
           </button>
           <button
             className="icon"
@@ -355,15 +359,27 @@ export function App() {
             <span className="nav-tooltip">Keyboard shortcuts</span>
           </button>
         </nav>
-        <main className={`workspace layout-${layoutMode}`} aria-label="Scientific workspace">
+        <main
+          className={`workspace layout-${layoutMode}`}
+          data-expanded={maximized}
+          aria-label="Scientific workspace"
+        >
+          {layoutMode === "narrow" && wb.snapshot && (
+            <div className="mobile-panel-heading">
+              <strong>{panels.find((panel) => panel.id === active)?.title}</strong>
+              <span>Workspace</span>
+            </div>
+          )}
           {wb.snapshot ? (
-            <DockviewReact
-              components={components}
-              onReady={ready}
-              theme={themeLight}
-              disableFloatingGroups
-              getTabContextMenuItems={() => ["maximize"]}
-            />
+            <div className="dock-layout">
+              <DockviewReact
+                components={components}
+                onReady={ready}
+                theme={workspaceTheme}
+                disableFloatingGroups
+                getTabContextMenuItems={() => ["maximize"]}
+              />
+            </div>
           ) : (
             <div className="workspace-loading">
               <FlaskConical size={34} strokeWidth={1.3} />
@@ -421,8 +437,8 @@ export function App() {
           <div className="help-section">
             <h3>Keep your work in view</h3>
             <p>
-              Use the left rail to open any panel. Focus expands the active panel; Escape brings the
-              workspace back.
+              Use the left rail to open any panel. Expand panel gives it the full workspace; Escape
+              brings the workspace back.
             </p>
           </div>
           <div className="help-section">
@@ -444,11 +460,11 @@ export function App() {
               <dd>
                 <kbd>Alt</kbd> <kbd>1–8</kbd>
               </dd>
-              <dt>Focus active panel</dt>
+              <dt>Expand active panel</dt>
               <dd>
                 <kbd>Alt</kbd> <kbd>F</kbd>
               </dd>
-              <dt>Restore workspace</dt>
+              <dt>Restore layout</dt>
               <dd>
                 <kbd>Esc</kbd>
               </dd>

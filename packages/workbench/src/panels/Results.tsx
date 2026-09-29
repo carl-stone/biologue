@@ -31,7 +31,9 @@ function SourceDetails({ execution }: { execution: ExecutionSummary }) {
       <span>
         {execution.document?.path ||
           (execution.purpose === "inspection" ? "Object inspection" : "Console")}{" "}
-        · {execution.actor === "agent" ? "Biologue" : "You"} · {timeLabel(execution.createdAt)}
+        ·{" "}
+        {execution.actor === "agent" ? "Biologue" : execution.actor === "human" ? "You" : "System"}{" "}
+        · {timeLabel(execution.createdAt)}
       </span>
       <button className="text-button" onClick={() => revealExecution(execution)}>
         View source <ArrowUpRight size={13} />
@@ -142,10 +144,19 @@ export function Plots() {
           </div>
           {execution && <SourceDetails execution={execution} />}
         </>
+      ) : page.loading ? (
+        <Empty icon={<Spinner />}>
+          <strong>Loading figures…</strong>
+        </Empty>
+      ) : page.error ? (
+        <Empty icon={<Image size={28} />}>
+          <strong>Couldn’t load figures</strong>
+          <p>{page.error}</p>
+          <button onClick={page.retry}>Try again</button>
+        </Empty>
       ) : (
         <Empty icon={<Image size={30} strokeWidth={1.4} />}>
-          <strong>{page.error ? "Could not load figures" : "Room for your results"}</strong>
-          {page.error && <p>{page.error}</p>}
+          <strong>Room for your results</strong>
           <p>
             Figures from your {languageName(language)} session appear here with the code that
             produced them.
@@ -190,7 +201,10 @@ export function Environment() {
   const pending =
     action.busy ||
     records.some(
-      (item) => item.inspection === "environment" && ["running", "queued"].includes(item.status),
+      (item) =>
+        item.inspection === "environment" &&
+        !item.inspectionOptions?.names &&
+        ["running", "queued"].includes(item.status),
     );
   const stale =
     latest &&
@@ -200,7 +214,9 @@ export function Environment() {
         item.createdAt > latest!.createdAt &&
         !["cancelled", "queued"].includes(item.status),
     );
-  const lastInspection = records.filter((item) => item.inspection === "environment").at(-1);
+  const lastInspection = records
+    .filter((item) => item.inspection === "environment" && !item.inspectionOptions?.names)
+    .at(-1);
   const filtered = rows.filter((row) =>
     `${row.name} ${row.type}`.toLowerCase().includes(query.toLowerCase()),
   );
@@ -210,7 +226,9 @@ export function Environment() {
       <div className="pane-toolbar">
         <span className="section-label">
           {languageName(language)} objects
-          {latest && <span className="count-badge">{rows.length}</span>}
+          {result.data?.kind === "environment" && (
+            <span className="count-badge">{rows.length}</span>
+          )}
         </span>
         <span className="spacer" />
         <button
@@ -222,36 +240,42 @@ export function Environment() {
           {pending ? "Inspecting…" : "Inspect"}
         </button>
       </div>
-      {result.error && <div className="inline-error">{result.error}</div>}
       {(offset > 0 || next !== undefined) && (
-        <div className="pane-toolbar">
+        <div className="pane-toolbar object-pagination">
           <button
             className="text-button"
             disabled={pending || !connected || offset === 0}
+            aria-label="Previous objects"
             onClick={() => void inspect(Math.max(0, offset - 100))}
           >
-            <ChevronLeft size={14} /> Previous objects
+            <ChevronLeft size={14} />
+            <span>Previous</span>
           </button>
           <span className="spacer" />
-          <span>
-            Objects {offset + 1}–{offset + rows.length}
+          <span className="object-range">
+            {rows.length
+              ? `Objects ${offset + 1}–${offset + rows.length}`
+              : "No objects on this page"}
           </span>
           <span className="spacer" />
           <button
             className="text-button"
             disabled={pending || !connected || next === undefined}
+            aria-label="Next objects"
             onClick={() => next !== undefined && void inspect(next)}
           >
-            Next objects <ChevronRight size={14} />
+            <span>Next</span>
+            <ChevronRight size={14} />
           </button>
         </div>
       )}
-      {lastInspection?.status === "failed" && (
-        <div className="inline-error" role="status">
-          <strong>Inspection could not finish.</strong>
-          <p>{lastInspection.error || "See the execution record in Console for details."}</p>
-        </div>
-      )}
+      {lastInspection &&
+        ["failed", "interrupted", "completion_unknown"].includes(lastInspection.status) && (
+          <div className="inline-error" role="status">
+            <strong>Inspection could not finish.</strong>
+            <p>{lastInspection.error || "See the execution record in Console for details."}</p>
+          </div>
+        )}
       {latest && (
         <div className={`inspection-state ${stale ? "stale" : ""}`} role="status">
           {pending
@@ -277,7 +301,17 @@ export function Environment() {
           )}
         </div>
       )}
-      {rows.length ? (
+      {latest && result.loading && !result.data ? (
+        <Empty icon={<Spinner />}>
+          <strong>Loading objects…</strong>
+        </Empty>
+      ) : result.error ? (
+        <Empty>
+          <strong>Couldn’t load objects</strong>
+          <p>{result.error}</p>
+          <button onClick={result.retry}>Try again</button>
+        </Empty>
+      ) : rows.length ? (
         <div className="object-list">
           {!filtered.length && (
             <Empty>
@@ -406,6 +440,16 @@ export function Data() {
               ? "Waiting for the shared session."
               : "Reading up to 100 rows from the shared session."}
           </p>
+        </Empty>
+      ) : (result.loading || olderSource.loading) && !table ? (
+        <Empty icon={<Spinner />}>
+          <strong>Loading table…</strong>
+        </Empty>
+      ) : result.error || olderSource.error ? (
+        <Empty icon={<Table2 size={28} />}>
+          <strong>Couldn’t load this table</strong>
+          <p>{result.error || olderSource.error}</p>
+          <button onClick={result.error ? result.retry : olderSource.retry}>Try again</button>
         </Empty>
       ) : table && record ? (
         <>

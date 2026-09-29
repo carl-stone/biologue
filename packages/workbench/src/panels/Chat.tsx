@@ -117,10 +117,11 @@ export function Chat() {
   }
   return (
     <div className="chat pane">
-      <div className="pane-toolbar">
+      <div className="pane-toolbar conversation-toolbar">
         <select
           aria-label="Conversation"
           value={conversation}
+          title={snapshot.conversations.find((item) => item.id === conversation)?.title}
           onChange={(event) => setConversation(event.target.value)}
         >
           {snapshot!.conversations.map((item) => (
@@ -291,7 +292,7 @@ export function Chat() {
               className="text-button setup-link"
               onClick={() => wb.showPanel("controls")}
             >
-              Connect a model <ArrowUpRight size={13} />
+              Model setup <ArrowUpRight size={13} />
             </button>
           ) : (
             <span>{active ? "Send context to this run" : `${modifier}+Enter to send`}</span>
@@ -303,7 +304,7 @@ export function Chat() {
               !connected
                 ? "Reconnect to send"
                 : !snapshot!.agent.enabled
-                  ? "Connect a model in Agent to send"
+                  ? "Set up a model in the Agent panel to send"
                   : "Send message"
             }
             disabled={

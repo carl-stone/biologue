@@ -7,7 +7,7 @@ Verified in `codex-universal` on September 29, 2026, using Node 22.22.2 and Pi 0
 | TypeScript check and production frontend/server build | Passed                                      |
 | Core service and AgentSession tests                   | 82 passed                                   |
 | Live Jupyter integration with `CARL_TEST_R=1`         | Passed with Python and Ark/R                |
-| Chromium workbench and UI regressions                 | 17 passed, including automated axe checks   |
+| Chromium workbench and UI regressions                 | 21 scenarios passed, including axe checks   |
 | Tauri `cargo check`                                   | Passed September 26; Rust code unchanged    |
 | npm dependency audit                                  | No vulnerabilities reported at installation |
 
@@ -85,12 +85,17 @@ without duplicate messages when delivery completes. These state tests use an exp
 and API fixture; the main workspace workflow uses the real server and Python
 kernel.
 Environment paging, targeted agent inspections preserving the inventory view,
-and the “Completion unknown” execution label also have UI coverage.
+and the “Completion unknown” execution label also have UI coverage. The UI polish
+adds loading/error/retry coverage for tables, figures, and objects without kernel
+execution, plus approval failure recovery inside the code-review dialog. The full
+20-test suite passed; both permission tests passed again after adding the 21st
+scenario for dialog failure recovery.
 
 Automated axe checks scan the initial workspace, research context, agent, data,
 and help dialog against WCAG 2 A/AA and 2.1 AA rules. They do not substitute for
 screen-reader or native webview testing. Browser layout inspection also covers
-1440×960, 1000×740, 900×650, and 640×760 windows.
+1440×960, 1024×768, 760×650, 640×760, and 390×844 windows. See the
+[UI review](ui-review.md) for visual coverage and reproduction commands.
 
 The AgentSession tests use the production PiAdapter and `createAgentSession`,
 with an injected scripted provider and no external model calls. They cover:

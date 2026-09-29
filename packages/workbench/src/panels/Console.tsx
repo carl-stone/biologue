@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   ChevronRight,
   Image,
+  Play,
   Square,
   Table2,
   Terminal,
@@ -136,7 +137,11 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
         </summary>
         <div className="code-record">
           <div className="code-record-heading">
-            <span>Exact code executed</span>
+            <span>
+              {["queued", "cancelled", "not_executed"].includes(item.status)
+                ? "Proposed code · not run"
+                : "Recorded code"}
+            </span>
             {source.data && <CopyButton text={source.data.code} />}
           </div>
           <pre>{source.data?.code ?? source.error ?? "Loading exact source…"}</pre>
@@ -222,7 +227,7 @@ export function Console() {
   return (
     <div className="pane console">
       <div className="pane-toolbar console-toolbar">
-        <span className={`status-dot ${pending.length ? "waiting" : "online"}`} />
+        <span className={`status-dot ${pending.length ? "waiting" : connected ? "online" : ""}`} />
         <span>{languageName(language)}</span>
         <span className="small-note">
           {pending.length
@@ -238,7 +243,7 @@ export function Console() {
             checked={inspections}
             onChange={(event) => setInspections(event.target.checked)}
           />
-          Inspections
+          Show inspections
         </label>
       </div>
       <div
@@ -307,7 +312,8 @@ export function Console() {
           aria-label="Run console code"
           title={`Run in ${languageName(language)} (${modifier}+Enter)`}
         >
-          {action.busy ? <Spinner /> : <ArrowUpRight size={17} />}
+          {action.busy ? <Spinner /> : <Play size={13} fill="currentColor" />}
+          <span>Run</span>
         </button>
       </form>
     </div>

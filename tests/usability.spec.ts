@@ -3,6 +3,68 @@ import AxeBuilder from "@axe-core/playwright";
 import type { Execution, Output } from "../packages/protocol/src/index.ts";
 import { fixture, initialSnapshot } from "./ui-fixture.ts";
 
+for (const panel of ["Data", "Environment", "Plots"] as const) {
+  test(`${panel} distinguishes loading from failure and retries without running code`, async ({
+    page,
+  }) => {
+    const record: Execution = {
+      id: "saved-inspection",
+      language: "python",
+      actor: "human",
+      purpose: "inspection",
+      inspection: panel === "Data" ? "table" : "environment",
+      status: "succeeded",
+      code: "inspect",
+      codeHash: "test",
+      codePreview: "inspect",
+      createdAt: "2026-09-29T10:00:00Z",
+    };
+    const ui = await fixture(page, { executions: panel === "Plots" ? [] : [record] });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let fail = true;
+    ui.handle(async (request) => {
+      if (request.path !== (panel === "Plots" ? "/outputs" : `/executions/${record.id}/result`))
+        return;
+      await pending;
+      if (fail) return { status: 503, body: { error: "Stored result temporarily unavailable." } };
+      return {
+        body:
+          panel === "Data"
+            ? { kind: "table", columns: ["measurement"], rows: [[2.4]] }
+            : panel === "Environment"
+              ? {
+                  kind: "environment",
+                  rows: [{ name: "measurement", type: "float", preview: "2.4" }],
+                }
+              : { items: [] },
+      };
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: `Open ${panel}`, exact: true }).click();
+    const pane = page.locator(
+      panel === "Data" ? ".data-pane" : panel === "Plots" ? ".plots" : ".environment",
+    );
+    await expect(pane.getByText(/^Loading /)).toBeVisible();
+    release();
+    await expect(pane.getByText(/^Couldn’t load/)).toBeVisible();
+    await expect(pane.getByText("Stored result temporarily unavailable.")).toBeVisible();
+    fail = false;
+    await pane.getByRole("button", { name: "Try again", exact: true }).click();
+    await expect(
+      pane.getByText(panel === "Plots" ? "Room for your results" : "measurement", { exact: true }),
+    ).toBeVisible();
+    await expect(pane.getByText(/^Couldn’t load/)).toHaveCount(0);
+    expect(
+      ui.requests.filter(
+        (request) => request.path === "/inspect" || request.path === "/executions",
+      ),
+    ).toHaveLength(0);
+  });
+}
+
 test("environment pages stay distinct from targeted agent inspections and unknown completion is visible", async ({
   page,
 }) => {
@@ -119,12 +181,12 @@ test("compact layouts, focus, and keyboard navigation retain local work", async 
   );
   await page.keyboard.press("Alt+2");
   await page.keyboard.press("Alt+f");
-  await expect(page.getByRole("button", { name: "Restore workspace" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restore layout" })).toBeVisible();
   await expect
     .poll(() => page.locator(".editor-pane").evaluate((el) => el.clientWidth))
     .toBeGreaterThan(850);
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Focus active panel" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Expand panel" })).toBeVisible();
   await page.setViewportSize({ width: 640, height: 760 });
   await expect(page.locator(".layout-narrow")).toBeVisible();
   await page.keyboard.press("Alt+1");
@@ -347,8 +409,21 @@ test("permission review shows exact code, prevents duplicate decisions, and supp
   await page.goto("/");
   await page.getByRole("button", { name: /1 request awaiting review/ }).click();
   await expect(page.locator(".permission-card pre")).toHaveText(request.code);
-  await page.getByRole("button", { name: "Allow once", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Decline", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Expand proposed code", exact: true }).click();
+  await expect(page.getByRole("dialog").locator("pre")).toHaveText(request.code);
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("button", { name: "Expand proposed code", exact: true }),
+  ).toBeFocused();
+  await page.getByRole("button", { name: "Expand proposed code", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Run once", exact: true }).click();
+  await expect(
+    page.getByRole("dialog").getByRole("button", { name: "Decline", exact: true }),
+  ).toBeDisabled();
   expect(ui.requests.filter((req) => req.path === "/permissions/permission-1")).toHaveLength(1);
   expect(ui.requests.find((req) => req.path === "/permissions/permission-1")?.body).toEqual({
     allow: true,
@@ -361,6 +436,45 @@ test("permission review shows exact code, prevents duplicate decisions, and supp
   expect(ui.requests.find((req) => req.path === "/permissions/permission-2")?.body).toEqual({
     allow: false,
   });
+});
+
+test("a failed approval stays visible in the code review dialog and can be retried", async ({
+  page,
+}) => {
+  const ui = await fixture(page, {
+    agent: { enabled: true, provider: "test", model: "UI fixture" },
+    permissions: [
+      {
+        id: "permission-retry",
+        runId: "run-1",
+        tool: "execute_code",
+        language: "python",
+        description: "Summarize the measurements.",
+        code: "measurements.describe()",
+        createdAt: "2026-09-29T10:00:00Z",
+      },
+    ],
+  });
+  let fail = true;
+  ui.handle(async (request) => {
+    if (request.path !== "/permissions/permission-retry") return;
+    if (fail) return { status: 503, body: { error: "Couldn’t save this decision. Try again." } };
+    await ui.emit({ type: "permission-resolved", id: "permission-retry" });
+    return { body: { ok: true } };
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Expand proposed code", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Run once", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Couldn’t save this decision. Try again.");
+  await expect(dialog.getByRole("button", { name: "Run once", exact: true })).toBeEnabled();
+  fail = false;
+  await dialog.getByRole("button", { name: "Run once", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    ui.requests.filter((request) => request.path === "/permissions/permission-retry"),
+  ).toHaveLength(2);
 });
 
 test("new messages do not pull a scientist away from earlier reading", async ({ page }) => {
@@ -424,7 +538,7 @@ test("an older figure opens its own artifact and exact source", async ({ page })
     "print('source 1')",
   );
   await page.getByRole("button", { name: "Expand figure" }).click();
-  await expect(page.getByRole("button", { name: "Restore workspace" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restore layout" })).toBeVisible();
 });
 
 test("main panels and help dialog meet automated accessibility checks", async ({ page }) => {

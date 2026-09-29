@@ -486,11 +486,19 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
 
 /** Refresh at most every 100ms while streaming, with one request in flight per view. */
 export function useResource<T>(path: string | null, revision: string | number = 0) {
-  const [state, setState] = useState<{ path: string | null; data?: T; error?: string }>({
+  const [state, setState] = useState<{
+    path: string | null;
+    data?: T;
+    error?: string;
+    loading: boolean;
+  }>({
     path: null,
+    loading: false,
   });
   const refresh = useRef<() => void>(() => {});
+  const observedRevision = useRef(revision);
   useEffect(() => {
+    observedRevision.current = revision;
     if (!path) return;
     let cancelled = false,
       running = false,
@@ -501,12 +509,21 @@ export function useResource<T>(path: string | null, revision: string | number = 
       if (running || cancelled || !dirty) return;
       running = true;
       dirty = false;
+      setState((current) => ({
+        path,
+        data: current.path === path ? current.data : undefined,
+        loading: true,
+      }));
       try {
         const data = await api<T>(path);
-        if (!cancelled) setState({ path, data });
+        if (!cancelled) setState({ path, data, loading: false });
       } catch (error) {
         if (!cancelled)
-          setState({ path, error: error instanceof Error ? error.message : String(error) });
+          setState({
+            path,
+            error: error instanceof Error ? error.message : String(error),
+            loading: false,
+          });
       } finally {
         running = false;
         if (dirty && !cancelled) timer = setTimeout(() => void run(), 100);
@@ -524,7 +541,13 @@ export function useResource<T>(path: string | null, revision: string | number = 
     };
   }, [path]);
   useEffect(() => {
-    refresh.current();
+    if (observedRevision.current !== revision) {
+      observedRevision.current = revision;
+      refresh.current();
+    }
   }, [revision]);
-  return state.path === path ? state : { path };
+  return {
+    ...(state.path === path ? state : { path, loading: !!path }),
+    retry: () => refresh.current(),
+  };
 }

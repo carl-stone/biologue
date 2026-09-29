@@ -31,11 +31,11 @@ export function ResearchContext() {
   return (
     <div className="pane research">
       <div className="research-intro">
-        <span className="eyebrow">The things only you know</span>
+        <span className="eyebrow">Shared understanding</span>
         <h2>Research context</h2>
         <p>
-          Your knowledge of the system shapes the work. Saved notes carry across conversations and
-          inform new agent runs.
+          Keep the question, observations, and corrections together. Saved notes inform new
+          conversations and the next time you ask Biologue to work.
         </p>
         <details className="context-guide">
           <summary>What belongs here?</summary>
