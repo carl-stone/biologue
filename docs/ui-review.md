@@ -6,6 +6,9 @@ scripted conversation, approval, conflict, and connection states. No model calls
 The subsequent [five-round hands-on product review](product-review-rounds.md)
 adds exploratory and adversarial workflows, before/after findings, and regression
 coverage for the changes below.
+The [interaction-principles review](design/interaction-principles.md) subsequently
+moves approvals and requested changes into their conversation, retains decision
+history, and keeps execution from taking focus away from the editor.
 
 ## Changes
 

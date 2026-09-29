@@ -67,6 +67,27 @@ export function Editor() {
   const active = snapshot?.executions.find(
     (item) => item.language === fileLanguage && item.status === "running",
   );
+  const lastRun = [...snapshot.executions]
+    .reverse()
+    .find(
+      (execution) =>
+        execution.actor === "human" &&
+        execution.document?.path === file &&
+        execution.purpose === "analysis",
+    );
+  const runLabel =
+    lastRun &&
+    {
+      queued: "Queued",
+      running: "Running",
+      succeeded: "Finished",
+      failed: "Failed",
+      cancelled: "Stopped",
+      interrupted: "Stopped",
+      abandoned: "Session ended",
+      completion_unknown: "Check output",
+      not_executed: "Not run",
+    }[lastRun.status];
   const action = useAction();
   const createAction = useAction();
   const [creating, setCreating] = useState(false);
@@ -148,7 +169,7 @@ export function Editor() {
         ...(selection ? { selection } : {}),
       },
     });
-    wb.revealExecution(execution, false);
+    wb.revealExecution(execution, { expand: false, activate: false });
   }
   // Streaming and kernel events should not reconfigure the editor on every event.
   // Stable extensions read the current document/actions through this ref.
@@ -484,6 +505,14 @@ export function Editor() {
           >
             <Square size={11} />
             Interrupt
+          </button>
+        ) : lastRun ? (
+          <button
+            className="text-button"
+            aria-label="View output for latest run"
+            onClick={() => wb.revealExecution(lastRun)}
+          >
+            {runLabel} · View output
           </button>
         ) : (
           <span className="shortcut-hint">

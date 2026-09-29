@@ -37,6 +37,7 @@ export const initialSnapshot: Snapshot = {
   researchContext: { text: "", version: 0, updatedAt: "2026-09-26T09:00:00Z" },
   runs: [],
   permissions: [],
+  permissionHistory: [],
   sessions: [],
   agent: { enabled: false },
 };
@@ -57,6 +58,12 @@ export async function fixture(
   const { messages = [], ...snapshotOverrides } = overrides;
   let history = structuredClone(messages);
   const state = structuredClone({ ...initialSnapshot, ...snapshotOverrides });
+  const permissionRecords = new Map(
+    [...state.permissions, ...(state.permissionHistory ?? [])].map((request) => [
+      request.id,
+      request,
+    ]),
+  );
   const originals = state.executions as (Execution & { outputs?: Output[] })[];
   const rawOutputs = originals.flatMap((item) => item.outputs ?? []);
   state.executions = originals.map(({ code: _code, outputs: _outputs, ...summary }) => summary);
@@ -109,6 +116,26 @@ export async function fixture(
       });
   }, state);
   const emit = async (event: AppEvent) => {
+    if (event.type === "permission") {
+      state.permissions = [
+        ...state.permissions.filter((item) => item.id !== event.request.id),
+        event.request,
+      ];
+      permissionRecords.set(event.request.id, event.request);
+    }
+    if (event.type === "permission-resolved") {
+      state.permissions = state.permissions.filter((item) => item.id !== event.id);
+      if (event.resolution) {
+        state.permissionHistory = [
+          ...(state.permissionHistory ?? []).filter((item) => item.id !== event.id),
+          event.resolution,
+        ];
+        permissionRecords.set(event.id, {
+          ...permissionRecords.get(event.id)!,
+          ...event.resolution,
+        });
+      }
+    }
     if (event.type === "message")
       history = [...history.filter((item) => item.id !== event.message.id), event.message];
     if (event.type === "document")
@@ -146,6 +173,8 @@ export async function fixture(
     }
     let result: unknown = { ok: true };
     if (request.path === "/snapshot") result = state;
+    else if (request.path.startsWith("/permissions/") && request.method === "GET")
+      result = permissionRecords.get(request.path.split("/")[2]);
     else if (/^\/conversations\/[^/]+\/messages$/.test(request.path)) {
       const id = request.path.split("/")[2];
       const before = url.searchParams.get("before");

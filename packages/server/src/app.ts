@@ -114,6 +114,7 @@ export async function createApp(options: AppOptions) {
       researchContext: context.get(),
       runs: store.list<AgentRun>("run", 100),
       permissions: permissions.list(),
+      permissionHistory: permissions.history(),
       sessions: kernel instanceof JupyterKernels ? kernel.sessions() : [],
       agent: pi.status(),
       layout: store.get("settings", "layout"),
@@ -334,10 +335,24 @@ export async function createApp(options: AppOptions) {
     );
     return { ok: true };
   });
+  app.get("/api/permissions/:id", async (request, reply) => {
+    const id = z.object({ id: z.string().uuid() }).parse(request.params).id;
+    const record = permissions.get(id);
+    return record ?? reply.code(404).send({ error: "This request could not be found." });
+  });
   app.post("/api/permissions/:id", async (request, reply) => {
     const id = z.object({ id: z.string().uuid() }).parse(request.params).id;
-    const { allow } = z.object({ allow: z.boolean() }).parse(request.body);
-    return permissions.decide(id, allow)
+    const { allow, feedback } = z
+      .object({
+        allow: z.boolean(),
+        feedback: z.string().trim().min(1).max(5000).optional(),
+      })
+      .refine(
+        (value) => !value.allow || !value.feedback,
+        "Feedback accompanies a declined request.",
+      )
+      .parse(request.body);
+    return permissions.decide(id, allow, feedback)
       ? { ok: true }
       : reply.code(409).send({ error: "This request is no longer pending." });
   });

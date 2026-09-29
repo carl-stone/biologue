@@ -109,6 +109,10 @@ test("editor undo survives file switches and layout changes, and run shortcuts k
     code: "print(x)",
     document: { path: "analysis.py", selection: { from: 6, to: 14 } },
   });
+  await expect(editor).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: "View output for latest run", exact: true }),
+  ).toHaveText("Queued · View output");
   await page.getByRole("button", { name: "Open Editor", exact: true }).click();
   await expect(editor).toHaveText(source.replaceAll("\n", ""));
   await expect(page.getByRole("button", { name: "Run selection", exact: true })).toBeEnabled();

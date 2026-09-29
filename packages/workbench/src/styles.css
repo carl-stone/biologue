@@ -758,6 +758,8 @@ kbd {
   margin-top: 7px;
 }
 .composer-bottom > span {
+  min-width: 0;
+  flex: 1;
   font-size: 11px;
   color: var(--muted);
 }
@@ -766,6 +768,7 @@ kbd {
   padding-left: 0;
 }
 .send {
+  flex-shrink: 0;
   padding: 4px 9px;
   min-width: 32px;
   min-height: 28px;
@@ -961,7 +964,12 @@ kbd {
   z-index: 2;
 }
 .chat .jump-latest {
-  bottom: 12px;
+  position: static;
+  align-self: center;
+  flex-shrink: 0;
+  transform: none;
+  margin: 3px 0 5px;
+  box-shadow: none;
 }
 .editor-toolbar {
   padding-right: 9px;
@@ -1765,19 +1773,6 @@ kbd {
   max-width: 760px;
   margin-inline: auto;
 }
-.has-permissions .agent-heading {
-  padding: 15px 17px;
-}
-.has-permissions .agent-heading h2,
-.has-permissions .agent-heading > .eyebrow,
-.has-permissions .agent-heading > p {
-  display: none;
-}
-.has-permissions .model-status::before {
-  content: "Model";
-  color: var(--muted);
-  margin-right: auto;
-}
 .control-section {
   padding: 16px;
   border-bottom: 1px solid var(--border);
@@ -1834,11 +1829,6 @@ kbd {
   align-items: center;
   gap: 6px;
 }
-.permission-section {
-  padding: 16px 12px 4px;
-  background: #fbf8ef;
-  border-bottom: 1px solid #e6dcc6;
-}
 .section-heading {
   display: flex;
   align-items: center;
@@ -1853,10 +1843,6 @@ kbd {
   border: 1px solid #cbb27d;
   border-radius: 4px;
   background: var(--paper);
-}
-.permission-card .eyebrow {
-  color: #81642f;
-  font-size: 9px;
 }
 .permission-card h3 {
   margin: 8px 0;
@@ -1885,13 +1871,11 @@ kbd {
 .permission-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 9px;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 12px;
-  position: sticky;
-  bottom: -1px;
   padding: 10px 0 2px;
   background: var(--paper);
-  box-shadow: 0 -8px 12px var(--paper);
 }
 .run-row {
   display: flex;
@@ -2172,4 +2156,89 @@ kbd {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Decisions belong to the conversation; settings remain a separate destination. */
+.conversation-request {
+  width: 100%;
+  max-width: 720px;
+  margin: 18px auto;
+  scroll-margin: 16px;
+  outline-offset: 3px;
+}
+.permission-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #77571d;
+  font-size: 11px;
+  font-weight: 500;
+}
+.permission-card .proposal-target {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.proposal-target code {
+  overflow-wrap: anywhere;
+}
+.proposal-contents {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.permission-actions button {
+  font-size: 12px;
+}
+.permission-actions .request-changes {
+  padding-left: 0;
+}
+.permission-feedback {
+  margin-top: 14px;
+}
+.permission-feedback label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.permission-feedback textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 80px;
+  font: inherit;
+  font-size: 13px;
+}
+.permission-feedback .small-note {
+  margin: 5px 0 0;
+  font-size: 11px;
+}
+.permission-decision {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.permission-decision summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.permission-decision summary > span {
+  color: var(--text);
+  font-weight: 500;
+}
+.permission-decision p {
+  line-height: 1.6;
+}
+.permission-decision blockquote {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text);
+}
+.permission-decision blockquote p {
+  white-space: pre-wrap;
+}
+.permission-decision .small-note {
+  font-size: 11px;
 }

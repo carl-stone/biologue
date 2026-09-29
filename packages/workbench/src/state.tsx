@@ -17,6 +17,7 @@ import type {
   Snapshot,
   Page,
   Message,
+  PermissionRequest,
 } from "@carl/protocol";
 import { ConversationHistory, type ConversationHistoryState } from "./conversation-history.ts";
 import { DocumentSync, type PendingEdit } from "./document-sync.ts";
@@ -72,7 +73,13 @@ export function applyEvent(state: Snapshot, event: AppEvent): Snapshot {
     case "permission":
       return { ...state, permissions: upsert(state.permissions, event.request) };
     case "permission-resolved":
-      return { ...state, permissions: state.permissions.filter((item) => item.id !== event.id) };
+      return {
+        ...state,
+        permissions: state.permissions.filter((item) => item.id !== event.id),
+        permissionHistory: event.resolution
+          ? upsert(state.permissionHistory ?? [], event.resolution).slice(-100)
+          : state.permissionHistory,
+      };
     case "context":
       return { ...state, researchContext: event.context };
     case "conversation":
@@ -127,7 +134,12 @@ interface WorkbenchState {
   showPanel: (id: PanelId, maximize?: boolean) => void;
   executionTarget: string | null;
   expandExecution: boolean;
-  revealExecution: (execution: ExecutionSummary, expand?: boolean) => void;
+  revealExecution: (
+    execution: ExecutionSummary,
+    options?: { expand?: boolean; activate?: boolean },
+  ) => void;
+  permissionTarget: { id: string } | null;
+  revealPermission: (request: PermissionRequest) => void;
   artifactTarget: ArtifactTarget | null;
   plotViews: Record<Language, PlotView>;
   setPlotView: (language: Language, view: Partial<PlotView>) => void;
@@ -178,6 +190,19 @@ class WorkbenchStore {
       panelRequest: null,
       executionTarget: null,
       expandExecution: false,
+      permissionTarget: null,
+      revealPermission: (request) => {
+        const conversation =
+          request.conversationId ??
+          this.state.snapshot?.runs.find((run) => run.id === request.runId)?.conversationId;
+        if (!conversation)
+          return this.error(new Error("The conversation for this request could not be found."));
+        if (conversation !== this.state.conversation) this.state.setConversation(conversation);
+        this.update({
+          permissionTarget: { id: request.id },
+          panelRequest: { id: "chat", maximize: false },
+        });
+      },
       artifactTarget: null,
       plotViews: {
         python: { selectedSlot: null, dismissedTarget: null },
@@ -257,7 +282,7 @@ class WorkbenchStore {
           },
         });
       },
-      revealExecution: (execution, expand = true) => {
+      revealExecution: (execution, { expand = true, activate = true } = {}) => {
         const current = this.state.snapshot!;
         const { code: _code, ...summary } = execution as Execution;
         this.update({
@@ -272,7 +297,7 @@ class WorkbenchStore {
                   a.createdAt.localeCompare(b.createdAt),
                 ),
               },
-          panelRequest: { id: "console", maximize: false },
+          ...(activate ? { panelRequest: { id: "console" as const, maximize: false } } : {}),
         });
       },
       revealArtifact: (execution, output, panel) =>

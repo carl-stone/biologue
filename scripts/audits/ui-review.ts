@@ -62,9 +62,9 @@ try {
     await empty.getByRole("button", { name: "Done arranging panels", exact: true }).click();
   }
   await empty.setViewportSize({ width: 1440, height: 960 });
-  for (const panel of ["Research context", "Agent", "Data"]) {
+  for (const panel of ["Research context", "Agent settings", "Data"]) {
     await open(empty, panel);
-    if (panel === "Agent") await empty.locator(".model-setup summary").click();
+    if (panel === "Agent settings") await empty.locator(".model-setup summary").click();
     await capture(empty, `02-empty-${panel.replaceAll(" ", "-")}`);
   }
   await empty.getByRole("button", { name: "Workspace help", exact: true }).click();
@@ -180,11 +180,13 @@ try {
   });
   await page.goto("http://127.0.0.1:5174");
   await expect(page.getByText("First, check the experimental design.")).toBeVisible();
-  await open(page, "Agent");
+  await open(page, "Agent settings");
+  await open(page, "Conversation");
   await capture(page, "08-permission-and-conversation");
   await page.getByRole("button", { name: "Expand proposed code" }).click();
   await capture(page, "08-expanded-code-review");
   await page.keyboard.press("Escape");
+  await open(page, "Agent settings");
   await page.getByRole("button", { name: "Expand panel" }).click();
   await capture(page, "09-agent-focused");
   await page.keyboard.press("Escape");
@@ -208,7 +210,7 @@ try {
       "Conversation",
       "Editor",
       "Research context",
-      "Agent",
+      "Agent settings",
       "Environment",
       "Data",
       "Console",
@@ -266,7 +268,7 @@ try {
   await page.getByRole("button", { name: "Expand panel", exact: true }).click();
   await page.locator("#execution-not-run").scrollIntoViewIfNeeded();
   await capture(page, "16-code-not-run");
-  await open(page, "Agent");
+  await open(page, "Conversation");
   ui.handle(async (request) =>
     request.path === "/permissions/review-permission"
       ? { status: 503, body: { error: "Couldn’t save this decision. Try again." } }

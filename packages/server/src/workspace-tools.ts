@@ -157,12 +157,18 @@ export function workspaceTools(
             expectedVersion: z.number().int().min(1),
           })
           .parse(raw);
+        const current = documents.open(projectPath(args.path));
+        if (current.version !== args.expectedVersion)
+          throw new Error("Document changed. Read it again before proposing an edit.");
         await permissions.request(
           {
             runId: run.id,
+            conversationId: run.conversationId,
             toolCallId,
             tool: "edit_document",
-            description: `Replace the buffer for ${args.path} at version ${args.expectedVersion}.`,
+            description: "Update the shared working document. Save writes it to the project file.",
+            document: { path: current.path, version: current.version },
+            before: current.content,
             code: args.content,
           },
           signal,
@@ -273,6 +279,8 @@ export function workspaceTools(
             runId: run.id,
             toolCallId,
             tool: "execute_code",
+            conversationId: run.conversationId,
+            document: args.document,
             description: args.reason,
             code: args.code,
             language: args.language,

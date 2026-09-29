@@ -42,7 +42,7 @@ const panels = [
   { id: "plots", title: "Plots", label: "Plots" },
   { id: "data", title: "Data", label: "Data" },
   { id: "context", title: "Research context", label: "Research" },
-  { id: "controls", title: "Agent", label: "Agent" },
+  { id: "controls", title: "Agent settings", label: "Settings" },
 ] as const;
 type LayoutMode = "wide" | "compact" | "narrow";
 type Layouts = Partial<Record<LayoutMode, SerializedDockview>>;
@@ -118,8 +118,10 @@ export function App() {
     "setError",
     "setLanguage",
     "ready",
+    "revealPermission",
+    "conversation",
   );
-  const snapshot = useSnapshot("permissions", "layout", "executions", "project");
+  const snapshot = useSnapshot("permissions", "runs", "layout", "executions", "project");
   const wb = { ...state, snapshot: state.ready ? snapshot : null };
   const layout = useRef<WorkspaceApi | null>(null);
   const savedLayouts = useRef<Layouts>({});
@@ -131,7 +133,14 @@ export function App() {
   const [isArranging, setIsArranging] = useState(false);
   const [help, setHelp] = useState(false);
   const [layoutMode, setLayoutMode] = useState(mode.current);
-  const reviewCount = wb.snapshot?.permissions.length || 0;
+  const reviewRequests = (wb.snapshot?.permissions ?? []).filter(
+    (request) =>
+      active !== "chat" ||
+      (request.conversationId ??
+        snapshot.runs.find((run) => run.id === request.runId)?.conversationId) !==
+        state.conversation,
+  );
+  const reviewCount = reviewRequests.length;
   function updateHeader(group: WorkspaceApi["groups"][number]) {
     const hidden = !arranging.current || mode.current === "narrow";
     if (group.header.hidden === hidden) return;
@@ -285,7 +294,7 @@ export function App() {
             {wb.connected ? "Workspace connected" : "Reconnecting"}
           </span>
           {reviewCount > 0 && (
-            <button className="review-badge" onClick={() => reveal("controls")}>
+            <button className="review-badge" onClick={() => wb.revealPermission(reviewRequests[0])}>
               <ShieldCheck size={14} />
               {reviewCount} {reviewCount === 1 ? "request" : "requests"} awaiting review
             </button>
@@ -367,7 +376,7 @@ export function App() {
               onClick={() => reveal(panel.id)}
             >
               {panel.label}
-              {panel.id === "controls" && reviewCount > 0 && (
+              {panel.id === "chat" && reviewCount > 0 && (
                 <span className="nav-count">{reviewCount}</span>
               )}
             </button>

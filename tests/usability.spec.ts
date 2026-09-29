@@ -465,7 +465,7 @@ test("permission review shows exact code, prevents duplicate decisions, and supp
     return { body: { ok: true } };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: /1 request awaiting review/ }).click();
+  await page.getByRole("button", { name: "Open Conversation", exact: true }).click();
   await expect(page.locator(".permission-card pre")).toHaveText(request.code);
   await page.getByRole("button", { name: "Expand proposed code", exact: true }).click();
   await expect(page.getByRole("dialog").locator("pre")).toHaveText(request.code);
@@ -504,6 +504,7 @@ test("a failed approval stays visible in the code review dialog and can be retri
     permissions: [
       {
         id: "permission-retry",
+        conversationId: "conversation-1",
         runId: "run-1",
         tool: "execute_code",
         language: "python",
@@ -521,7 +522,7 @@ test("a failed approval stays visible in the code review dialog and can be retri
     return { body: { ok: true } };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Open Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Open Conversation", exact: true }).click();
   await page.getByRole("button", { name: "Expand proposed code", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Run once", exact: true }).click();
@@ -615,7 +616,7 @@ test("main panels and help dialog meet automated accessibility checks", async ({
   await fixture(page);
   await page.goto("/");
   await expect(page.locator(".cm-content")).toContainText("Synthetic example");
-  for (const panel of [null, "Research context", "Agent", "Data"] as const) {
+  for (const panel of [null, "Research context", "Agent settings", "Data"] as const) {
     if (panel) await page.getByRole("button", { name: `Open ${panel}`, exact: true }).click();
     const result = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa"])

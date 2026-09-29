@@ -149,13 +149,23 @@ export interface AgentRun {
 export interface PermissionRequest {
   id: string;
   runId: string;
+  conversationId?: string;
   tool: string;
   toolCallId?: string;
   description: string;
   code?: string;
   language?: Language;
+  document?: { path: string; version: number };
+  before?: string;
   createdAt: string;
 }
+export interface PermissionDecision extends PermissionRequest {
+  decision: "allow" | "deny" | "cancelled";
+  resolvedAt: string;
+  feedback?: string;
+}
+/** Exact code and prior contents are fetched only when reviewing a past decision. */
+export type PermissionDecisionSummary = Omit<PermissionDecision, "code" | "before">;
 export interface SessionInfo {
   language: Language;
   sessionId: string;
@@ -172,6 +182,7 @@ export interface Snapshot {
   researchContext: ResearchContext;
   runs: AgentRun[];
   permissions: PermissionRequest[];
+  permissionHistory?: PermissionDecisionSummary[];
   sessions: SessionInfo[];
   agent: { enabled: boolean; provider?: string; model?: string };
   layout?: unknown;
@@ -185,6 +196,11 @@ export type AppEvent =
   | { type: "agent-delta"; runId: string; delta: string }
   | { type: "agent-run"; run: AgentRun }
   | { type: "permission"; request: PermissionRequest }
-  | { type: "permission-resolved"; id: string; error?: string }
+  | {
+      type: "permission-resolved";
+      id: string;
+      resolution?: PermissionDecisionSummary;
+      error?: string;
+    }
   | { type: "context"; context: ResearchContext }
   | { type: "conversation"; conversation: Conversation };

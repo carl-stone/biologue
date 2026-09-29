@@ -12,6 +12,9 @@ The [collaboration view](collaboration-workbench.png) shows the actual interface
 with scripted conversation and permission states. The
 [five-round product review](../../docs/product-review-rounds.md) records the
 subsequent interaction and continuity improvements.
+The [source-informed interaction review](../../docs/design/interaction-principles.md)
+corrects the placement of approvals and feedback, preserves editor focus, and
+explains the design principles behind those choices.
 
 ## Concept design choices
 

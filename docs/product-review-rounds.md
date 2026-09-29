@@ -12,6 +12,12 @@ are recorded locally in `test-results/product-review`.
 See the [implemented collaboration view](../designs/zed-inspired/collaboration-workbench.png)
 and [live Python workspace](../designs/zed-inspired/implemented-workbench.png).
 
+The later [source-informed interaction review](design/interaction-principles.md)
+corrects a gap in this pass: checking individual controls did not establish a
+coherent workflow across panels. Approvals now belong in the conversation, with
+direct correction and retained decisions. The counts below describe this earlier
+five-round pass; the linked review records subsequent verification.
+
 ## Round 1 — Arrival and orientation
 
 Opened the workbench, read help, created a named investigation, authored and saved

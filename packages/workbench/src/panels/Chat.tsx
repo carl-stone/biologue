@@ -2,9 +2,15 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowDown, ArrowUp, ArrowUpRight, NotebookPen, Plus, Square } from "lucide-react";
-import type { Conversation } from "@carl/protocol";
+import type {
+  Conversation,
+  Message,
+  PermissionRequest,
+  PermissionDecisionSummary,
+} from "@carl/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
 import { RunActivity } from "./RunActivity.tsx";
+import { PermissionCard } from "./PermissionCard.tsx";
 import {
   Dialog,
   CopyButton,
@@ -65,10 +71,20 @@ export function Chat() {
     "notify",
     "syncDocuments",
     "chat",
+    "permissionTarget",
+    "revealPermission",
     "loadMessages",
   );
   const { conversation, setConversation, streaming, connected } = wb;
-  const snapshot = useSnapshot("runs", "permissions", "agent", "conversations", "researchContext");
+  const snapshot = useSnapshot(
+    "runs",
+    "permissions",
+    "permissionHistory",
+    "executions",
+    "agent",
+    "conversations",
+    "researchContext",
+  );
   const [drafts, setDrafts] = useProjectDraft<Record<string, string>>("messages", {});
   const text = drafts[conversation] || "";
   const [creating, setCreating] = useState(false);
@@ -84,12 +100,85 @@ export function Chat() {
   const lastResponse = new Map<string, string>();
   for (const message of messages)
     if (message.role === "assistant" && message.runId) lastResponse.set(message.runId, message.id);
-  const reviewing = active && snapshot!.permissions.some((request) => request.runId === active.id);
-  const scroll = useFollowOutput(
-    `${messages.length}:${active && streaming[active.id]}`,
-    conversation,
-    messages.length > 0,
+  const belongsHere = (request: { conversationId?: string; runId: string }) =>
+    (request.conversationId ??
+      snapshot.runs.find((run) => run.id === request.runId)?.conversationId) === conversation;
+  const pendingRequests = snapshot.permissions.filter(belongsHere);
+  const visibleHistory = wb.chat.loaded
+    ? (snapshot.permissionHistory ?? []).filter(
+        (request) =>
+          belongsHere(request) &&
+          (!wb.chat.next || request.createdAt >= (messages[0]?.createdAt ?? "")),
+      )
+    : [];
+  const requests = [...visibleHistory, ...pendingRequests];
+  const reviewing = pendingRequests.length > 0;
+  const timeline: {
+    message?: Message;
+    request?: PermissionRequest | PermissionDecisionSummary;
+    streaming: boolean;
+    at: string;
+  }[] = [
+    ...messages.map((message) => ({
+      message,
+      request: undefined,
+      streaming: false,
+      at: message.createdAt,
+    })),
+    ...requests.map((request) => ({
+      message: undefined,
+      request,
+      streaming: false,
+      at: request.createdAt,
+    })),
+  ];
+  if (active && streaming[active.id])
+    timeline.push({
+      message: undefined,
+      request: undefined,
+      streaming: true,
+      at: pendingRequests[0]?.createdAt ?? "9999",
+    });
+  timeline.sort((a, b) => a.at.localeCompare(b.at) || Number(!!a.request) - Number(!!b.request));
+  const activeExecution = snapshot.executions.find(
+    (execution) => execution.runId === active?.id && execution.status === "running",
   );
+  const workStatus = activeExecution
+    ? `${activeExecution.purpose === "inspection" ? "Inspecting" : "Running"} ${activeExecution.language === "r" ? "R" : "Python"} ${activeExecution.purpose === "inspection" ? "objects" : "code"}`
+    : "Biologue is working…";
+  const scroll = useFollowOutput(
+    `${messages.length}:${active && streaming[active.id]}:${requests.map((request) => request.id + ("decision" in request ? request.decision : "pending")).join(":")}`,
+    conversation,
+    wb.chat.loaded && (messages.length > 0 || requests.length > 0),
+  );
+  const handledTarget = useRef<typeof wb.permissionTarget>(null);
+  useEffect(() => {
+    if (!wb.chat.loaded || !wb.permissionTarget || handledTarget.current === wb.permissionTarget)
+      return;
+    // Dockview activates the panel in its own effect. Focus after that activation.
+    const frame = requestAnimationFrame(() => {
+      const element = document.getElementById(`permission-${wb.permissionTarget!.id}`);
+      if (element) {
+        element.scrollIntoView({ block: "center" });
+        element.focus({ preventScroll: true });
+        handledTarget.current = wb.permissionTarget;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [wb.permissionTarget, wb.chat.loaded, conversation, requests.length]);
+  const [requestVisible, setRequestVisible] = useState(false);
+  useEffect(() => {
+    setRequestVisible(false);
+    const element =
+      pendingRequests[0] && document.getElementById(`permission-${pendingRequests[0].id}`);
+    if (!element || !scroll.scroll.current) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setRequestVisible(entry.intersectionRatio >= 0.6),
+      { root: scroll.scroll.current, threshold: [0, 0.6] },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [pendingRequests[0]?.id, conversation]);
   const olderScroll = useRef<{ top: number; height: number; conversation: string } | null>(null);
   function sizeComposer() {
     const element = input.current;
@@ -200,7 +289,7 @@ export function Chat() {
             </button>
           )}
           {wb.chat.loading && !wb.chat.loaded && <div role="status">Loading conversation…</div>}
-          {wb.chat.loaded && !messages.length && (
+          {wb.chat.loaded && !messages.length && !requests.length && (
             <div className="conversation-empty">
               <span className="eyebrow">A place to think together</span>
               <h1>What are you trying to understand?</h1>
@@ -222,40 +311,48 @@ export function Chat() {
               )}
             </div>
           )}
-          {messages.map((message) => (
-            <article key={message.id} className={`message ${message.role}`}>
-              <div className="message-heading">
-                <span className="message-author">
-                  {message.role === "user" ? "You" : "Biologue"}
-                </span>
-                <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
-                {message.role === "assistant" && (
-                  <CopyButton text={message.text} label="Copy response" />
-                )}
-                {message.delivery === "pending" && (
-                  <span className="message-delivery" role="status">
-                    {active ? "Queued" : "Saved for your next message"}
+          {timeline.map((item) => {
+            if (item.request)
+              return (
+                <PermissionCard key={`permission-${item.request.id}`} request={item.request} />
+              );
+            if (item.streaming && active)
+              return (
+                <article key="streaming" className="message assistant">
+                  <span className="message-author">Biologue</span>
+                  <MessageContent text={streaming[active.id]} />
+                </article>
+              );
+            const message = item.message!;
+            return (
+              <article key={message.id} className={`message ${message.role}`}>
+                <div className="message-heading">
+                  <span className="message-author">
+                    {message.role === "user" ? "You" : "Biologue"}
                   </span>
+                  <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
+                  {message.role === "assistant" && (
+                    <CopyButton text={message.text} label="Copy response" />
+                  )}
+                  {message.delivery === "pending" && (
+                    <span className="message-delivery" role="status">
+                      {active ? "Queued" : "Saved for your next message"}
+                    </span>
+                  )}
+                </div>
+                {message.role === "assistant" ? (
+                  <MessageContent text={message.text} />
+                ) : (
+                  <div className="message-text">{message.text}</div>
                 )}
-              </div>
-              {message.role === "assistant" ? (
-                <MessageContent text={message.text} />
-              ) : (
-                <div className="message-text">{message.text}</div>
-              )}
-              {message.runId &&
-                message.runId !== active?.id &&
-                lastResponse.get(message.runId) === message.id && (
-                  <RunActivity runId={message.runId} />
-                )}
-            </article>
-          ))}
-          {active && streaming[active.id] && (
-            <article className="message assistant">
-              <span className="message-author">Biologue</span>
-              <MessageContent text={streaming[active.id]} />
-            </article>
-          )}
+                {message.runId &&
+                  message.runId !== active?.id &&
+                  lastResponse.get(message.runId) === message.id && (
+                    <RunActivity runId={message.runId} />
+                  )}
+              </article>
+            );
+          })}
           {active && <RunActivity runId={active.id} />}
           {latest?.error && !active && (
             <div className="inline-error" role="status">
@@ -273,18 +370,30 @@ export function Chat() {
         )}
       </div>
       {active && (
-        <div className={`thinking ${reviewing ? "needs-review" : ""}`} role="status">
+        <div
+          className={`thinking ${reviewing && !requestVisible ? "needs-review" : ""}`}
+          role="status"
+        >
           {reviewing ? (
             <>
-              <span className="status-dot waiting" />
-              <button className="text-button" onClick={() => wb.showPanel("controls")}>
-                Review Biologue’s request <ArrowUpRight size={13} />
-              </button>
+              {requestVisible ? (
+                <span>Waiting for your decision</span>
+              ) : (
+                <>
+                  <span className="status-dot waiting" />
+                  <button
+                    className="text-button"
+                    onClick={() => wb.revealPermission(pendingRequests[0])}
+                  >
+                    Review request <ArrowUpRight size={13} />
+                  </button>
+                </>
+              )}
             </>
           ) : (
             <>
               <span className="pulse" />
-              Working with your context
+              {workStatus}
             </>
           )}
           <span className="spacer" />
@@ -313,7 +422,7 @@ export function Chat() {
           ref={input}
           aria-label="Message Biologue"
           placeholder={
-            active ? "Add context or steer the work…" : "Think it through with Biologue…"
+            active ? "Add a correction or more context…" : "Think it through with Biologue…"
           }
           value={text}
           onChange={(event) => setText(event.target.value)}
@@ -335,7 +444,13 @@ export function Chat() {
               Model setup <ArrowUpRight size={13} />
             </button>
           ) : (
-            <span>{active ? "Send context to this run" : `${modifier}+Enter to send`}</span>
+            <span>
+              {reviewing
+                ? "Sent after your decision"
+                : active
+                  ? "Send a correction or follow-up"
+                  : `${modifier}+Enter to send`}
+            </span>
           )}
           <button
             className="send"
@@ -356,7 +471,7 @@ export function Chat() {
             }
           >
             {sendAction.busy ? <Spinner /> : <ArrowUp size={14} />}
-            Send
+            {reviewing ? "Queue message" : "Send"}
           </button>
         </div>
       </form>
