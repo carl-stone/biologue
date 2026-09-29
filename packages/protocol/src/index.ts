@@ -36,7 +36,7 @@ export interface ExecutionSummary {
   codePreview: string;
   codeHash: string;
   purpose: "analysis" | "inspection";
-  document?: { path: string; version: number };
+  document?: { path: string; version: number; selection?: { from: number; to: number } };
   runId?: string;
   toolCallId?: string;
   conversationId?: string;

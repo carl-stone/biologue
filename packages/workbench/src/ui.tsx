@@ -92,7 +92,13 @@ export function useFollowOutput(change: string | number, resetKey: string, hasCo
   return { scroll, onScroll, away, toLatest };
 }
 
-export function CopyButton({ text, label = "Copy code" }: { text: string; label?: string }) {
+export function CopyButton({
+  text,
+  label = "Copy code",
+}: {
+  text: string | (() => string);
+  label?: string;
+}) {
   const { notify } = useWorkbench("notify");
   const action = useAction();
   return (
@@ -103,7 +109,7 @@ export function CopyButton({ text, label = "Copy code" }: { text: string; label?
       disabled={action.busy}
       onClick={() =>
         void action.run(async () => {
-          await navigator.clipboard.writeText(text);
+          await navigator.clipboard.writeText(typeof text === "function" ? text() : text);
           notify(`${label.replace(/^Copy /, "")} copied to clipboard`);
         })
       }
@@ -133,6 +139,7 @@ export function Dialog({
     return () => {
       dialog.close();
       returnFocus.current?.focus();
+      requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
     };
   }, []);
   return (

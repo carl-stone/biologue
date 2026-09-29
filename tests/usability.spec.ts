@@ -558,6 +558,18 @@ test("new messages do not pull a scientist away from earlier reading", async ({ 
     .poll(() => page.locator(".chat-messages").evaluate((element) => element.scrollTop))
     .toBe(0);
   await expect(page.getByRole("button", { name: "Latest messages", exact: true })).toBeVisible();
+  await page
+    .getByRole("textbox", { name: "Message Biologue", exact: true })
+    .fill(Array(8).fill("A correction while reviewing the earlier discussion.").join("\n"));
+  await expect
+    .poll(async () => {
+      const jump = await page
+        .getByRole("button", { name: "Latest messages", exact: true })
+        .boundingBox();
+      const composer = await page.locator(".composer").boundingBox();
+      return !!jump && !!composer && jump.y + jump.height <= composer.y;
+    })
+    .toBe(true);
   await page.getByRole("button", { name: "Latest messages", exact: true }).click();
   await expect(page.getByText("A new message", { exact: true })).toBeInViewport();
   await expect(page.getByRole("button", { name: "Latest messages", exact: true })).toHaveCount(0);

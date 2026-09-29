@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@carl/protocol": "*",
+    "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/language": "^6.11.3",
     "@codemirror/legacy-modes": "^6.5.2",

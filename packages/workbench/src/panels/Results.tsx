@@ -22,7 +22,16 @@ import type {
   TableResult,
 } from "@carl/protocol";
 import { api, base, useWorkbench, useSnapshot, useResource, useOutputVersion } from "../state.tsx";
-import { Badge, CopyButton, Empty, Spinner, languageName, timeLabel, useAction } from "../ui.tsx";
+import {
+  Badge,
+  CopyButton,
+  Empty,
+  Spinner,
+  downloadText,
+  languageName,
+  timeLabel,
+  useAction,
+} from "../ui.tsx";
 
 function SourceDetails({ execution }: { execution: ExecutionSummary }) {
   const { revealExecution } = useWorkbench("revealExecution");
@@ -43,15 +52,16 @@ function SourceDetails({ execution }: { execution: ExecutionSummary }) {
 }
 
 export function Plots() {
-  const { language, showPanel, artifactTarget } = useWorkbench(
+  const { language, showPanel, artifactTarget, plotViews, setPlotView } = useWorkbench(
     "language",
     "showPanel",
     "artifactTarget",
+    "plotViews",
+    "setPlotView",
   );
   const snapshot = useSnapshot("executions");
   const version = useOutputVersion(language);
-  const [before, setBefore] = useState<string>();
-  useEffect(() => setBefore(undefined), [language]);
+  const { before, selectedSlot, dismissedTarget } = plotViews[language];
   const page = useResource<Page<DisplayOutput>>(
     `/outputs?language=${language}&kind=plots${before ? `&before=${before}` : ""}`,
     version,
@@ -61,86 +71,132 @@ export function Plots() {
       ? artifactTarget.outputId
       : undefined;
   const pinned = useResource<OutputReference>(targetId ? `/outputs/${targetId}/reference` : null);
+  const pinnedActive = !!targetId && dismissedTarget !== artifactTarget;
   const plots: DisplayOutput[] = [...(page.data?.items ?? [])];
-  if (pinned.data && !plots.some((plot) => plot.id === pinned.data!.id))
+  if (pinnedActive && pinned.data && !plots.some((plot) => plot.id === pinned.data!.id))
     plots.push({
       ...pinned.data,
       slotId: `historical:${pinned.data.id}`,
       ownerExecutionId: pinned.data.executionId,
     });
   const targetIndex = plots.findIndex((plot) => plot.id === targetId);
-  const [selected, setSelected] = useState(0);
+  const [imageError, setImageError] = useState<string>();
+  const [imageAttempt, setImageAttempt] = useState(0);
   const latest = plots.length - 1;
-  useEffect(() => setSelected(Math.max(0, latest)), [latest, language]);
-  useEffect(() => {
-    if (targetIndex >= 0) setSelected(targetIndex);
-  }, [targetIndex, artifactTarget, language]);
-  const index = Math.min(selected, latest);
+  const selectedIndex = plots.findIndex((plot) => plot.slotId === selectedSlot);
+  const index = pinnedActive ? targetIndex : selectedIndex >= 0 ? selectedIndex : latest;
   const plot = plots[index];
-  const src = plot ? `${base}/api/outputs/${plot.id}/png` : "";
+  const src = plot
+    ? `${base}/api/outputs/${plot.id}/png${imageAttempt ? `?retry=${imageAttempt}` : ""}`
+    : "";
+  function select(index: number) {
+    setPlotView(language, {
+      dismissedTarget: artifactTarget,
+      selectedSlot: index === latest ? null : (plots[index]?.slotId ?? null),
+    });
+  }
+  function browse(before?: string) {
+    setPlotView(language, { dismissedTarget: artifactTarget, selectedSlot: null, before });
+  }
   const known = snapshot.executions.find((item) => item.id === plot?.executionId);
   const source = useResource<Execution>(plot && !known ? `/executions/${plot.executionId}` : null);
   const execution = known ?? source.data;
   return (
     <div className="pane plots">
-      {plot ? (
-        <>
-          <div className="pane-toolbar figure-toolbar">
-            <button
-              className="icon"
-              aria-label="Previous figure"
-              title="Previous figure"
-              disabled={index <= 0}
-              onClick={() => setSelected((value) => value - 1)}
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <span className="figure-count" aria-live="polite">
-              Figure {index + 1} <span>of {plots.length}</span>
-            </span>
-            <button
-              className="icon"
-              aria-label="Next figure"
-              title="Next figure"
-              disabled={index >= latest}
-              onClick={() => setSelected((value) => value + 1)}
-            >
-              <ChevronRight size={16} />
-            </button>
-            <span className="spacer" />
-            <a
-              className="icon icon-link"
-              aria-label="Download figure"
-              title="Download PNG"
-              href={src}
-              download={`biologue-${language}-figure-${plot.id}.png`}
-            >
-              <Download size={16} />
-            </a>
-            <button
-              className="icon"
-              aria-label="Expand figure"
-              title="Expand figure"
-              onClick={() => showPanel("plots", true)}
-            >
-              <Maximize2 size={15} />
-            </button>
-          </div>
+      {plot && (
+        <div className="pane-toolbar figure-toolbar">
+          <button
+            className="icon"
+            aria-label="Previous figure"
+            title="Previous figure"
+            disabled={index <= 0}
+            onClick={() => select(index - 1)}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <span className="figure-count" aria-live="polite">
+            Figure {index + 1} <span>of {plots.length}</span>
+          </span>
+          <button
+            className="icon"
+            aria-label="Next figure"
+            title="Next figure"
+            disabled={index >= latest}
+            onClick={() => select(index + 1)}
+          >
+            <ChevronRight size={16} />
+          </button>
+          <span className="spacer" />
+          <a
+            className="icon icon-link"
+            aria-label="Download figure"
+            title="Download PNG"
+            href={src}
+            download={`biologue-${language}-figure-${plot.id}.png`}
+          >
+            <Download size={16} />
+          </a>
+          <button
+            className="icon"
+            aria-label="Expand figure"
+            title="Expand figure"
+            onClick={() => showPanel("plots", true)}
+          >
+            <Maximize2 size={15} />
+          </button>
+        </div>
+      )}
+      {(page.data?.next || before) && (
+        <div className="figure-history">
           {page.data?.next && (
-            <button className="text-button" onClick={() => setBefore(page.data!.next)}>
+            <button className="text-button" onClick={() => browse(page.data!.next)}>
               Earlier figures
             </button>
           )}
           {before && (
-            <button className="text-button" onClick={() => setBefore(undefined)}>
+            <button className="text-button" onClick={() => browse()}>
               Latest figures
             </button>
           )}
+        </div>
+      )}
+      {pinnedActive && !plot && pinned.loading ? (
+        <Empty icon={<Spinner />}>
+          <strong>Loading the requested figure…</strong>
+        </Empty>
+      ) : pinnedActive && !plot && pinned.error ? (
+        <Empty icon={<Image size={28} />}>
+          <strong>Couldn’t load the requested figure</strong>
+          <p>{pinned.error}</p>
+          <button onClick={pinned.retry}>Try again</button>
+          <button className="text-button" onClick={() => browse()}>
+            Latest figures
+          </button>
+        </Empty>
+      ) : plot ? (
+        <>
           <div className="figure">
-            <img
-              alt={`Plot from ${execution?.actor ?? "recorded"} execution ${plot.executionId}`}
-              src={src}
-            />
+            {imageError === plot.id ? (
+              <Empty icon={<Image size={28} />}>
+                <strong>Couldn’t load this image</strong>
+                <p>The recorded figure is still selected.</p>
+                <button
+                  onClick={() => {
+                    setImageError(undefined);
+                    setImageAttempt((value) => value + 1);
+                  }}
+                >
+                  Try again
+                </button>
+              </Empty>
+            ) : (
+              <img
+                key={src}
+                alt={`Plot from ${execution?.actor ?? "recorded"} execution ${plot.executionId}`}
+                src={src}
+                onError={() => setImageError(plot.id)}
+              />
+            )}
           </div>
           {execution && <SourceDetails execution={execution} />}
         </>
@@ -376,6 +432,19 @@ export function Environment() {
 
 const cellText = (cell: unknown) =>
   cell === null ? "null" : typeof cell === "object" ? JSON.stringify(cell) : String(cell);
+const delimitedText = (rows: unknown[][], delimiter: string) =>
+  rows
+    .map((row) =>
+      row
+        .map((cell) => {
+          const text = cellText(cell);
+          return text.includes(delimiter) || /["\r\n]/.test(text)
+            ? `"${text.replaceAll('"', '""')}"`
+            : text;
+        })
+        .join(delimiter),
+    )
+    .join(delimiter === "," ? "\r\n" : "\n");
 
 export function Data() {
   const {
@@ -386,6 +455,8 @@ export function Data() {
     previewTable,
     connected,
     artifactTarget,
+    tableFilter,
+    setTableFilter,
   } = useWorkbench(
     "language",
     "tablePreview",
@@ -394,6 +465,8 @@ export function Data() {
     "previewTable",
     "connected",
     "artifactTarget",
+    "tableFilter",
+    "setTableFilter",
   );
   const snapshot = useSnapshot("executions");
   const action = useAction();
@@ -430,6 +503,15 @@ export function Data() {
   const table: TableResult | undefined = result.data?.kind === "table" ? result.data : undefined;
   const pending = requested && (!record || ["queued", "running"].includes(record.status));
   const title = requested?.name || "Data preview";
+  const filterSource = `${language}:${target?.outputId ?? record?.id ?? ""}`;
+  const filter = tableFilter?.source === filterSource ? tableFilter.value : "";
+  const setFilter = (value: string) => setTableFilter({ source: filterSource, value });
+  const rows =
+    table?.rows
+      .map((cells, index) => ({ cells, index }))
+      .filter(({ cells }) =>
+        cells.some((cell) => cellText(cell).toLowerCase().includes(filter.toLowerCase())),
+      ) ?? [];
   return (
     <div className="pane data-pane">
       {pending ? (
@@ -459,10 +541,23 @@ export function Data() {
             <span className="spacer" />
             <CopyButton
               label="Copy table"
-              text={[table.columns, ...table.rows]
-                .map((row) => row.map(cellText).join("\t"))
-                .join("\n")}
+              text={delimitedText([table.columns, ...rows.map((row) => row.cells)], "\t")}
             />
+            <button
+              className="icon"
+              aria-label="Download preview CSV"
+              title="Download visible preview as CSV"
+              onClick={() => {
+                const csv = delimitedText([table.columns, ...rows.map((row) => row.cells)], ",");
+                downloadText(
+                  csv,
+                  `${title === "Data preview" ? "data" : title.replace(/[^a-zA-Z0-9_-]/g, "_")}-preview.csv`,
+                  "text/csv;charset=utf-8",
+                );
+              }}
+            >
+              <Download size={15} />
+            </button>
             <button
               className="icon"
               aria-label="Expand data"
@@ -472,14 +567,34 @@ export function Data() {
               <Maximize2 size={15} />
             </button>
           </div>
+          <div className="table-filter">
+            <Search size={14} aria-hidden="true" />
+            <input
+              aria-label="Filter table preview"
+              placeholder="Filter this preview…"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+            />
+            {filter && (
+              <button
+                className="icon"
+                aria-label="Clear table filter"
+                title="Clear filter"
+                onClick={() => setFilter("")}
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
           <div className="table-meta">
-            {table.rows.length} rows · {table.columns.length} columns
+            {filter ? `${rows.length} of ${table.rows.length}` : table.rows.length} rows ·{" "}
+            {table.columns.length} columns
             {table.truncated && <Badge>First 100 rows</Badge>}
           </div>
           <div className="table-scroll" tabIndex={0} role="region" aria-label={`${title} table`}>
             <table>
               <caption className="sr-only">
-                {title}. {table.rows.length} rows
+                {title}. {rows.length} rows
                 {table.truncated ? ", preview limited to the first 100" : ""}.
               </caption>
               <thead>
@@ -495,10 +610,10 @@ export function Data() {
                 </tr>
               </thead>
               <tbody>
-                {table.rows.map((row, i) => (
-                  <tr key={i}>
+                {rows.map(({ cells: row, index }) => (
+                  <tr key={index}>
                     <th scope="row" className="row-number">
-                      {i + 1}
+                      {index + 1}
                     </th>
                     {row.map((cell, j) => (
                       <td key={j} className={typeof cell === "number" ? "numeric" : undefined}>
@@ -511,6 +626,14 @@ export function Data() {
             </table>
             {!table.rows.length && (
               <div className="empty-table">This table has columns but no rows.</div>
+            )}
+            {!!table.rows.length && !rows.length && (
+              <div className="empty-table">
+                No rows match this filter.
+                <button className="text-button" onClick={() => setFilter("")}>
+                  Clear filter
+                </button>
+              </div>
             )}
           </div>
           <SourceDetails execution={record} />

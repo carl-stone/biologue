@@ -669,6 +669,13 @@ kbd {
   min-height: 0;
   scroll-behavior: auto;
 }
+.chat-transcript {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .chat-messages > .message,
 .conversation-empty,
 .chat-messages > .inline-error {
@@ -781,6 +788,64 @@ kbd {
 .message-delivery {
   font-size: 10px;
   color: var(--muted);
+}
+.message-heading time {
+  margin-left: auto;
+}
+.message-heading .icon {
+  min-height: 24px;
+  opacity: 0.65;
+}
+.message-heading .icon:hover,
+.message-heading .icon:focus-visible {
+  opacity: 1;
+}
+.chat-code-block {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-inset);
+  overflow: hidden;
+  margin: 12px 0;
+}
+.chat-code-block .code-record-heading {
+  padding: 3px 9px;
+  border-bottom: 1px solid var(--border);
+}
+.markdown .chat-code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.run-activity {
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 16px;
+}
+.run-activity summary {
+  cursor: pointer;
+  color: var(--accent-dark);
+}
+.activity-execution {
+  padding-top: 6px;
+}
+.activity-source {
+  width: 100%;
+  justify-content: flex-start;
+  font-size: 11px;
+  text-align: left;
+}
+.activity-source > span:first-child {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .message-author {
   display: block;
@@ -896,7 +961,7 @@ kbd {
   z-index: 2;
 }
 .chat .jump-latest {
-  bottom: 165px;
+  bottom: 12px;
 }
 .editor-toolbar {
   padding-right: 9px;
@@ -905,7 +970,87 @@ kbd {
 }
 .editor-toolbar select {
   max-width: 260px;
+  min-width: 60px;
+  flex: 1;
   color: var(--text);
+}
+.editor-run-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+.editor-run-menu > summary {
+  display: grid;
+  place-items: center;
+  min-height: 28px;
+  width: 24px;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  cursor: pointer;
+  list-style: none;
+}
+.editor-run-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.editor-menu-content {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 20;
+  width: 285px;
+  max-width: calc(100vw - 24px);
+  padding: 5px;
+  background: var(--paper);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px #29292218;
+}
+.editor-menu-content button {
+  justify-content: space-between;
+  width: 100%;
+  border: 0;
+  font-size: 12px;
+}
+.editor .cm-panels {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+  font:
+    12px "IBM Plex Sans",
+    sans-serif;
+}
+.editor .cm-search {
+  padding: 7px 25px 7px 8px;
+}
+.editor .cm-search label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 3px 6px 3px 0;
+}
+.editor .cm-textfield {
+  background: var(--paper);
+  color: var(--text);
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 4px 7px;
+  font: inherit;
+  max-width: 100%;
+}
+.editor .cm-button {
+  background: var(--paper);
+  color: var(--text);
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 3px 7px;
+  margin: 3px 3px 3px 0;
+  font: inherit;
+  text-transform: capitalize;
+}
+.editor .cm-button:hover {
+  background: var(--surface-inset);
+}
+.cursor-position {
+  white-space: nowrap;
 }
 .editor-toolbar .spacer {
   flex: 1;
@@ -1294,6 +1439,32 @@ kbd {
   white-space: nowrap;
   font-size: 12px;
 }
+.figure-history {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.figure-history .text-button {
+  font-size: 11px;
+}
+.table-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.table-filter input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 3px 0;
+  font-size: 11px;
+}
 .figure-count > span {
   color: var(--muted);
 }
@@ -1383,7 +1554,7 @@ kbd {
   padding: 0 13px 10px;
 }
 .object {
-  padding: 13px 1px;
+  padding: 9px 1px;
   border-bottom: 1px solid var(--border);
 }
 .object > div {

@@ -1,11 +1,13 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowDown, ArrowUp, ArrowUpRight, NotebookPen, Plus, Square } from "lucide-react";
 import type { Conversation } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
+import { RunActivity } from "./RunActivity.tsx";
 import {
   Dialog,
+  CopyButton,
   Spinner,
   modifier,
   timeLabel,
@@ -14,6 +16,19 @@ import {
   useProjectDraft,
 } from "../ui.tsx";
 
+function CodeBlock({ children }: { children: ReactNode }) {
+  const code = useRef<HTMLPreElement>(null);
+  return (
+    <div className="chat-code-block">
+      <div className="code-record-heading">
+        <span>Code</span>
+        <CopyButton text={() => code.current?.textContent ?? ""} />
+      </div>
+      <pre ref={code}>{children}</pre>
+    </div>
+  );
+}
+
 function MessageContent({ text }: { text: string }) {
   return (
     <div className="markdown">
@@ -21,6 +36,7 @@ function MessageContent({ text }: { text: string }) {
         remarkPlugins={[remarkGfm]}
         skipHtml
         components={{
+          pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
           a: ({ children, ...props }) => (
             <a {...props} target="_blank" rel="noopener noreferrer">
               {children}
@@ -65,6 +81,9 @@ export function Chat() {
   const runs = snapshot!.runs.filter((run) => run.conversationId === conversation);
   const active = runs.find((run) => run.status === "running");
   const latest = runs.at(-1);
+  const lastResponse = new Map<string, string>();
+  for (const message of messages)
+    if (message.role === "assistant" && message.runId) lastResponse.set(message.runId, message.id);
   const reviewing = active && snapshot!.permissions.some((request) => request.runId === active.id);
   const scroll = useFollowOutput(
     `${messages.length}:${active && streaming[active.id]}`,
@@ -72,6 +91,25 @@ export function Chat() {
     messages.length > 0,
   );
   const olderScroll = useRef<{ top: number; height: number; conversation: string } | null>(null);
+  function sizeComposer() {
+    const element = input.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 180, window.innerHeight * 0.25)}px`;
+  }
+  useLayoutEffect(sizeComposer, [text, conversation]);
+  useEffect(() => {
+    const element = input.current;
+    if (!element) return;
+    let width = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (element.clientWidth === width) return;
+      width = element.clientWidth;
+      sizeComposer();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   useLayoutEffect(() => {
     const saved = olderScroll.current,
       element = scroll.scroll.current;
@@ -142,82 +180,98 @@ export function Chat() {
           : "Add your research context"}
         <ArrowUpRight size={13} />
       </button>
-      <div className="chat-messages" ref={scroll.scroll} onScroll={scroll.onScroll}>
-        {wb.chat.error && (
-          <div className="inline-error" role="alert">
-            <p>{wb.chat.error}</p>
-            <button onClick={loadEarlier} disabled={!connected || wb.chat.loading}>
-              Retry loading messages
-            </button>
-          </div>
-        )}
-        {wb.chat.next && !wb.chat.error && (
-          <button
-            className="text-button"
-            onClick={loadEarlier}
-            disabled={!connected || wb.chat.loading}
-          >
-            {wb.chat.loading ? "Loading earlier messages…" : "Load earlier messages"}
-          </button>
-        )}
-        {wb.chat.loading && !wb.chat.loaded && <div role="status">Loading conversation…</div>}
-        {wb.chat.loaded && !messages.length && (
-          <div className="conversation-empty">
-            <span className="eyebrow">A place to think together</span>
-            <h1>What are you trying to understand?</h1>
-            <p>
-              A result you don’t trust. A pattern you can’t explain. Start with the question that
-              matters to you.
-            </p>
-            <div className="conversation-hint">
-              <span>Bring the context</span>
-              <p>
-                What you observed, what you suspect, and what someone outside your lab would miss.
-              </p>
-              <button className="text-button" onClick={() => wb.showPanel("context")}>
-                Make a research note <ArrowUpRight size={14} />
+      <div className="chat-transcript">
+        <div className="chat-messages" ref={scroll.scroll} onScroll={scroll.onScroll}>
+          {wb.chat.error && (
+            <div className="inline-error" role="alert">
+              <p>{wb.chat.error}</p>
+              <button onClick={loadEarlier} disabled={!connected || wb.chat.loading}>
+                Retry loading messages
               </button>
             </div>
-          </div>
-        )}
-        {messages.map((message) => (
-          <article key={message.id} className={`message ${message.role}`}>
-            <div className="message-heading">
-              <span className="message-author">{message.role === "user" ? "You" : "Biologue"}</span>
-              <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
-              {message.delivery === "pending" && (
-                <span className="message-delivery" role="status">
-                  {active ? "Queued" : "Saved for your next message"}
-                </span>
+          )}
+          {wb.chat.next && !wb.chat.error && (
+            <button
+              className="text-button"
+              onClick={loadEarlier}
+              disabled={!connected || wb.chat.loading}
+            >
+              {wb.chat.loading ? "Loading earlier messages…" : "Load earlier messages"}
+            </button>
+          )}
+          {wb.chat.loading && !wb.chat.loaded && <div role="status">Loading conversation…</div>}
+          {wb.chat.loaded && !messages.length && (
+            <div className="conversation-empty">
+              <span className="eyebrow">A place to think together</span>
+              <h1>What are you trying to understand?</h1>
+              <p>
+                A result you don’t trust. A pattern you can’t explain. Start with the question that
+                matters to you.
+              </p>
+              {!snapshot.researchContext.version && (
+                <div className="conversation-hint">
+                  <span>Bring the context</span>
+                  <p>
+                    What you observed, what you suspect, and what someone outside your lab would
+                    miss.
+                  </p>
+                  <button className="text-button" onClick={() => wb.showPanel("context")}>
+                    Make a research note <ArrowUpRight size={14} />
+                  </button>
+                </div>
               )}
             </div>
-            {message.role === "assistant" ? (
-              <MessageContent text={message.text} />
-            ) : (
-              <div className="message-text">{message.text}</div>
-            )}
-          </article>
-        ))}
-        {active && streaming[active.id] && (
-          <article className="message assistant">
-            <span className="message-author">Biologue</span>
-            <MessageContent text={streaming[active.id]} />
-          </article>
-        )}
-        {latest?.error && !active && (
-          <div className="inline-error" role="status">
-            <strong>The run could not finish.</strong>
-            <p>{latest.error}</p>
-            <span>Your conversation is retained. You can send a follow-up.</span>
-          </div>
+          )}
+          {messages.map((message) => (
+            <article key={message.id} className={`message ${message.role}`}>
+              <div className="message-heading">
+                <span className="message-author">
+                  {message.role === "user" ? "You" : "Biologue"}
+                </span>
+                <time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time>
+                {message.role === "assistant" && (
+                  <CopyButton text={message.text} label="Copy response" />
+                )}
+                {message.delivery === "pending" && (
+                  <span className="message-delivery" role="status">
+                    {active ? "Queued" : "Saved for your next message"}
+                  </span>
+                )}
+              </div>
+              {message.role === "assistant" ? (
+                <MessageContent text={message.text} />
+              ) : (
+                <div className="message-text">{message.text}</div>
+              )}
+              {message.runId &&
+                message.runId !== active?.id &&
+                lastResponse.get(message.runId) === message.id && (
+                  <RunActivity runId={message.runId} />
+                )}
+            </article>
+          ))}
+          {active && streaming[active.id] && (
+            <article className="message assistant">
+              <span className="message-author">Biologue</span>
+              <MessageContent text={streaming[active.id]} />
+            </article>
+          )}
+          {active && <RunActivity runId={active.id} />}
+          {latest?.error && !active && (
+            <div className="inline-error" role="status">
+              <strong>The run could not finish.</strong>
+              <p>{latest.error}</p>
+              <span>Your conversation is retained. You can send a follow-up.</span>
+            </div>
+          )}
+        </div>
+        {scroll.away && (
+          <button className="jump-latest" onClick={scroll.toLatest}>
+            <ArrowDown size={14} />
+            Latest messages
+          </button>
         )}
       </div>
-      {scroll.away && (
-        <button className="jump-latest" onClick={scroll.toLatest}>
-          <ArrowDown size={14} />
-          Latest messages
-        </button>
-      )}
       {active && (
         <div className={`thinking ${reviewing ? "needs-review" : ""}`} role="status">
           {reviewing ? (

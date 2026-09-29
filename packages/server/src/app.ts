@@ -153,6 +153,9 @@ export async function createApp(options: AppOptions) {
   app.get("/api/documents", async (request) =>
     documents.open(pathSchema.parse(request.query).path),
   );
+  app.post("/api/documents", async (request, reply) =>
+    reply.code(201).send(documents.create(pathSchema.parse(request.body).path)),
+  );
   app.put("/api/documents", async (request) => {
     const body = pathSchema
       .extend({
@@ -234,11 +237,24 @@ export async function createApp(options: AppOptions) {
       .object({
         language,
         code: z.string().min(1).max(200_000),
-        document: z.object({ path: z.string(), version: z.number().int() }).optional(),
+        document: z
+          .object({
+            path: z.string(),
+            version: z.number().int(),
+            selection: z
+              .object({ from: z.number().int().min(0), to: z.number().int().min(1) })
+              .optional(),
+          })
+          .optional(),
       })
       .parse(request.body);
     if (body.document)
-      documents.verifyReference(body.document.path, body.document.version, body.code);
+      documents.verifyReference(
+        body.document.path,
+        body.document.version,
+        body.code,
+        body.document.selection,
+      );
     return reply.code(202).send(execution.submit({ ...body, actor: "human" }));
   });
   app.get("/api/executions/:id", async (request, reply) => {

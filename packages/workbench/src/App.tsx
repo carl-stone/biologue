@@ -73,7 +73,9 @@ function defaultLayout(layout: WorkspaceApi, mode: LayoutMode) {
     add("console", "editor", "below");
     add("plots", "environment", "below");
     add("data", "plots", "within", true);
-    layout.getPanel("chat")!.api.setSize({ width: 360 });
+    layout.getPanel("chat")!.api.setSize({
+      width: Math.min(620, Math.round((window.innerWidth - 340) * 0.45)),
+    });
     layout.getPanel("environment")!.api.setSize({ width: 340 });
     layout
       .getPanel("console")!
@@ -95,13 +97,14 @@ function defaultLayout(layout: WorkspaceApi, mode: LayoutMode) {
     add("environment", "console", "within", true);
     add("plots", "console", "within", true);
     add("data", "console", "within", true);
-    if (mode === "compact") layout.getPanel("chat")!.api.setSize({ width: 300 });
+    if (mode === "compact")
+      layout.getPanel("chat")!.api.setSize({ width: Math.round(window.innerWidth * 0.36) });
     if (mode === "compact")
       layout
         .getPanel("console")!
         .api.setSize({ height: Math.max(230, Math.round(window.innerHeight * 0.38)) });
   }
-  layout.getPanel("editor")!.api.setActive();
+  layout.getPanel("chat")!.api.setActive();
 }
 
 export function App() {
@@ -136,6 +139,12 @@ export function App() {
     group.relayout();
   }
   function arrangePanels(enabled: boolean) {
+    if (!enabled && document.activeElement?.closest(".dv-tabs-and-actions-container"))
+      document
+        .querySelector<HTMLElement>(
+          mode.current === "narrow" ? ".nav-button.active" : ".arrange-panels",
+        )
+        ?.focus();
     arranging.current = enabled;
     setIsArranging(enabled);
     if (enabled) layout.current?.exitMaximizedGroup();
@@ -159,7 +168,7 @@ export function App() {
   useEffect(() => () => cleanup.current(), []);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (document.querySelector("dialog[open]")) return;
+      if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
       if (event.altKey && !event.ctrlKey && !event.metaKey && /^[1-8]$/.test(event.key)) {
         event.preventDefault();
         reveal(panels[Number(event.key) - 1].id);
@@ -231,9 +240,13 @@ export function App() {
       }),
     ];
     const resize = () => {
+      // Rebuilding groups unmounts panels. Finish a modal interaction before
+      // changing layout mode so resizing cannot discard its input or request.
+      if (document.querySelector("dialog[open]")) return;
       const next = windowMode();
       if (next === mode.current) return;
       clearTimeout(timer);
+      const activePanel = view.activePanel?.id;
       view.exitMaximizedGroup();
       savedLayouts.current[mode.current] = view.toJSON();
       // Window resize fires before Dockview's ResizeObserver. Size the grid first
@@ -241,6 +254,7 @@ export function App() {
       const element = document.querySelector<HTMLElement>(".workspace > .dock-layout");
       if (element) view.layout(element.clientWidth, element.clientHeight);
       restore(next);
+      if (activePanel) view.getPanel(activePanel)?.api.setActive();
     };
     window.addEventListener("resize", resize);
     cleanup.current = () => {
@@ -447,9 +461,21 @@ export function App() {
           <div className="help-section">
             <h3>Keyboard shortcuts</h3>
             <dl className="shortcut-list">
-              <dt>Run the entire script / console input</dt>
+              <dt>Run selected code, or the file / console input</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>Enter</kbd>
+              </dd>
+              <dt>Run the current editor line</dt>
+              <dd>
+                <kbd>Shift</kbd> <kbd>Enter</kbd>
+              </dd>
+              <dt>Run the entire file with a selection active</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>Shift</kbd> <kbd>Enter</kbd>
+              </dd>
+              <dt>Find / replace in the editor</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>F</kbd>
               </dd>
               <dt>Save file / research context</dt>
               <dd>
@@ -478,7 +504,8 @@ export function App() {
             <p>
               Edits sync automatically with Biologue and are retained on this device while offline.
               <strong> Save</strong> writes the working document to your project file.
-              <strong> Run file</strong> waits for synchronization and records the exact revision.
+              <strong> Run</strong> waits for synchronization and records the exact code and
+              revision, including the selected range when running part of a file.
             </p>
           </div>
           <div className="dialog-actions">

@@ -65,5 +65,28 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
     await page.getByRole("button", { name: "Dismiss notification" }).click();
   await page.mouse.move(800, 30);
   await page.screenshot({ path: "test-results/workspace.png", fullPage: true });
+  await page.getByRole("button", { name: "New file", exact: true }).click();
+  await page.getByRole("textbox", { name: "File name", exact: true }).fill("selection_test.py");
+  await page.getByRole("button", { name: "Create file", exact: true }).click();
+  const selectedEditor = page.getByRole("textbox", {
+    name: "Code editor: selection_test.py",
+    exact: true,
+  });
+  const selectedCode = "print(len(measurements))";
+  await selectedEditor.fill(`${selectedCode}\nraise RuntimeError('not selected')\n`);
+  await selectedEditor.press("ControlOrMeta+Home");
+  await selectedEditor.press("Shift+End");
+  const count = await page.locator(".execution").count();
+  await selectedEditor.press("ControlOrMeta+Enter");
+  await expect(page.locator(".execution")).toHaveCount(count + 1);
+  await expect(page.locator(".execution-status").last()).toHaveText("Finished");
+  await expect(page.locator(".execution").last().locator(".output-text")).toHaveText("6\n");
+  await page.locator(".execution").last().locator(":scope > details > summary").click();
+  await expect(page.locator(".execution").last().locator(".code-record pre")).toHaveText(
+    selectedCode,
+  );
+  await expect(page.locator(".execution").last()).toContainText(
+    "selection_test.py · selection · revision",
+  );
   expect(errors).toEqual([]);
 });

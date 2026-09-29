@@ -8,6 +8,10 @@ has now been translated into the workbench, using Zed itself as the reference.
 The [implemented workbench screenshot](implemented-workbench.png) shows the actual
 browser UI with real Python output from the synthetic example project. See the
 [implementation and visual review](../../docs/ui-review.md) for coverage.
+The [collaboration view](collaboration-workbench.png) shows the actual interface
+with scripted conversation and permission states. The
+[five-round product review](../../docs/product-review-rounds.md) records the
+subsequent interaction and continuity improvements.
 
 ## Concept design choices
 

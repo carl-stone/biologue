@@ -56,6 +56,9 @@ export function applyEvent(state: Snapshot, event: AppEvent): Snapshot {
     case "document":
       return {
         ...state,
+        files: state.files.includes(event.document.path)
+          ? state.files
+          : [...state.files, event.document.path].sort(),
         documents: state.documents.some((doc) => doc.path === event.document.path)
           ? state.documents.map((doc) =>
               doc.path === event.document.path && event.document.version >= doc.version
@@ -81,6 +84,17 @@ export function applyEvent(state: Snapshot, event: AppEvent): Snapshot {
 export type PanelId =
   "chat" | "editor" | "console" | "environment" | "plots" | "data" | "context" | "controls";
 type TablePreview = { name: string; executionId: string; language: Language };
+type ArtifactTarget = {
+  executionId: string;
+  outputId: string;
+  language: Language;
+  panel: "plots" | "data";
+};
+type PlotView = {
+  before?: string;
+  selectedSlot: string | null;
+  dismissedTarget: ArtifactTarget | null;
+};
 interface WorkbenchState {
   snapshot: Snapshot | null;
   ready: boolean;
@@ -114,12 +128,11 @@ interface WorkbenchState {
   executionTarget: string | null;
   expandExecution: boolean;
   revealExecution: (execution: ExecutionSummary, expand?: boolean) => void;
-  artifactTarget: {
-    executionId: string;
-    outputId: string;
-    language: Language;
-    panel: "plots" | "data";
-  } | null;
+  artifactTarget: ArtifactTarget | null;
+  plotViews: Record<Language, PlotView>;
+  setPlotView: (language: Language, view: Partial<PlotView>) => void;
+  tableFilter: { source: string; value: string } | null;
+  setTableFilter: (filter: WorkbenchState["tableFilter"]) => void;
   revealArtifact: (
     execution: ExecutionSummary,
     output: OutputReference,
@@ -166,6 +179,19 @@ class WorkbenchStore {
       executionTarget: null,
       expandExecution: false,
       artifactTarget: null,
+      plotViews: {
+        python: { selectedSlot: null, dismissedTarget: null },
+        r: { selectedSlot: null, dismissedTarget: null },
+      },
+      setPlotView: (language, view) =>
+        this.update({
+          plotViews: {
+            ...this.state.plotViews,
+            [language]: { ...this.state.plotViews[language], ...view },
+          },
+        }),
+      tableFilter: null,
+      setTableFilter: set("tableFilter"),
       tablePreview: null,
       setError: set("error"),
       setLanguage: set("language"),
@@ -377,6 +403,7 @@ class WorkbenchStore {
       void this.history.select(event.conversationId, true);
     if (event.type === "permission-resolved" && event.error) this.error(new Error(event.error));
     if (event.type === "document") {
+      if (this.state.snapshot) this.update({ snapshot: applyEvent(this.state.snapshot, event) });
       this.documents.receive(event.document);
       return;
     }

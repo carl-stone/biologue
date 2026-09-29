@@ -131,7 +131,7 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
           <ChevronRight size={13} />
           <span>
             {item.document
-              ? `${item.document.path} · revision ${item.document.version}`
+              ? `${item.document.path} · ${item.document.selection ? "selection · " : ""}revision ${item.document.version}`
               : item.codePreview}
           </span>
         </summary>

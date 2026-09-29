@@ -164,6 +164,20 @@ export class Documents {
       ? old
       : this.publish({ ...old, diskConflict });
   }
+  create(path: string): Document {
+    const full = this.resolve(path);
+    if (existsSync(full) || this.store.get("document", path))
+      throw new Conflict("A document already uses this name. Choose another name.");
+    // Exclusive creation also protects a file created after the existence check.
+    try {
+      writeFileSync(full, "", { flag: "wx", mode: 0o644 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+        throw new Conflict("A document already uses this name. Choose another name.");
+      throw error;
+    }
+    return this.open(path);
+  }
   edit(path: string, content: string, expectedVersion: number, editId?: string): Document {
     const previous = this.open(path);
     // A lost HTTP acknowledgement may be retried after a reconnect.
@@ -240,9 +254,24 @@ export class Documents {
     this.refreshTimers.clear();
     this.watchers.clear();
   }
-  verifyReference(path: string, version: number, code: string) {
+  verifyReference(
+    path: string,
+    version: number,
+    code: string,
+    selection?: { from: number; to: number },
+  ) {
     const revision = this.store.get<Document>("document-revision", `${path}:${version}`);
-    if (!revision || revision.content !== code)
+    const validRange =
+      !selection ||
+      (Number.isInteger(selection.from) &&
+        Number.isInteger(selection.to) &&
+        selection.from >= 0 &&
+        selection.to > selection.from &&
+        selection.to <= (revision?.content.length ?? 0));
+    const content = selection
+      ? revision?.content.slice(selection.from, selection.to)
+      : revision?.content;
+    if (!revision || !validRange || content !== code)
       throw new Conflict("Execution must reference the exact document revision being run.");
   }
 }

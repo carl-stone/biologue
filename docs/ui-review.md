@@ -3,6 +3,10 @@
 September 29, 2026. Reviewed the browser workbench with real Python results and
 scripted conversation, approval, conflict, and connection states. No model calls.
 
+The subsequent [five-round hands-on product review](product-review-rounds.md)
+adds exploratory and adversarial workflows, before/after findings, and regression
+coverage for the changes below.
+
 ## Changes
 
 - Followed [Zed's interface](https://zed.dev/) and
@@ -35,6 +39,16 @@ scripted conversation, approval, conflict, and connection states. No model calls
 - Distinguished loading, failed retrieval, and empty results. Retry reloads the
   stored result without executing scientific code. Targeted agent inspections
   no longer make the full object inventory appear to be refreshing.
+- Balanced the default conversation and editor widths. Added a growing composer,
+  response/code copying, and expandable links from discussion to recorded code
+  and artifacts. Conversation is the initial active panel.
+- Added protected file creation, selection/current-line execution, a cursor
+  indicator, and retained editor undo history across file and layout changes.
+- Kept figure selection stable while new results arrive and layouts change;
+  added image recovery and filtered table-preview export. Reduced object-row
+  spacing without hiding inspection state or source links.
+- Preserved dialogs while resizing and scoped Escape to the focused interaction.
+  File-load failures now offer recovery within the editor.
 
 ## Visual coverage
 

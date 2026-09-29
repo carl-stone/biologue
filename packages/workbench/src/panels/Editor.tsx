@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import CodeMirror from "@uiw/react-codemirror";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CodeMirror, { Prec, type EditorState, type ViewUpdate } from "@uiw/react-codemirror";
+import { historyField } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { r } from "@codemirror/legacy-modes/mode/r";
 import { keymap, EditorView } from "@codemirror/view";
-import { FileCode2, Play, Save, Square, Download } from "lucide-react";
+import { FileCode2, FilePlus2, Play, Save, Square, Download, ChevronDown } from "lucide-react";
 import type { Document, Execution, Language } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
 import {
   Empty,
+  Dialog,
   SavedLabel,
   Spinner,
   downloadText,
@@ -19,6 +21,9 @@ import {
 } from "../ui.tsx";
 
 const editorSetup = { foldGutter: true, autocompletion: true, highlightActiveLine: true };
+// Ephemeral editing history, not a second document authority. Restore only when
+// its text still matches the working document; fresh mounts use fresh callbacks.
+const editorMemory = new Map<string, { state: EditorState; scrollTop: number }>();
 const syntax = syntaxHighlighting(
   HighlightStyle.define([
     { tag: tags.comment, color: "#687668" },
@@ -48,9 +53,10 @@ export function Editor() {
     "discardDraft",
     "keepLocal",
     "reconcile",
+    "showPanel",
   );
   const { file, language, drafts, connected } = wb;
-  const snapshot = useSnapshot("documents", "files", "executions");
+  const snapshot = useSnapshot("documents", "files", "executions", "project");
   const doc = snapshot?.documents.find((item) => item.path === file);
   const draft = drafts[file];
   const fileLanguage: Language | undefined = /\.r$/i.test(file)
@@ -62,11 +68,48 @@ export function Editor() {
     (item) => item.language === fileLanguage && item.status === "running",
   );
   const action = useAction();
+  const createAction = useAction();
+  const [creating, setCreating] = useState(false);
+  const [newPath, setNewPath] = useState("");
+  const [createError, setCreateError] = useState("");
+  const [openFailure, setOpenFailure] = useState<{ path: string; message: string } | null>(null);
+  const fileError = openFailure?.path === file ? openFailure.message : "";
+  const [position, setPosition] = useState({ line: 1, column: 1, selected: false });
+  const editorView = useRef<EditorView | null>(null);
+  const runMenu = useRef<HTMLDetailsElement>(null);
+  const memoryKey = `${snapshot.project}:${file}`;
+  const initialState = useMemo(() => {
+    const saved = editorMemory.get(memoryKey);
+    return saved && saved.state.doc.toString() === (draft?.content ?? doc?.content)
+      ? { json: saved.state.toJSON({ history: historyField }), fields: { history: historyField } }
+      : undefined;
+  }, [memoryKey, !!doc]);
   const conflict = !!(doc && draft && draft.baseVersion !== doc.version);
   const dirty = !!(draft || (doc && doc.version !== doc.savedVersion));
   useEffect(() => {
-    if (snapshot && file) void wb.perform(() => wb.open(file));
-  }, [file, !!snapshot]);
+    let cancelled = false;
+    setOpenFailure(null);
+    if (file && connected)
+      void wb.open(file).catch((error) => {
+        if (!cancelled)
+          setOpenFailure({
+            path: file,
+            message: error instanceof Error ? error.message : String(error),
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [file, connected]);
+  async function retryOpen() {
+    const path = file;
+    setOpenFailure(null);
+    try {
+      await wb.open(path);
+    } catch (error) {
+      setOpenFailure({ path, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
   async function save() {
     if (!doc || conflict || doc.diskConflict || !connected) return;
     const current = await wb.flush(doc);
@@ -76,15 +119,34 @@ export function Editor() {
     });
     wb.notify(`Saved ${current.path}`);
   }
-  async function run() {
+  async function run(scope: "file" | "selection" | "line" = "file") {
     if (!doc || !fileLanguage || conflict || !connected) return;
+    if (runMenu.current) runMenu.current.open = false;
+    const state = editorView.current?.state;
+    const selected = state?.selection.main;
+    const line = state && selected ? state.doc.lineAt(selected.head) : undefined;
+    const selection =
+      scope === "line" && line
+        ? { from: line.from, to: line.to }
+        : scope === "selection" && selected && !selected.empty
+          ? { from: selected.from, to: selected.to }
+          : undefined;
+    if (scope !== "file" && !selection) return;
+    const text = state?.doc.toString();
     const current = await wb.flush(doc);
-    if (!current.content.trim()) return;
+    if (selection && current.content !== text)
+      throw new Error("The file changed while preparing this run. Select the code and try again.");
+    const code = selection ? current.content.slice(selection.from, selection.to) : current.content;
+    if (!code.trim()) return;
     wb.setLanguage(fileLanguage);
     const execution = await api<Execution>("/executions", "POST", {
       language: fileLanguage,
-      code: current.content,
-      document: { path: current.path, version: current.version },
+      code,
+      document: {
+        path: current.path,
+        version: current.version,
+        ...(selection ? { selection } : {}),
+      },
     });
     wb.revealExecution(execution, false);
   }
@@ -102,24 +164,44 @@ export function Editor() {
           ? [StreamLanguage.define(r)]
           : []),
       EditorView.lineWrapping,
-      keymap.of([
-        {
-          key: "Mod-Enter",
-          run: () => {
-            const current = commands.current;
-            void current.action.run(current.run);
-            return true;
+      Prec.highest(
+        keymap.of([
+          {
+            key: "Mod-Enter",
+            run: (view) => {
+              const current = commands.current;
+              void current.action.run(() =>
+                current.run(view.state.selection.main.empty ? "file" : "selection"),
+              );
+              return true;
+            },
           },
-        },
-        {
-          key: "Mod-s",
-          run: () => {
-            const current = commands.current;
-            void current.action.run(current.save);
-            return true;
+          {
+            key: "Shift-Enter",
+            run: () => {
+              const current = commands.current;
+              void current.action.run(() => current.run("line"));
+              return true;
+            },
           },
-        },
-      ]),
+          {
+            key: "Mod-Shift-Enter",
+            run: () => {
+              const current = commands.current;
+              void current.action.run(() => current.run("file"));
+              return true;
+            },
+          },
+          {
+            key: "Mod-s",
+            run: () => {
+              const current = commands.current;
+              void current.action.run(current.save);
+              return true;
+            },
+          },
+        ]),
+      ),
     ],
     [file, fileLanguage],
   );
@@ -127,12 +209,41 @@ export function Editor() {
     const current = commands.current;
     if (current.doc) current.draft(current.doc, content);
   }, []);
+  const update = useCallback(
+    (event: ViewUpdate) => {
+      editorMemory.delete(memoryKey);
+      editorMemory.set(memoryKey, {
+        state: event.state,
+        scrollTop: event.view.scrollDOM.scrollTop,
+      });
+      if (editorMemory.size > 20) editorMemory.delete(editorMemory.keys().next().value!);
+      if (event.selectionSet || event.docChanged) {
+        const selection = event.state.selection.main;
+        const line = event.state.doc.lineAt(selection.head);
+        setPosition({
+          line: line.number,
+          column: selection.head - line.from + 1,
+          selected: !selection.empty,
+        });
+      }
+    },
+    [memoryKey],
+  );
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!runMenu.current?.contains(event.target as Node) && runMenu.current)
+        runMenu.current.open = false;
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, []);
   return (
     <div className="pane editor-pane">
       <div className="pane-toolbar editor-toolbar">
         <FileCode2 size={16} aria-hidden="true" />
         <select
           aria-label="Project file"
+          title={file}
           value={file}
           onChange={(event) => {
             wb.setFile(event.target.value);
@@ -145,6 +256,19 @@ export function Editor() {
             <option key={path}>{path}</option>
           ))}
         </select>
+        <button
+          className="icon"
+          aria-label="New file"
+          title="New file"
+          disabled={!connected}
+          onClick={() => {
+            setNewPath("");
+            setCreateError("");
+            setCreating(true);
+          }}
+        >
+          <FilePlus2 size={15} />
+        </button>
         <span className="spacer" />
         <button
           className="save-file"
@@ -166,12 +290,50 @@ export function Editor() {
             conflict ||
             !connected
           }
-          title={`Run the entire file in ${languageName(fileLanguage || language)} (${modifier}+Enter)`}
-          onClick={() => void action.run(run)}
+          title={`Run ${position.selected ? "selected code" : "the entire file"} in ${languageName(fileLanguage || language)} (${modifier}+Enter)`}
+          onClick={() => void action.run(() => run(position.selected ? "selection" : "file"))}
         >
-          {action.busy ? <Spinner /> : <Play size={13} fill="currentColor" />}Run file
+          {action.busy ? <Spinner /> : <Play size={13} fill="currentColor" />}
+          {position.selected ? "Run selection" : "Run file"}
         </button>
+        <details
+          className="editor-run-menu"
+          ref={runMenu}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }
+          }}
+        >
+          <summary aria-label="Run options" title="Run options">
+            <ChevronDown size={14} />
+          </summary>
+          <div className="editor-menu-content">
+            <button
+              disabled={!doc || !fileLanguage || conflict || !connected || action.busy}
+              onClick={() => void action.run(() => run("file"))}
+            >
+              Run entire file <kbd>{modifier}+Shift+Enter</kbd>
+            </button>
+            <button
+              disabled={!doc || !fileLanguage || conflict || !connected || action.busy}
+              onClick={() => void action.run(() => run("line"))}
+            >
+              Run current line <kbd>Shift+Enter</kbd>
+            </button>
+          </div>
+        </details>
       </div>
+      {doc && fileError && (
+        <div className="panel-notice" role="status">
+          <span>Couldn’t refresh this file. {fileError}</span>
+          <button disabled={!connected || action.busy} onClick={() => void action.run(retryOpen)}>
+            Retry opening file
+          </button>
+        </div>
+      )}
       {fileLanguage && fileLanguage !== language && (
         <div className="panel-notice">
           This file runs in {languageName(fileLanguage)}. The console is viewing{" "}
@@ -233,18 +395,59 @@ export function Editor() {
           aria-label={`Code editor: ${file}`}
           value={draft?.content ?? doc.content}
           onChange={change}
+          onUpdate={update}
+          initialState={initialState}
+          onCreateEditor={(view) => {
+            editorView.current = view;
+            const selection = view.state.selection.main;
+            const line = view.state.doc.lineAt(selection.head);
+            setPosition({
+              line: line.number,
+              column: selection.head - line.from + 1,
+              selected: !selection.empty,
+            });
+            const top = editorMemory.get(memoryKey)?.scrollTop ?? 0;
+            requestAnimationFrame(() => {
+              if (view.dom.isConnected) view.scrollDOM.scrollTop = top;
+            });
+          }}
           height="100%"
           extensions={extensions}
           basicSetup={editorSetup}
         />
       ) : (
         <Empty icon={<FileCode2 size={25} />}>
-          <strong>{file ? "Opening your file…" : "Your project starts here"}</strong>
+          <strong>
+            {fileError
+              ? "Couldn’t open this file"
+              : file
+                ? "Opening your file…"
+                : "Your project starts here"}
+          </strong>
           <p>
-            {file
-              ? "Loading the working document."
-              : "Add a script to your project folder, then reload the workspace."}
+            {fileError ||
+              (file
+                ? "Loading the working document."
+                : "Create a script or notes file to develop your work alongside the conversation.")}
           </p>
+          {fileError && (
+            <button disabled={!connected || action.busy} onClick={() => void action.run(retryOpen)}>
+              Retry opening file
+            </button>
+          )}
+          {!file && (
+            <button
+              disabled={!connected}
+              onClick={() => {
+                setNewPath("");
+                setCreateError("");
+                setCreating(true);
+              }}
+            >
+              <FilePlus2 size={14} />
+              Create a file
+            </button>
+          )}
         </Empty>
       )}
       <div className="editor-footer">
@@ -253,6 +456,11 @@ export function Editor() {
           <span className="separator">/</span>
           {doc ? `Revision ${doc.version}` : "No file"}
         </span>
+        {doc && (
+          <span className="cursor-position">
+            Ln {position.line}, Col {position.column}
+          </span>
+        )}
         {doc && (
           <SavedLabel dirty={dirty}>
             {draft
@@ -280,10 +488,64 @@ export function Editor() {
         ) : (
           <span className="shortcut-hint">
             <kbd>{modifier}</kbd>
-            <kbd>↵</kbd> run file
+            <kbd>↵</kbd> {position.selected ? "run selection" : "run file"}
           </span>
         )}
       </div>
+      {creating && (
+        <Dialog title="New file" onClose={() => setCreating(false)}>
+          <p>Create a file in this project. Use .py for Python, .R for R, or .md for notes.</p>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!newPath.trim()) return;
+              void createAction.run(async () => {
+                setCreateError("");
+                try {
+                  const created = await api<Document>("/documents", "POST", {
+                    path: newPath.trim(),
+                  });
+                  wb.setFile(created.path);
+                  if (/\.r$/i.test(created.path)) wb.setLanguage("r");
+                  else if (/\.py$/i.test(created.path)) wb.setLanguage("python");
+                  setCreating(false);
+                  wb.showPanel("editor");
+                } catch (error) {
+                  setCreateError(error instanceof Error ? error.message : String(error));
+                }
+              });
+            }}
+          >
+            <label className="field-label" htmlFor="new-file-path">
+              File name
+            </label>
+            <input
+              id="new-file-path"
+              autoFocus
+              value={newPath}
+              maxLength={1000}
+              placeholder="e.g. compare_conditions.py"
+              onChange={(event) => setNewPath(event.target.value)}
+            />
+            {createError && (
+              <p className="inline-error" role="alert">
+                {createError}
+              </p>
+            )}
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setCreating(false)}>
+                Cancel
+              </button>
+              <button
+                className="primary"
+                disabled={!newPath.trim() || !connected || createAction.busy}
+              >
+                {createAction.busy && <Spinner />}Create file
+              </button>
+            </div>
+          </form>
+        </Dialog>
+      )}
     </div>
   );
 }
