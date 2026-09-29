@@ -60,7 +60,12 @@ function fixture() {
     });
     return service.wait(record.id);
   };
-  const observe = (record: Execution, names: string[], conversation = conversationId) => {
+  const observe = (
+    record: Execution,
+    names: string[],
+    conversation = conversationId,
+    kind: "environment_preview" | "execution_result" = "environment_preview",
+  ) => {
     service.context.observeContext(conversation, [
       {
         role: "toolResult",
@@ -68,7 +73,7 @@ function fixture() {
         toolName: "inspect_environment",
         content: [{ type: "text", text: "bounded preview" }],
         details: {
-          biologueObservation: { executionId: record.id, names, kind: "environment_preview" },
+          biologueObservation: { executionId: record.id, names, kind },
         },
         isError: false,
         timestamp: Date.now(),
@@ -322,6 +327,67 @@ test("a proposed opaque call considers changes to dependencies not named in its 
         (issue) => issue.kind === "unknown" && issue.message.includes("unresolved dependencies"),
       ),
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("unrelated results and inspections cannot erase unreviewed indirect dependencies", async () => {
+  const f = fixture();
+  try {
+    await f.run("A = 1\nB = 1");
+    await f.inspect(["A", "B"]);
+    const change = await f.run("A = 2");
+    const before = await f.run('eval("A")', { agent: true });
+    assert.equal(before.status, "not_executed");
+    const unrelated = await f.run("print(1)", { agent: true });
+    f.observe(unrelated, [], f.conversationId, "execution_result");
+    await f.run("B = 2");
+    await f.inspect(["B"]);
+    await f.inspect([]);
+    const after = await f.run('eval("A")', { agent: true });
+    assert.equal(after.status, "not_executed");
+    assert.ok(after.contextCheck!.issues.some((issue) => issue.executionId === change.id));
+    const accepted = await f.run('eval("A")', { agent: true, acknowledgment: acknowledge(after) });
+    assert.equal(accepted.status, "succeeded");
+    f.observe(accepted, [], f.conversationId, "execution_result");
+    // Acknowledgment applies to the warned code, not to different future code.
+    assert.equal((await f.run('eval("A + 1")', { agent: true })).status, "not_executed");
+    await f.inspect(["A"]);
+    assert.equal((await f.run('eval("A + 1")', { agent: true })).status, "succeeded");
+  } finally {
+    await f.close();
+  }
+});
+
+test("an old advanced anchor is migrated without discarding pending change evidence", async () => {
+  const f = fixture();
+  try {
+    await f.run("A = 1");
+    await f.inspect();
+    await f.run("A = 2");
+    f.store.db.exec("UPDATE runtime_anchors SET seq=1000");
+    f.store.delete("migration", "observation-coverage");
+    const { StaleContext } = await import("../src/stale-context.ts");
+    new StaleContext(f.store, f.service.repository);
+    assert.equal((await f.run('eval("A")', { agent: true })).status, "not_executed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("fresh data previews allow built-in calls after opaque activity without hiding explicit callable changes", async () => {
+  const f = fixture();
+  try {
+    await f.run("A = 1");
+    await f.inspect();
+    await f.run("print('A' in globals())");
+    assert.equal((await f.run("print(A)", { agent: true })).status, "not_executed");
+    await f.inspect();
+    assert.equal((await f.run("print(A)", { agent: true })).status, "succeeded");
+    assert.equal((await f.run('eval("A")', { agent: true })).status, "not_executed");
+    await f.run("print = lambda x: x");
+    assert.equal((await f.run("print(A)", { agent: true })).status, "not_executed");
   } finally {
     await f.close();
   }

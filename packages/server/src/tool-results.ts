@@ -144,7 +144,12 @@ export function executionText(
   return blocks.filter(Boolean).join("\n\n");
 }
 
-export function inspectionResult(record: Execution, outputs: OutputService, names?: string[]) {
+export function inspectionResult(
+  record: Execution,
+  outputs: OutputService,
+  names?: string[],
+  offset = 0,
+) {
   const decoded = outputs.result(record.id);
   if (decoded?.kind !== "environment")
     throw new Error(`Inspection ${record.id} has no environment result.`);
@@ -154,13 +159,15 @@ export function inspectionResult(record: Execution, outputs: OutputService, name
   let remaining = 12_000;
   for (const row of selected) {
     const line = `${JSON.stringify(row.name)} (${row.type}): ${row.preview}`;
-    if (observed.length >= 100 || line.length + 1 > remaining) break;
+    if (lines.length >= 100 || line.length + 1 > remaining) break;
     lines.push(line);
-    observed.push(row.name);
+    if (row.observed !== false) observed.push(row.name);
     remaining -= line.length + 1;
   }
-  if (observed.length < selected.length)
-    lines.push(`[Showing ${observed.length} of ${selected.length} objects; use names to select.]`);
+  if (lines.length < selected.length || decoded.next !== undefined)
+    lines.push(
+      `[More: inspect_environment offset=${lines.length < selected.length ? offset + lines.length : decoded.next}${names ? " with the same names" : ""}.]`,
+    );
   else if (!lines.length) lines.push(names ? "No matching objects." : "No objects.");
   return textResult(`Environment preview (execution ${record.id})\n${lines.join("\n")}`, {
     executionId: record.id,

@@ -18,6 +18,7 @@ export class JupyterKernels implements KernelBackend {
   private connections = new Map<Language, Session.ISessionConnection>();
   private pending = new Map<Language, Promise<Session.ISessionConnection>>();
   private generations = new Map<Language, string>();
+  private inflight = new Map<Language, () => void>();
   private settings: ServerConnection.ISettings;
   constructor(
     private project: string,
@@ -176,20 +177,42 @@ export class JupyterKernels implements KernelBackend {
         output({ kind: "clear", wait: message.content.wait });
     };
     kernel.iopubMessage.connect(onIOPub);
+    const detach = () => {
+      kernel.iopubMessage.disconnect(onIOPub);
+      future.dispose();
+      if (this.inflight.get(language) === detach) this.inflight.delete(language);
+    };
+    this.inflight.set(language, detach);
     try {
       const reply = await future.done;
       if (reply.content.status === "error")
         throw new Error(`${reply.content.ename}: ${reply.content.evalue}`);
       if (reply.content.status === "abort") throw new Error("Kernel aborted the execution.");
     } finally {
-      kernel.iopubMessage.disconnect(onIOPub);
-      future.dispose();
+      detach();
     }
   }
   async interrupt(language: Language) {
     await this.connections.get(language)?.kernel?.interrupt();
   }
+  async reconcile(language: Language, signal: AbortSignal) {
+    const session = await this.ensure(language);
+    const kernel = session.kernel!;
+    if (signal.aborted || kernel.connectionStatus !== "connected" || kernel.status !== "idle")
+      return false;
+    const info = await kernel.requestKernelInfo();
+    return (
+      !signal.aborted &&
+      info?.content.status === "ok" &&
+      kernel.connectionStatus === "connected" &&
+      kernel.status === "idle"
+    );
+  }
+  abandon(language: Language) {
+    this.inflight.get(language)?.();
+  }
   dispose() {
+    for (const detach of [...this.inflight.values()]) detach();
     for (const connection of this.connections.values()) connection.dispose();
     this.connections.clear();
     this.sessionManager?.dispose();

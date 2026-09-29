@@ -250,12 +250,19 @@ export async function createApp(options: AppOptions) {
     return { ok: true };
   });
   app.post("/api/inspect", async (request, reply) => {
-    const body = z.object({ language }).parse(request.body);
+    const body = z
+      .object({
+        language,
+        names: z.array(z.string().max(1000)).max(100).optional(),
+        offset: z.number().int().min(0).default(0),
+      })
+      .parse(request.body);
     return reply.code(202).send(
       execution.submit({
         language: body.language,
         actor: "human",
-        code: adapters[body.language].inspectionCode,
+        code: adapters[body.language].inspectionCode(body),
+        inspectionOptions: { names: body.names, offset: body.offset },
         inspection: "environment",
         purpose: "inspection",
       }),

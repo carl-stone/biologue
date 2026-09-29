@@ -8,6 +8,7 @@ export type ExecutionStatus =
   | "interrupted"
   | "cancelled"
   | "abandoned"
+  | "completion_unknown"
   | "not_executed";
 export interface ContextIssue {
   id: string;
@@ -46,10 +47,12 @@ export interface ExecutionSummary {
   sessionId?: string;
   kernelId?: string;
   kernelGeneration?: string;
+  kernelUncertain?: boolean;
   activitySequence?: number;
   contextCheck?: ExecutionContextCheck;
   error?: string;
   inspection?: "environment" | "table";
+  inspectionOptions?: EnvironmentQuery;
 }
 export interface Execution extends ExecutionSummary {
   code: string;
@@ -87,9 +90,14 @@ export interface TableResult {
   rows: unknown[][];
   truncated: boolean;
 }
+export interface EnvironmentQuery {
+  names?: string[];
+  offset?: number;
+}
 export interface EnvironmentResult {
   kind: "environment";
-  rows: { name: string; type: string; preview: string }[];
+  rows: { name: string; type: string; preview: string; observed?: false }[];
+  next?: number;
 }
 export type InspectionResult = TableResult | EnvironmentResult;
 export interface Page<T> {

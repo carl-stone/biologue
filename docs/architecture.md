@@ -116,10 +116,24 @@ distinguish bounded environment previews from successful execution results;
 neither implies a complete examination of an object's contents. Only explicitly
 returned environment rows establish preview observations. `inspect_environment`
 accepts optional names to retrieve objects omitted from a bounded response.
+Name selection and pagination happen inside the kernel before values are inspected.
+Each page contains at most 100 objects. Python previews use bounded built-in
+representations; R previews avoid custom formatters and skip active bindings.
+Skipped or failed rows do not establish observations. R promises can still be
+evaluated when their names are selected.
+Explicitly requested missing names report their absence and establish a checkpoint
+for that name. An inventory page does not establish absence for omitted names.
 Historical artifact previews retain their original execution checkpoint and
 cannot advance or overwrite a newer observation. Reading a script or execution
 source alone does not refresh live-object observations. Pi remains the canonical
 transcript; this index contains references and coverage metadata only.
+
+The conversation's starting checkpoint stays fixed. An unrelated result, empty
+inspection, or preview of another object cannot clear pending changes. For code
+with unresolved dependencies, each intervening effect must have matching object
+coverage or be the agent's own operation whose result was delivered. Receiving
+that operation does not cover earlier human activity. Existing mutable checkpoints
+are reset conservatively during migration; per-object observations are retained.
 
 After approval and queue wait, the backend supplies its kernel identity through
 a synchronous callback immediately before `requestExecute`. While still owning
@@ -145,7 +159,7 @@ The check is advisory evidence analysis, not a transaction or complete dependenc
 graph. Conservative alias links can cause extra warnings after rebinding. Limits
 on dependencies, aliases, and warning history are reported as uncertainty. Native
 inspection helpers are treated as observations rather than source-level writes;
-their custom object representations can still have side effects. Background
+selected R promises and custom table previews can still have side effects. Background
 tasks, external files, custom dispatch, and execution outside the harness are not
 fully tracked. Absence of a warning does not certify unchanged scientific inputs.
 
@@ -186,7 +200,9 @@ which preserves historical source revisions and detects interrupted saves.
 An output does not rewrite the execution record. `OutputService` stores each raw
 event with a payload reference and maintains a separate display projection. A
 slot's artifact ID changes when its content changes; historical IDs continue to
-retrieve historical bytes. Display IDs are scoped to the kernel. Inspection
+retrieve historical bytes. Display IDs are scoped to language, kernel ID, and
+kernel generation. Legacy records without a generation are scoped to their own
+execution, so a reused ID after restart cannot overwrite an earlier display. Inspection
 responses are decoded and validated by the language adapter at the server boundary.
 
 The API streams small status and output-invalidation events. Initial execution
@@ -195,6 +211,15 @@ explicitly. The workbench uses selector subscriptions and throttled metadata que
 Subscriber failures cannot prevent queue cleanup. Shutdown drains/cancels all
 actors before kernel connections and storage close, with abandoned status when
 kernel completion cannot be confirmed.
+
+Cancellation waits up to two seconds for execution to settle, not merely for the
+interrupt request to return. If completion remains unknown, the record receives
+`completion_unknown`, late output is ignored, and the language session is
+quarantined durably. Further execution requires a bounded, successful kernel-info
+exchange with an idle, connected kernel. Other languages remain available. This
+readiness check never reruns scientific code and does not revise the unknown
+historical outcome. Restart recovery applies the same gate to unfinished active
+work; requests cancelled before dispatch need no quarantine.
 
 ## The implemented Pi boundary
 

@@ -1,13 +1,13 @@
 # Verification after the architecture refactor and runtime context checks
 
-Verified in `codex-universal` on September 28, 2026, using Node 22.22.2 and Pi 0.87.1:
+Verified in `codex-universal` on September 29, 2026, using Node 22.22.2 and Pi 0.87.1:
 
 | Check                                                 | Result                                      |
 | ----------------------------------------------------- | ------------------------------------------- |
 | TypeScript check and production frontend/server build | Passed                                      |
-| Core service and AgentSession tests                   | 74 passed                                   |
+| Core service and AgentSession tests                   | 82 passed                                   |
 | Live Jupyter integration with `CARL_TEST_R=1`         | Passed with Python and Ark/R                |
-| Chromium workbench and UI regressions                 | 16 passed, including automated axe checks   |
+| Chromium workbench and UI regressions                 | 17 passed, including automated axe checks   |
 | Tauri `cargo check`                                   | Passed September 26; Rust code unchanged    |
 | npm dependency audit                                  | No vulnerabilities reported at installation |
 
@@ -21,6 +21,11 @@ Runtime-context integration exercises human changes during agent approval waits
 in both Python and R. It verifies that a warning prevents dispatch, fresh inspection
 allows a retry, and a Python kernel restart with the same kernel ID invalidates
 earlier observations.
+
+Live inspection checks cover selected names, missing bindings, pagination, large
+Python values and an R ALTREP vector, skipped R active bindings, and custom
+representations that must never run. A same-ID Python restart followed by a reused
+display ID leaves the earlier generation's displayed artifact unchanged.
 
 The architecture regressions additionally cover:
 
@@ -40,6 +45,11 @@ The architecture regressions additionally cover:
   migration of existing records without changing their artifact IDs.
 - Display-slot updates within and across executions, with kernel-scoped identities
   and immutable historical artifacts.
+- Unrelated or empty tool results cannot clear pending indirect dependencies;
+  old mutable observation checkpoints migrate conservatively.
+- Cancellation and reconciliation deadlines, quarantine surviving server restart,
+  late callbacks while newer work owns the queue, and AgentSession cancellation
+  when both the execution and interrupt request never respond.
 - Subscriber exceptions, persistence failures at execution start/completion,
   shutdown of human and agent work, and late callbacks from an unresponsive kernel.
 - Source analysis for R/Python reads, writes, possible aliases, incomplete syntax,
@@ -74,6 +84,8 @@ retrying failed page loads, and queued corrections remaining visible after cance
 without duplicate messages when delivery completes. These state tests use an explicitly scripted event stream
 and API fixture; the main workspace workflow uses the real server and Python
 kernel.
+Environment paging, targeted agent inspections preserving the inventory view,
+and the “Completion unknown” execution label also have UI coverage.
 
 Automated axe checks scan the initial workspace, research context, agent, data,
 and help dialog against WCAG 2 A/AA and 2.1 AA rules. They do not substitute for

@@ -64,7 +64,12 @@ export async function scriptedModel(settings: Settings = {}) {
 }
 
 export async function fixture(
-  options: { root?: string; kernel?: KernelBackend; settings?: Settings } = {},
+  options: {
+    root?: string;
+    kernel?: KernelBackend;
+    settings?: Settings;
+    cancellationTimeoutMs?: number;
+  } = {},
 ) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), "carl-session-"));
   if (!existsSync(join(root, "analysis.py"))) writeFileSync(join(root, "analysis.py"), "x = 1");
@@ -87,6 +92,7 @@ export async function fixture(
     events,
     kernel,
     new OutputService(store, events, join(stateDir, "artifacts")),
+    options.cancellationTimeoutMs,
   );
   const permissions = new Permissions(store, events);
   const sessions = new ConversationSessions(root, stateDir, store, events);

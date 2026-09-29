@@ -1212,6 +1212,7 @@ kbd {
   color: #487038;
 }
 .execution-status.failed,
+.execution-status.completion_unknown,
 .execution-status.abandoned {
   color: var(--error);
 }

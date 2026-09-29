@@ -524,7 +524,7 @@ test(
       assert.equal(f.execution.repository.list().items.at(-1)!.status, "not_executed");
       const inspection = contentText(toolResults(f.requests.at(-1)!)[0].content);
       assert.equal(inspection.match(/^"object_/gm)?.length, 100);
-      assert.match(inspection, /Showing 100 of 120 objects/);
+      assert.match(inspection, /More: inspect_environment offset=100/);
       assert.doesNotMatch(inspection, /object_110/);
       f.faux.setResponses([
         call("inspect_environment", { language: "python", names: ["object_110"] }),
@@ -910,6 +910,45 @@ test(
         "interrupted",
       );
     } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "AgentSession cancellation settles even when kernel execution and interrupt never respond",
+  timeout,
+  async () => {
+    const started = deferred();
+    const release = deferred();
+    const stopped = deferred();
+    const f = await fixture({
+      cancellationTimeoutMs: 20,
+      kernel: {
+        execute: async (_language, _code, output, identity) => {
+          identity({ sessionId: "shared", kernelId: "kernel" });
+          started.resolve();
+          await release.promise;
+          output({ kind: "stream", text: "late output" });
+          stopped.resolve();
+        },
+        interrupt: () => new Promise(() => {}),
+      },
+    });
+    try {
+      f.faux.setResponses([call("inspect_environment", { language: "python" })]);
+      const finished = f.finished();
+      const run = f.supervisor.start(f.conversationId, "Inspect the environment.");
+      await started.promise;
+      await f.supervisor.cancel(run.id);
+      assert.equal((await finished).status, "cancelled");
+      const record = f.execution.repository.list().items[0];
+      assert.equal(record.status, "completion_unknown");
+      release.resolve();
+      await stopped.promise;
+      assert.equal(f.execution.outputs.count(record.id), 0);
+    } finally {
+      release.resolve();
       await f.close();
     }
   },

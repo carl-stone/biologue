@@ -175,11 +175,18 @@ export function Environment() {
   const records = snapshot.executions.filter((item) => item.language === language);
   const latest = [...records]
     .reverse()
-    .find((item) => item.inspection === "environment" && item.status === "succeeded");
+    .find(
+      (item) =>
+        item.inspection === "environment" &&
+        !item.inspectionOptions?.names &&
+        item.status === "succeeded",
+    );
   const result = useResource<InspectionResult | null>(
     latest ? `/executions/${latest.id}/result` : null,
   );
   const rows: EnvironmentRow[] = result.data?.kind === "environment" ? result.data.rows : [];
+  const offset = latest?.inspectionOptions?.offset ?? 0;
+  const next = result.data?.kind === "environment" ? result.data.next : undefined;
   const pending =
     action.busy ||
     records.some(
@@ -197,7 +204,7 @@ export function Environment() {
   const filtered = rows.filter((row) =>
     `${row.name} ${row.type}`.toLowerCase().includes(query.toLowerCase()),
   );
-  const inspect = () => action.run(() => api("/inspect", "POST", { language }));
+  const inspect = (offset = 0) => action.run(() => api("/inspect", "POST", { language, offset }));
   return (
     <div className="pane environment">
       <div className="pane-toolbar">
@@ -216,6 +223,29 @@ export function Environment() {
         </button>
       </div>
       {result.error && <div className="inline-error">{result.error}</div>}
+      {(offset > 0 || next !== undefined) && (
+        <div className="pane-toolbar">
+          <button
+            className="text-button"
+            disabled={pending || !connected || offset === 0}
+            onClick={() => void inspect(Math.max(0, offset - 100))}
+          >
+            <ChevronLeft size={14} /> Previous objects
+          </button>
+          <span className="spacer" />
+          <span>
+            Objects {offset + 1}–{offset + rows.length}
+          </span>
+          <span className="spacer" />
+          <button
+            className="text-button"
+            disabled={pending || !connected || next === undefined}
+            onClick={() => next !== undefined && void inspect(next)}
+          >
+            Next objects <ChevronRight size={14} />
+          </button>
+        </div>
+      )}
       {lastInspection?.status === "failed" && (
         <div className="inline-error" role="status">
           <strong>Inspection could not finish.</strong>
@@ -236,7 +266,7 @@ export function Environment() {
           <Search size={14} />
           <input
             aria-label="Filter objects"
-            placeholder="Find an object or type…"
+            placeholder="Filter this page by name or type…"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />

@@ -530,7 +530,12 @@ test("display updates across executions share a kernel-scoped projection without
   const f = fixture();
   try {
     const outputs = new OutputService(f.store, f.events, join(f.root, "artifacts"));
-    const first = { id: "first", language: "python" as const, kernelId: "one" };
+    const first = {
+      id: "first",
+      language: "python" as const,
+      kernelId: "one",
+      kernelGeneration: "generation-one",
+    };
     const old = outputs.append(first, {
       kind: "display",
       displayId: "same",
@@ -548,7 +553,177 @@ test("display updates across executions share a kernel-scoped projection without
     assert.equal(outputs.get(old.id)?.data?.["image/png"], "old");
     const unrelated = outputs.visible({ executionId: "different-kernel" }).items[0];
     assert.equal(outputs.get(unrelated.id)?.data?.["image/png"], "unrelated");
+    outputs.append(
+      { ...first, id: "restarted", kernelGeneration: "generation-two" },
+      { kind: "update", displayId: "same", data: { "image/png": "after restart" } },
+    );
+    assert.equal(outputs.visible({ executionId: first.id }).items[0].id, next.id);
+    const legacy = { id: "legacy", language: "python" as const, kernelId: "one" };
+    const legacyOutput = outputs.append(legacy, {
+      kind: "display",
+      displayId: "same",
+      data: { "image/png": "legacy" },
+    });
+    outputs.append(
+      { ...legacy, id: "unknown-generation" },
+      { kind: "update", displayId: "same", data: { "image/png": "unknown" } },
+    );
+    assert.equal(outputs.visible({ executionId: legacy.id }).items[0].id, legacyOutput.id);
   } finally {
     f.close();
   }
 });
+
+test("cancellation deadlines quarantine a session across restart until readiness is confirmed", async () => {
+  const f = fixture();
+  let release!: () => void;
+  let ready = false;
+  const calls: string[] = [];
+  const kernel: KernelBackend = {
+    async execute(language, code, output, started) {
+      started({ sessionId: language, kernelId: language, kernelGeneration: "one" });
+      calls.push(code);
+      if (code === "A = 1")
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      output({ kind: "stream", text: "result" });
+    },
+    async interrupt() {},
+    async reconcile() {
+      return ready;
+    },
+  };
+  const outputs = new OutputService(f.store, f.events, join(f.root, "artifacts"));
+  const service = new ExecutionService(f.store, f.events, kernel, outputs, 20);
+  let reopened: ExecutionService | undefined;
+  try {
+    const active = service.submit({ language: "python", actor: "human", code: "A = 1" });
+    while (!release) await delay(5);
+    const queued = service.submit({ language: "python", actor: "human", code: "must_not_run()" });
+    await Promise.all([service.cancel(active.id), service.cancel(active.id)]);
+    assert.equal((await service.wait(active.id)).status, "completion_unknown");
+    assert.equal((await service.wait(queued.id)).status, "failed");
+    assert.equal(service.get(active.id)?.kernelUncertain, true);
+    assert.equal(
+      (
+        await service.wait(
+          service.submit({ language: "r", actor: "human", code: "other_language" }).id,
+        )
+      ).status,
+      "succeeded",
+    );
+    await service.close();
+    reopened = new ExecutionService(f.store, f.events, kernel, outputs, 20);
+    const blocked = await reopened.wait(
+      reopened.submit({ language: "python", actor: "human", code: "still_blocked()" }).id,
+    );
+    assert.equal(blocked.status, "failed");
+    assert.deepEqual(calls, ["A = 1", "other_language"]);
+    release();
+    await delay(0);
+    assert.equal(outputs.count(active.id), 0, "Late callbacks cannot alter the unknown execution");
+    ready = true;
+    const next = await reopened.wait(
+      reopened.submit({ language: "python", actor: "human", code: "fresh()" }).id,
+    );
+    assert.equal(next.status, "succeeded");
+    assert.equal(reopened.get(active.id)?.kernelUncertain, false);
+    assert.equal(reopened.get(active.id)?.status, "completion_unknown");
+  } finally {
+    release?.();
+    await service.close();
+    await reopened?.close();
+    f.close();
+  }
+});
+
+test(
+  "a stalled readiness check is bounded and late completion cannot release a newer execution slot",
+  { timeout: 5000 },
+  async () => {
+    const f = fixture();
+    const holds = new Map<string, () => void>();
+    const calls: string[] = [];
+    let ready = false;
+    const kernel: KernelBackend = {
+      async execute(language, code, output, started) {
+        started({ sessionId: language, kernelId: language, kernelGeneration: "one" });
+        calls.push(code);
+        await new Promise<void>((resolve) => holds.set(code, resolve));
+        output({ kind: "stream", text: code });
+      },
+      async interrupt() {},
+      reconcile: () => (ready ? Promise.resolve(true) : new Promise(() => {})),
+    };
+    const outputs = new OutputService(f.store, f.events, join(f.root, "artifacts"));
+    const service = new ExecutionService(f.store, f.events, kernel, outputs, 20);
+    const submit = (code: string) => service.submit({ language: "python", actor: "human", code });
+    try {
+      const old = submit("old()");
+      while (!holds.has("old()")) await delay(1);
+      await service.cancel(old.id);
+      const blocked = await service.wait(submit("blocked()").id);
+      assert.equal(blocked.status, "failed");
+      assert.equal(service.get(old.id)?.kernelUncertain, true);
+      ready = true;
+      const fresh = submit("fresh()");
+      while (!holds.has("fresh()")) await delay(1);
+      const queued = submit("queued()");
+      holds.get("old()")!();
+      await delay(10);
+      assert.deepEqual(calls, ["old()", "fresh()"]);
+      assert.equal(outputs.count(old.id), 0);
+      assert.equal(service.get(queued.id)?.status, "queued");
+      holds.get("fresh()")!();
+      assert.equal((await service.wait(fresh.id)).status, "succeeded");
+      while (!holds.has("queued()")) await delay(1);
+      holds.get("queued()")!();
+      assert.equal((await service.wait(queued.id)).status, "succeeded");
+    } finally {
+      for (const release of holds.values()) release();
+      await service.close();
+      f.close();
+    }
+  },
+);
+
+test(
+  "cancellation during kernel connection cannot dispatch code later or quarantine an unused session",
+  { timeout: 5000 },
+  async () => {
+    const f = fixture();
+    let connected!: () => void;
+    let dispatched = false;
+    const service = new ExecutionService(
+      f.store,
+      f.events,
+      {
+        async execute(language, _code, _output, started) {
+          await new Promise<void>((resolve) => {
+            connected = resolve;
+          });
+          started({ sessionId: language, kernelId: language });
+          dispatched = true;
+        },
+        async interrupt() {},
+      },
+      new OutputService(f.store, f.events, join(f.root, "artifacts")),
+      20,
+    );
+    try {
+      const record = service.submit({ language: "python", actor: "human", code: "must_not_run()" });
+      while (!connected) await delay(1);
+      await service.cancel(record.id);
+      assert.equal((await service.wait(record.id)).status, "cancelled");
+      assert.equal(service.get(record.id)?.kernelUncertain, undefined);
+      connected();
+      await delay(0);
+      assert.equal(dispatched, false);
+    } finally {
+      connected?.();
+      await service.close();
+      f.close();
+    }
+  },
+);

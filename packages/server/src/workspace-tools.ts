@@ -176,7 +176,7 @@ export function workspaceTools(
       name: "inspect_environment",
       label: "Inspect shared environment",
       description:
-        "Preview live object names, types, and values. Runs recorded code; custom representations may have side effects.",
+        "Preview live object names, types, and values with bounded recorded code. R promises may be evaluated.",
       parameters: Type.Object({
         language,
         names: Type.Optional(
@@ -185,12 +185,16 @@ export function workspaceTools(
             description: "Select specific objects; omit to list the environment.",
           }),
         ),
+        offset: Type.Optional(
+          Type.Integer({ minimum: 0, description: "Object index (0-based; default 0)." }),
+        ),
       }),
       execute: async (toolCallId, raw, signal) => {
         const args = z
           .object({
             language: z.enum(["python", "r"]),
             names: z.array(z.string().max(1000)).max(100).optional(),
+            offset: z.number().int().min(0).default(0),
           })
           .parse(raw);
         signal?.throwIfAborted();
@@ -199,7 +203,8 @@ export function workspaceTools(
           actor: "agent",
           purpose: "inspection",
           inspection: "environment",
-          code: adapters[args.language].inspectionCode,
+          code: adapters[args.language].inspectionCode(args),
+          inspectionOptions: { names: args.names, offset: args.offset },
           runId: run.id,
           conversationId: run.conversationId,
           toolCallId,
@@ -207,7 +212,7 @@ export function workspaceTools(
         const finished = await execution.wait(record.id);
         if (finished.status !== "succeeded")
           return executionResult(finished, execution.outputs, execution.context);
-        return inspectionResult(finished, execution.outputs, args.names);
+        return inspectionResult(finished, execution.outputs, args.names, args.offset);
       },
     },
     {
@@ -378,7 +383,9 @@ export function workspaceTools(
             ? {
                 biologueObservation: {
                   executionId: record.id,
-                  names: observed.rows.map((row) => row.name),
+                  names: observed.rows
+                    .filter((row) => row.observed !== false)
+                    .map((row) => row.name),
                   kind: "environment_preview" as const,
                 },
               }

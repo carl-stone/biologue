@@ -48,7 +48,20 @@ export class StaleContext {
         conversation_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
         PRIMARY KEY(conversation_id, tool_call_id)
       );
+      CREATE TABLE IF NOT EXISTS runtime_reviewed_activity (
+        conversation_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+        PRIMARY KEY(conversation_id, execution_id)
+      );
     `);
+    // Older versions advanced anchors on any result, including empty previews.
+    // Recover conservatively; per-object observations still cover known changes.
+    if (!store.get("migration", "observation-coverage"))
+      store.transaction(() => {
+        store.db.exec("UPDATE runtime_anchors SET seq=0");
+        // Reindex receipts when Pi next delivers them; this never replays tools.
+        store.db.exec("DELETE FROM runtime_receipts");
+        store.put("migration", "observation-coverage", true);
+      });
   }
   private head(language: Language) {
     return Number(
@@ -126,11 +139,15 @@ export class StaleContext {
               receipt.kind,
             );
         }
-        this.store.db
-          .prepare(
-            `UPDATE runtime_anchors SET seq=MAX(seq, ?) WHERE conversation_id=? AND language=?`,
-          )
-          .run(activity.seq, conversationId, activity.language);
+        // Receiving our own execution result covers that operation, not intervening
+        // work by the scientist or another conversation. Inspections cover names only.
+        if (receipt.kind === "execution_result") {
+          const record = this.executions.get(receipt.executionId);
+          if (record?.actor === "agent" && record.conversationId === conversationId)
+            this.store.db
+              .prepare("INSERT OR IGNORE INTO runtime_reviewed_activity VALUES (?, ?)")
+              .run(conversationId, receipt.executionId);
+        }
         this.store.db
           .prepare("INSERT INTO runtime_receipts VALUES (?, ?)")
           .run(conversationId, message.toolCallId);
@@ -187,7 +204,6 @@ export class StaleContext {
         kind: "unknown",
         message: "Dependencies or side effects could not be fully analyzed.",
       });
-    let earliest = anchor;
     for (const name of dependencies.slice(0, 128)) {
       const observation = this.store.db
         .prepare(
@@ -195,7 +211,6 @@ export class StaleContext {
         )
         .get(conversationId, record.language, name) as Observation | undefined;
       const baseline = observation ? Number(observation.seq) : anchor;
-      earliest = Math.min(earliest, baseline);
       if (observation && observation.epoch !== epoch) {
         add({
           id: `${name}:kernel:${epoch}`,
@@ -217,9 +232,22 @@ export class StaleContext {
         .prepare(
           `SELECT DISTINCT a.seq, a.execution_id, a.effects FROM runtime_activity a
         JOIN runtime_effects e ON e.seq=a.seq WHERE a.language=? AND a.epoch=? AND a.seq>?
-        AND (e.name IN (?, '*') OR (e.kind='mutation' AND e.name IN (${aliases.map(() => "?").join(",")}))) ORDER BY a.seq DESC LIMIT 65`,
+        AND (e.name=? OR (e.name='*' AND ?) OR (e.kind='mutation' AND e.name IN (${aliases.map(() => "?").join(",")})))
+        AND (e.kind!='unknown' OR NOT EXISTS(SELECT 1 FROM runtime_reviewed_activity r
+          WHERE r.conversation_id=? AND r.execution_id=a.execution_id))
+        ORDER BY a.seq DESC LIMIT 65`,
         )
-        .all(record.language, epoch, baseline, name, ...aliases) as Activity[];
+        // Bare callables without a workspace observation may be built-ins. Explicit
+        // rebinding still counts; opaque calls also have the dependency check below.
+        .all(
+          record.language,
+          epoch,
+          baseline,
+          name,
+          observation || !effects.calls.includes(name) ? 1 : 0,
+          ...aliases,
+          conversationId,
+        ) as Activity[];
       if (!observation) {
         const existing = this.store.db
           .prepare(
@@ -261,20 +289,31 @@ export class StaleContext {
     }
     // An opaque proposed call may read objects that never appear literally in its source.
     if (effects.opaque || dependencies.length > 128) {
-      const activity = this.store.db
+      const activities = this.store.db
         .prepare(
           `SELECT a.seq, a.execution_id, a.effects FROM runtime_activity a
-        WHERE language=? AND seq>? AND EXISTS(SELECT 1 FROM runtime_effects e WHERE e.seq=a.seq)
-        ORDER BY seq DESC LIMIT 1`,
+        WHERE a.language=? AND a.epoch=? AND a.seq>?
+        AND NOT EXISTS(SELECT 1 FROM runtime_reviewed_activity r
+          WHERE r.conversation_id=? AND r.execution_id=a.execution_id)
+        AND EXISTS(SELECT 1 FROM runtime_effects e WHERE e.seq=a.seq
+          AND (e.kind='unknown' OR NOT EXISTS(SELECT 1 FROM runtime_observations o
+            WHERE o.conversation_id=? AND o.language=a.language AND o.epoch=a.epoch
+            AND o.name=e.name AND o.seq>=a.seq)))
+        ORDER BY a.seq DESC LIMIT 65`,
         )
-        .get(record.language, earliest) as Activity | undefined;
-      if (activity)
+        .all(record.language, epoch, anchor, conversationId, conversationId) as Activity[];
+      for (const activity of activities.slice(0, 64))
         add({
           id: `dependencies:${activity.seq}`,
           kind: "unknown",
           ...evidence(activity),
-          message:
-            "The proposed code has unresolved dependencies, and runtime activity occurred since the conversation's observation checkpoint. Review the intervening code; static analysis cannot establish whether it matters.",
+          message: "The proposed code has unresolved dependencies and unreviewed runtime changes.",
+        });
+      if (activities.length > 64)
+        add({
+          id: `dependencies:history:${through}`,
+          kind: "unknown",
+          message: "Earlier activity omitted; inspect current state or read execution history.",
         });
     }
     let accepted = new Set<string>();

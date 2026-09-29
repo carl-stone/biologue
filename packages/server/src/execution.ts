@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Actor, Execution, Language } from "@carl/protocol";
+import type { Actor, Execution, ExecutionSummary, Language } from "@carl/protocol";
 import type { Events } from "./events.ts";
 import type { Store } from "./store.ts";
 import { digest } from "./documents.ts";
@@ -19,6 +19,10 @@ export interface KernelBackend {
     signal: AbortSignal,
   ): Promise<void>;
   interrupt(language: Language): Promise<void>;
+  /** Confirm an idle live kernel without executing scientific code. */
+  reconcile?(language: Language, signal: AbortSignal): Promise<boolean>;
+  /** Release local request listeners; this does not stop the kernel process. */
+  abandon?(language: Language): void;
 }
 type Submission = {
   language: Language;
@@ -26,6 +30,7 @@ type Submission = {
   code: string;
   purpose?: Execution["purpose"];
   inspection?: Execution["inspection"];
+  inspectionOptions?: Execution["inspectionOptions"];
   document?: Execution["document"];
   runId?: string;
   toolCallId?: string;
@@ -41,6 +46,7 @@ type Job = {
   resolve: (record: Execution) => void;
   reject: (error: Error) => void;
   effects: Promise<CodeEffects>;
+  stopping?: Promise<void>;
   acknowledgment?: ContextAcknowledgment;
   beforeDispatch?: () => void;
 };
@@ -54,6 +60,7 @@ export class ExecutionService {
   private active = new Map<Language, Job>();
   private jobs = new Map<string, Job>();
   private failures = new Map<string, Error>();
+  private uncertain = new Map<Language, ExecutionSummary>();
   private closing = false;
   private closed?: Promise<void>;
   constructor(
@@ -61,6 +68,7 @@ export class ExecutionService {
     private events: Events,
     private kernel: KernelBackend,
     readonly outputs: OutputService,
+    private cancellationTimeoutMs = 2000,
   ) {
     this.repository = new ExecutionRepository(store);
     this.context = new StaleContext(store, this.repository);
@@ -76,10 +84,12 @@ export class ExecutionService {
       this.repository.update({
         ...record,
         status: "abandoned",
+        kernelUncertain: record.status === "running" || record.kernelUncertain,
         finishedAt: new Date().toISOString(),
         error:
           "The application stopped before completion was recorded. Kernel state may have changed; this code was not replayed.",
       });
+    for (const record of this.repository.uncertain()) this.uncertain.set(record.language, record);
   }
   submit(input: Submission): Execution {
     if (this.closing) throw new Error("Execution service is shutting down.");
@@ -137,6 +147,30 @@ export class ExecutionService {
     this.repository.update(summarize(record));
     this.events.emit({ type: "execution", execution: displaySummary(summarize(record)) });
   }
+  private async reconcile(language: Language) {
+    const record = this.uncertain.get(language);
+    if (!record) return;
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ready = await Promise.race([
+        Promise.resolve().then(() => this.kernel.reconcile?.(language, abort.signal) ?? false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), this.cancellationTimeoutMs);
+        }),
+      ]);
+      if (!ready || this.closing || this.uncertain.get(language) !== record)
+        throw new Error(
+          `${language} session completion is unknown. Wait for the kernel to finish or reconnect, then retry.`,
+        );
+      // Persist recovery before allowing another dispatch; the original outcome stays unknown.
+      this.repository.update({ ...record, kernelUncertain: false });
+      this.uncertain.delete(language);
+    } finally {
+      abort.abort();
+      if (timer) clearTimeout(timer);
+    }
+  }
   private finish(job: Job) {
     if (job.settled) return;
     job.settled = true;
@@ -172,6 +206,9 @@ export class ExecutionService {
     let captureError: unknown;
     try {
       const effects = await job.effects;
+      abort.signal.throwIfAborted();
+      if (job.settled) return;
+      await this.reconcile(language);
       abort.signal.throwIfAborted();
       if (job.settled) return;
       record.status = "running";
@@ -221,7 +258,9 @@ export class ExecutionService {
           error instanceof ContextReviewRequired
             ? "not_executed"
             : abort.signal.aborted
-              ? "interrupted"
+              ? record.activitySequence === undefined
+                ? "cancelled"
+                : "interrupted"
               : "failed";
         if (record.status === "not_executed") delete record.startedAt;
         record.error = error instanceof Error ? error.message : String(error);
@@ -230,7 +269,7 @@ export class ExecutionService {
       try {
         this.finish(job);
       } finally {
-        this.active.delete(language);
+        if (this.active.get(language) === job) this.active.delete(language);
         void this.drain(language);
       }
     }
@@ -242,20 +281,48 @@ export class ExecutionService {
       return;
     }
     if (this.active.get(job.record.language) === job) {
-      job.abort.abort();
-      await Promise.race([
-        this.kernel.interrupt(job.record.language),
-        job.promise.then(
-          () => {},
-          () => {},
-        ),
-      ]);
+      await (job.stopping ??= this.stop(job));
     } else {
       this.queues[job.record.language] = this.queues[job.record.language].filter(
         (item) => item !== job,
       );
       job.record.status = "cancelled";
       this.finish(job);
+    }
+  }
+  private async stop(job: Job) {
+    job.abort.abort();
+    // Interrupt acknowledgement is not confirmation that execution ended.
+    void Promise.resolve()
+      .then(() => this.kernel.interrupt(job.record.language))
+      .catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        job.promise.catch(() => {}),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, this.cancellationTimeoutMs);
+        }),
+      ]);
+      if (job.settled) return;
+      const { record } = job;
+      record.status = record.activitySequence === undefined ? "cancelled" : "completion_unknown";
+      if (record.status === "completion_unknown") {
+        record.kernelUncertain = true;
+        record.error =
+          "Interrupt did not confirm completion. Code may still be running; this session requires a readiness check before further execution.";
+        this.uncertain.set(record.language, record);
+      }
+      this.finish(job);
+      try {
+        this.kernel.abandon?.(record.language);
+      } catch {
+        /* Quarantine still prevents dispatch. */
+      }
+      if (this.active.get(record.language) === job) this.active.delete(record.language);
+      void this.drain(record.language);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
   async cancelRun(runId: string) {
@@ -299,6 +366,7 @@ export class ExecutionService {
       for (const job of jobs)
         if (!job.settled) {
           job.record.status = "abandoned";
+          job.record.kernelUncertain = job.record.activitySequence !== undefined;
           job.record.error =
             "Shutdown could not confirm kernel completion. Kernel state may have changed; this code will not be replayed.";
           this.finish(job);

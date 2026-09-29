@@ -30,6 +30,7 @@ export class ExecutionRepository {
       );
       CREATE INDEX IF NOT EXISTS executions_status ON execution_records(status);
       CREATE INDEX IF NOT EXISTS executions_run ON execution_records(run_id, status);
+      CREATE INDEX IF NOT EXISTS executions_uncertain ON execution_records(json_extract(value, '$.kernelUncertain'));
       CREATE TABLE IF NOT EXISTS execution_sources (id TEXT PRIMARY KEY, code TEXT NOT NULL);
     `);
   }
@@ -90,6 +91,14 @@ export class ExecutionRepository {
       ${runId === undefined ? "" : "AND run_id=?"}`,
       )
       .all(...(runId === undefined ? [] : [runId]))
+      .map((row) => JSON.parse(row.value as string));
+  }
+  uncertain(): ExecutionSummary[] {
+    return this.store.db
+      .prepare(
+        "SELECT value FROM execution_records WHERE json_extract(value, '$.kernelUncertain')=1 ORDER BY rowid",
+      )
+      .all()
       .map((row) => JSON.parse(row.value as string));
   }
   /** One legacy execution at a time; migrate payloads before removing the old record. */

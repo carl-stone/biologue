@@ -12,10 +12,11 @@ import { createApp } from "../../src/app.ts";
 import { JupyterKernels } from "../../src/kernels.ts";
 import { ExecutionService } from "../../src/execution.ts";
 import { adapters } from "../../src/adapters.ts";
+import { analyzeCode } from "../../src/code-effects.ts";
 import { PiAdapter } from "../../src/pi.ts";
 import { scriptedModel } from "../helpers/pi-fixture.ts";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { AgentRun, Conversation, Execution, Language } from "@carl/protocol";
+import type { AgentRun, Conversation, EnvironmentQuery, Execution, Language } from "@carl/protocol";
 
 async function unusedPort() {
   const server = createServer();
@@ -81,9 +82,34 @@ test(
       });
       const { app, execution } = instance;
       const headers = { "x-carl-client": "workbench" };
+      const execute = async (language: Language, code: string) => {
+        const record = await execution.wait(
+          execution.submit({ language, actor: "human", code }).id,
+        );
+        assert.equal(record.status, "succeeded", record.error);
+        return record;
+      };
+      const inspect = async (language: Language, query: EnvironmentQuery = {}) => {
+        const response = await app.inject({
+          method: "POST",
+          url: "/api/inspect",
+          headers,
+          payload: { language, ...query },
+        });
+        assert.equal(response.statusCode, 202, response.body);
+        const record = await execution.wait(response.json<Execution>().id);
+        assert.equal(record.status, "succeeded", record.error);
+        assert.equal(record.code, adapters[language].inspectionCode(query));
+        const result = execution.outputs.result(record.id);
+        assert.equal(result?.kind, "environment");
+        if (result?.kind !== "environment") throw new Error("Missing environment result");
+        return result;
+      };
       const runAgent = async (language: Language, code: string, interveningCode?: string) => {
+        const effects = await analyzeCode(language, code);
+        const names = [...new Set([...effects.reads, ...effects.writes, ...effects.mutates])];
         model.faux.setResponses([
-          fauxAssistantMessage(fauxToolCall("inspect_environment", { language }), {
+          fauxAssistantMessage(fauxToolCall("inspect_environment", { language, names }), {
             stopReason: "toolUse",
           }),
           fauxAssistantMessage(
@@ -195,8 +221,53 @@ test(
         "python",
         "context_output = context_input * 2\nprint(context_output)",
       );
-      assert.equal(refreshed.status, "succeeded", refreshed.error);
+      assert.equal(
+        refreshed.status,
+        "succeeded",
+        JSON.stringify(execution.get(refreshed.id)?.contextCheck ?? refreshed.error),
+      );
       assert.equal(execution.outputs.raw(refreshed.id)[0].text, "40\n");
+      await execute(
+        "python",
+        `class ExplosiveMeta(type):
+    def __eq__(self, other):
+        raise RuntimeError('Metaclass equality must not run')
+    @property
+    def __name__(self):
+        raise RuntimeError('Custom type name must not run')
+class Explosive(metaclass=ExplosiveMeta):
+    def __repr__(self):
+        raise RuntimeError('Custom repr must not run')
+dangerous = Explosive()
+large_list = [dangerous] * 1000000
+large_int = 1 << 100000
+large_text = 'x' * 1000000
+for _i in range(105):
+    globals()['page_' + str(_i).zfill(3)] = _i`,
+      );
+      const pythonPreview = await inspect("python", {
+        names: ["large_list", "dangerous", "large_int", "large_text"],
+      });
+      assert.deepEqual(
+        pythonPreview.rows.map((row) => row.name),
+        ["large_list", "dangerous", "large_int", "large_text"],
+      );
+      assert.ok(pythonPreview.rows.every((row) => row.preview.length <= 240));
+      assert.equal(pythonPreview.rows[1].preview, "<Explosive>");
+      assert.match(pythonPreview.rows[2].preview, /100001 bits/);
+      assert.deepEqual((await inspect("python", { names: [] })).rows, []);
+      assert.equal(
+        (await inspect("python", { names: ["missing_object"] })).rows[0].type,
+        "unbound",
+      );
+      const firstPage = await inspect("python");
+      assert.equal(firstPage.rows.length, 100);
+      assert.equal(firstPage.next, 100);
+      const secondPage = await inspect("python", { offset: firstPage.next });
+      assert.ok(secondPage.rows.length > 0);
+      assert.ok(
+        secondPage.rows.every((row) => !firstPage.rows.some((prior) => prior.name === row.name)),
+      );
       if (process.env.CARL_TEST_R === "1") {
         const rHuman = execution.submit({
           language: "r",
@@ -241,7 +312,7 @@ test(
           language: "r",
           actor: "human",
           purpose: "inspection",
-          code: adapters.r.inspectionCode,
+          code: adapters.r.inspectionCode(),
           inspection: "environment",
         });
         const inspected = await execution.wait(rInspect.id);
@@ -252,7 +323,7 @@ test(
               .raw(inspected.id)
               .map((output) => output.text || "")
               .join(""),
-          ).some((item: { name: string }) => item.name === "measurements"),
+          ).rows.some((item: { name: string }) => item.name === "measurements"),
         );
         const rTable = execution.submit({
           language: "r",
@@ -285,6 +356,32 @@ test(
             .some((output) => typeof output.data?.["image/png"] === "string"),
           "Ark should return a PNG plot",
         );
+        await execute(
+          "r",
+          `makeActiveBinding("dangerous", function(value) stop("Active binding must not run"), .GlobalEnv)
+delayedAssign("unselected", stop("Unselected promise must not run"), assign.env = .GlobalEnv)
+large_vector <- seq_len(1000000000)
+classed <- structure(1:10, class = "explosive")
+format.explosive <- function(...) stop("Custom formatting must not run")
+str.explosive <- function(...) stop("Custom str must not run")
+for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
+        );
+        const rPreview = await inspect("r", { names: ["large_vector", "dangerous", "classed"] });
+        assert.deepEqual(
+          rPreview.rows.map((row) => row.name),
+          ["large_vector", "dangerous", "classed"],
+        );
+        assert.match(rPreview.rows[0].preview, /1, 2, 3, 4/);
+        assert.equal(rPreview.rows[1].observed, false);
+        assert.equal(rPreview.rows[2].preview, "<explosive>");
+        assert.deepEqual((await inspect("r", { names: [] })).rows, []);
+        assert.equal((await inspect("r", { names: ["missing_object"] })).rows[0].type, "unbound");
+        const rPage = await inspect("r");
+        assert.equal(rPage.rows.length, 100);
+        assert.equal(rPage.next, 100);
+        assert.ok(!rPage.rows.some((row) => row.name === "unselected"));
+        await execute("r", "rm(unselected, envir=.GlobalEnv)");
+        assert.ok((await inspect("r", { offset: 100 })).rows.length > 0);
       }
       const plot = execution.submit({
         language: "python",
@@ -366,6 +463,16 @@ test(
         assert.equal(checked.status, "succeeded", checked.error);
         assert.equal(checked.kernelId, first.kernelId);
         assert.equal(reconnectedService.outputs.raw(checked.id)[0].text, "42\n");
+        assert.equal(await reconnect.reconcile("python", new AbortController().signal), true);
+        const beforeRestart = await reconnectedService.wait(
+          reconnectedService.submit({
+            language: "python",
+            actor: "human",
+            code: "from IPython.display import display\ndisplay({'text/plain': 'before restart'}, raw=True, display_id='reused-display-id')",
+          }).id,
+        );
+        const restartSlot = reconnectedService.outputs.visible({ executionId: beforeRestart.id })
+          .items[0];
         const conversationId = instance.store.list<Conversation>("conversation")[0].id;
         const stale = await reconnectedService.wait(
           reconnectedService.submit({
@@ -385,7 +492,7 @@ test(
             conversationId,
             purpose: "inspection",
             inspection: "environment",
-            code: adapters.python.inspectionCode,
+            code: adapters.python.inspectionCode(),
           }).id,
         );
         reconnectedService.context.observeContext(conversationId, [
@@ -423,6 +530,24 @@ test(
         assert.equal(afterRestart.kernelId, checked.kernelId);
         assert.ok(
           afterRestart.contextCheck!.issues.some((issue) => issue.kind === "kernel_changed"),
+        );
+        const afterDisplay = await reconnectedService.wait(
+          reconnectedService.submit({
+            language: "python",
+            actor: "human",
+            code: "from IPython.display import display, update_display\ndisplay({'text/plain': 'new process'}, raw=True, display_id='reused-display-id')\nupdate_display({'text/plain': 'new update'}, raw=True, display_id='reused-display-id')",
+          }).id,
+        );
+        assert.equal(afterDisplay.status, "succeeded", afterDisplay.error);
+        assert.notEqual(afterDisplay.kernelGeneration, beforeRestart.kernelGeneration);
+        assert.deepEqual(
+          reconnectedService.outputs.visible({ executionId: beforeRestart.id }).items[0],
+          restartSlot,
+        );
+        assert.ok(
+          reconnectedService.outputs
+            .visible({ executionId: afterDisplay.id })
+            .items.some((item) => item.preview === "new update"),
         );
         await reconnectedService.close();
       } finally {

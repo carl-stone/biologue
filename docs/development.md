@@ -114,7 +114,7 @@ Opening a document also recovers a save that renamed the file before recording
 its saved revision. There is no automatic textual merge.
 
 Execution metadata and immutable source have separate SQLite tables. OutputService
-owns raw output events, kernel-scoped display slots, and typed inspection results.
+owns raw output events, generation-scoped display slots, and typed inspection results.
 Large payloads live under `artifacts/blobs/`, addressed by SHA-256. Existing embedded
 execution outputs migrate on startup, retaining their IDs, source, and provenance;
 verified legacy artifact copies are removed after the new payload is durable.
@@ -127,6 +127,12 @@ active work before closing kernel connections and SQLite. A kernel that does not
 respond within ten seconds is recorded as abandoned; later callbacks cannot write
 to closed storage, and the code is never replayed automatically. The development
 launcher stops the application before stopping its managed Jupyter process.
+
+Individual cancellation waits at most two seconds for completion. A timeout is
+recorded as `completion_unknown` and persists a language-session quarantine.
+Further work requires an idle, connected kernel and a fresh kernel-info response;
+reconciliation also has a two-second deadline. Readiness does not change the
+original unknown outcome. No computation is replayed during recovery.
 
 The workbench keeps message drafts per conversation, console drafts per language,
 and unsaved research context in project-scoped local storage. Research notes are

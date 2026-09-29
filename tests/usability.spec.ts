@@ -3,6 +3,100 @@ import AxeBuilder from "@axe-core/playwright";
 import type { Execution, Output } from "../packages/protocol/src/index.ts";
 import { fixture, initialSnapshot } from "./ui-fixture.ts";
 
+test("environment pages stay distinct from targeted agent inspections and unknown completion is visible", async ({
+  page,
+}) => {
+  const inventory: Execution = {
+    id: "inventory-0",
+    language: "python",
+    actor: "human",
+    purpose: "inspection",
+    inspection: "environment",
+    inspectionOptions: { offset: 0 },
+    code: "inspect",
+    codeHash: "test",
+    codePreview: "inspect",
+    status: "succeeded",
+    createdAt: "2026-09-29T10:00:00Z",
+  };
+  const ui = await fixture(page, { executions: [inventory] });
+  const offsets = new Map([[inventory.id, 0]]);
+  ui.handle(async (request) => {
+    if (request.path === "/inspect") {
+      const offset = request.body.offset;
+      const record = {
+        ...inventory,
+        id: `inventory-request-${offsets.size}`,
+        inspectionOptions: { offset },
+      };
+      offsets.set(record.id, offset);
+      await ui.emit({ type: "execution", execution: record });
+      return { body: record };
+    }
+    const offset = request.path.endsWith("/result")
+      ? offsets.get(request.path.split("/")[2])
+      : undefined;
+    if (offset === 0)
+      return {
+        body: {
+          kind: "environment",
+          rows: Array.from({ length: 100 }, (_, i) => ({
+            name: `object_${i}`,
+            type: "int",
+            preview: String(i),
+          })),
+          next: 100,
+        },
+      };
+    if (offset === 100)
+      return {
+        body: {
+          kind: "environment",
+          rows: [{ name: "last_object", type: "int", preview: "100" }],
+        },
+      };
+    return undefined;
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open Environment", exact: true }).click();
+  await expect(page.getByText("Objects 1–100", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Next objects" }).click();
+  await expect(page.getByText("last_object", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Next objects" })).toBeDisabled();
+  expect(ui.requests.find((request) => request.path === "/inspect")?.body).toEqual({
+    language: "python",
+    offset: 100,
+  });
+  await ui.emit({
+    type: "execution",
+    execution: {
+      ...inventory,
+      id: "targeted",
+      actor: "agent",
+      inspectionOptions: { names: ["object_1"] },
+    },
+  });
+  await expect(page.getByText("last_object", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Previous objects" }).click();
+  await expect(page.getByText("Objects 1–100", { exact: true })).toBeVisible();
+  await ui.emit({
+    type: "execution",
+    execution: {
+      ...inventory,
+      id: "unknown",
+      purpose: "analysis",
+      inspection: undefined,
+      status: "completion_unknown",
+      kernelUncertain: true,
+      error: "Interrupt did not confirm completion. Code may still be running.",
+    },
+  });
+  await page.getByRole("button", { name: "Open Console", exact: true }).click();
+  await expect(page.locator("#execution-unknown .execution-status")).toHaveText(
+    "Completion unknown",
+  );
+});
+
 test("compact layouts, focus, and keyboard navigation retain local work", async ({ page }) => {
   await fixture(page);
   await page.goto("/");

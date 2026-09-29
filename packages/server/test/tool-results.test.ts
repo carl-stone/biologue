@@ -134,7 +134,7 @@ test("inspection content and observation receipts cover exactly the delivered pr
     const result = inspectionResult(f.record, f.outputs);
     const text = result.content[0].text;
     assert.equal(text.match(/^"A\d+"/gm)?.length, 100);
-    assert.match(text, /Showing 100 of 120 objects/);
+    assert.match(text, /More: inspect_environment offset=100/);
     assert.equal(result.details!.biologueObservation!.names.length, 100);
     assert.doesNotMatch(text, /biologueObservation|mimeTypes|totalOutputs/);
     const selected = inspectionResult(f.record, f.outputs, ["A119"]);
@@ -171,4 +171,29 @@ test("artifact text selects one representation and pages it without data loss", 
   delete output.text;
   output.data = { "application/vnd.example+json": { value: 42 } };
   assert.match(artifactText(output, 0), /application\/vnd.example\+json\n\{"value":42\}/);
+});
+
+test("skipped bindings receive no observation receipt and kernel pages keep their offset", () => {
+  const f = fixture();
+  try {
+    f.record.purpose = "inspection";
+    f.record.inspection = "environment";
+    f.outputs.append(f.record, {
+      kind: "stream",
+      text: JSON.stringify({
+        rows: [
+          { name: "lazy", type: "active binding", preview: "<not evaluated>", observed: false },
+          { name: "A", type: "int", preview: "42" },
+        ],
+        next: 102,
+      }),
+    });
+    f.outputs.complete(f.record);
+    const result = inspectionResult(f.record, f.outputs, undefined, 100);
+    assert.deepEqual(result.details!.biologueObservation!.names, ["A"]);
+    assert.match(result.content[0].text, /lazy.*not evaluated/);
+    assert.match(result.content[0].text, /offset=102/);
+  } finally {
+    f.close();
+  }
 });

@@ -84,7 +84,7 @@ export class OutputService {
     `);
   }
   append(
-    execution: Pick<Execution, "id" | "language" | "kernelId">,
+    execution: Pick<Execution, "id" | "language" | "kernelId" | "kernelGeneration">,
     value: KernelOutput,
     legacy?: Output,
   ): OutputReference {
@@ -115,7 +115,10 @@ export class OutputService {
       table: !!decodeTable(data?.["application/json"]),
     };
     const image = typeof data?.["image/png"] === "string" ? 1 : 0;
-    const scope = execution.kernelId ?? execution.language;
+    // Without a process identity, legacy output can only update its own execution.
+    const scope = execution.kernelGeneration
+      ? JSON.stringify([execution.language, execution.kernelId, execution.kernelGeneration])
+      : `execution:${execution.id}`;
     const affected = new Set([execution.id]);
     this.store.transaction(() => {
       this.store.db

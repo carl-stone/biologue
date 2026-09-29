@@ -31,6 +31,7 @@ const statuses: Record<Execution["status"], string> = {
   interrupted: "Interrupted",
   cancelled: "Cancelled",
   abandoned: "Session ended",
+  completion_unknown: "Completion unknown",
   not_executed: "Needs review · not run",
 };
 
