@@ -3,10 +3,13 @@
 [Open the full-size mockup](biologue-zed-light.png).
 
 A light-mode visual direction that retains the existing conversation, editor,
-console, research context, objects, and figure arrangement. This is a static
-design study; the application has not been changed.
+console, research context, objects, and figure arrangement. The generated concept
+has now been translated into the workbench, using Zed itself as the reference.
+The [implemented workbench screenshot](implemented-workbench.png) shows the actual
+browser UI with real Python output from the synthetic example project. See the
+[implementation and visual review](../../docs/ui-review.md) for coverage.
 
-## Design choices
+## Concept design choices
 
 - Continuous warm-gray surfaces and fine dividers make the panes feel like one
   workspace. Pane headers, tabs, and typography stay compact.
@@ -17,9 +20,9 @@ design study; the application has not been changed.
 - Restrained green indicates actions and selection. The neutral background
   follows the preference established in earlier UI reviews.
 
-The implementation would need readable contrast, clear keyboard focus, and
-adequate control hit areas despite the compact appearance. Bottom-edge navigation
-also needs a usability check for people unfamiliar with editors.
+The implementation retains visible keyboard focus, labeled navigation, resizable
+panes, and existing execution and review behavior. Usability with scientists still
+needs human evaluation; scripted UI checks cover interaction and accessibility.
 
 ## Reference and generation
 

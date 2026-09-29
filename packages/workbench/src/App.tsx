@@ -2,28 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import { DockviewReact, type DockviewReadyEvent } from "dockview-react";
 import { themeLight, type SerializedDockview } from "dockview";
 import {
-  Bot,
-  Boxes,
   Check,
   CircleHelp,
-  Code2,
   FlaskConical,
   FolderOpen,
-  Image,
-  Keyboard,
   LayoutTemplate,
   Maximize2,
-  MessageCircle,
   Minimize2,
-  NotebookPen,
   ShieldCheck,
-  Table2,
-  Terminal,
   WifiOff,
   X,
 } from "lucide-react";
 import { api, useWorkbench, useSnapshot, type PanelId } from "./state.tsx";
-import { Dialog, Spinner, languageName, modifier } from "./ui.tsx";
+import { Dialog, Spinner, modifier } from "./ui.tsx";
 import { Chat } from "./panels/Chat.tsx";
 import { Editor } from "./panels/Editor.tsx";
 import { Console } from "./panels/Console.tsx";
@@ -41,16 +32,16 @@ const components = {
   controls: Controls,
   data: Data,
 };
-const workspaceTheme = { ...themeLight, gap: 6 };
+const workspaceTheme = { ...themeLight, gap: 1 };
 const panels = [
-  { id: "chat", title: "Conversation", icon: MessageCircle },
-  { id: "editor", title: "Editor", icon: Code2 },
-  { id: "console", title: "Console", icon: Terminal },
-  { id: "environment", title: "Environment", icon: Boxes },
-  { id: "plots", title: "Plots", icon: Image },
-  { id: "data", title: "Data", icon: Table2 },
-  { id: "context", title: "Research context", icon: NotebookPen },
-  { id: "controls", title: "Agent", icon: Bot },
+  { id: "chat", title: "Conversation", label: "Conversation" },
+  { id: "editor", title: "Editor", label: "Editor" },
+  { id: "console", title: "Console", label: "Console" },
+  { id: "environment", title: "Environment", label: "Environment" },
+  { id: "plots", title: "Plots", label: "Plots" },
+  { id: "data", title: "Data", label: "Data" },
+  { id: "context", title: "Research context", label: "Research" },
+  { id: "controls", title: "Agent", label: "Agent" },
 ] as const;
 type LayoutMode = "wide" | "compact" | "narrow";
 type Layouts = Partial<Record<LayoutMode, SerializedDockview>>;
@@ -248,61 +239,29 @@ export function App() {
         Skip to workspace navigation
       </a>
       <header className="app-header">
-        <div className="brand">
-          <span className="brand-symbol" aria-hidden="true">
-            ✳
-          </span>
-          biologue
-          <span className="brand-divider" />
-          <span className="brand-description">A scientific workspace</span>
-        </div>
+        <div className="brand">biologue</div>
         <div className="project-name" title={wb.snapshot?.project}>
-          <FolderOpen size={15} />
+          <FolderOpen size={14} aria-hidden="true" />
           <span>{wb.snapshot?.project.split("/").pop() || "Opening workspace"}</span>
         </div>
         <div className="header-actions">
-          <div className="session-selector">
-            <span className={`status-dot ${pending ? "waiting" : wb.connected ? "online" : ""}`} />
-            <select
-              aria-label="Session language"
-              value={wb.language}
-              onChange={(event) => wb.setLanguage(event.target.value as "python" | "r")}
-            >
-              <option value="python">Python session</option>
-              <option value="r">R session</option>
-            </select>
-          </div>
+          <span className="connection-state">
+            <span className={`status-dot ${wb.connected ? "online" : ""}`} />
+            {wb.connected ? "Workspace connected" : "Reconnecting"}
+          </span>
+          {reviewCount > 0 && (
+            <button className="review-badge" onClick={() => reveal("controls")}>
+              <ShieldCheck size={14} />
+              {reviewCount} {reviewCount === 1 ? "request" : "requests"} awaiting review
+            </button>
+          )}
           <button
-            className="header-focus"
-            aria-label={maximized ? "Restore layout" : "Expand panel"}
-            title={maximized ? "Restore layout (Esc)" : "Expand panel (Alt+F)"}
-            disabled={!wb.snapshot}
-            onClick={toggleFocus}
-          >
-            {maximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-            <span>{maximized ? "Restore layout" : "Expand panel"}</span>
-          </button>
-          <button
-            className="icon"
-            aria-label="Reset panel layout"
-            title="Reset layout for this window size"
-            disabled={!wb.snapshot}
-            onClick={() => {
-              if (layout.current) {
-                defaultLayout(layout.current, mode.current);
-                wb.notify("Panel layout reset. Your work is retained.");
-              }
-            }}
-          >
-            <LayoutTemplate size={17} />
-          </button>
-          <button
-            className="icon"
+            className="text-button"
             aria-label="Workspace help"
             title="Workspace help & keyboard shortcuts"
             onClick={() => setHelp(true)}
           >
-            <CircleHelp size={18} />
+            <CircleHelp size={15} /> Help
           </button>
         </div>
       </header>
@@ -324,41 +283,6 @@ export function App() {
         </div>
       )}
       <div className="workbench-body">
-        <nav
-          id="workspace-navigation"
-          className="workspace-nav"
-          aria-label="Workspace panels"
-          tabIndex={-1}
-        >
-          {panels.map((panel, index) => (
-            <button
-              key={panel.id}
-              className={`nav-button ${active === panel.id ? "active" : ""} ${panel.id === "context" ? "nav-separated" : ""}`}
-              aria-label={`Open ${panel.title}`}
-              aria-pressed={active === panel.id}
-              disabled={!wb.snapshot}
-              onClick={() => reveal(panel.id)}
-            >
-              <panel.icon size={20} strokeWidth={1.6} />
-              <span className="nav-tooltip">
-                {panel.title}
-                <kbd>Alt {index + 1}</kbd>
-              </span>
-              {panel.id === "controls" && reviewCount > 0 && (
-                <span className="nav-count">{reviewCount}</span>
-              )}
-            </button>
-          ))}
-          <span className="spacer" />
-          <button
-            className="nav-button"
-            aria-label="Keyboard shortcuts"
-            onClick={() => setHelp(true)}
-          >
-            <Keyboard size={19} />
-            <span className="nav-tooltip">Keyboard shortcuts</span>
-          </button>
-        </nav>
         <main
           className={`workspace layout-${layoutMode}`}
           data-expanded={maximized}
@@ -396,22 +320,72 @@ export function App() {
         </main>
       </div>
       <footer className="status-bar">
-        <span>
-          <span className={`status-dot ${wb.connected ? "online" : ""}`} />
-          {wb.connected ? "Workspace connected" : "Reconnecting"}
-        </span>
-        <button className="text-button session-status" onClick={() => reveal("console")}>
-          {languageName(wb.language)} · {pending ? `${pending} active / queued` : "shared session"}
-        </button>
-        <span className="spacer" />
-        {reviewCount ? (
-          <button className="review-badge" onClick={() => reveal("controls")}>
-            <ShieldCheck size={14} />
-            {reviewCount} {reviewCount === 1 ? "request" : "requests"} awaiting review
+        <nav
+          id="workspace-navigation"
+          className="workspace-nav"
+          aria-label="Workspace panels"
+          tabIndex={-1}
+        >
+          {panels.map((panel, index) => (
+            <button
+              key={panel.id}
+              className={`nav-button ${active === panel.id ? "active" : ""}`}
+              aria-label={`Open ${panel.title}`}
+              aria-pressed={active === panel.id}
+              title={`${panel.title} (Alt+${index + 1})`}
+              disabled={!wb.snapshot}
+              onClick={() => reveal(panel.id)}
+            >
+              {panel.label}
+              {panel.id === "controls" && reviewCount > 0 && (
+                <span className="nav-count">{reviewCount}</span>
+              )}
+            </button>
+          ))}
+        </nav>
+        <div className="workspace-utilities">
+          <div
+            className="session-selector"
+            title={
+              pending ? `${pending} active or queued executions` : "Shared human and agent session"
+            }
+          >
+            <span className={`status-dot ${pending ? "waiting" : wb.connected ? "online" : ""}`} />
+            <select
+              aria-label="Session language"
+              value={wb.language}
+              onChange={(event) => wb.setLanguage(event.target.value as "python" | "r")}
+            >
+              <option value="python">Python session</option>
+              <option value="r">R session</option>
+            </select>
+            {pending > 0 && <span className="session-activity">{pending} active / queued</span>}
+          </div>
+          <button
+            className="text-button panel-focus"
+            aria-label={maximized ? "Restore layout" : "Expand panel"}
+            title={maximized ? "Restore layout (Esc)" : "Expand panel (Alt+F)"}
+            disabled={!wb.snapshot}
+            onClick={toggleFocus}
+          >
+            {maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            <span>{maximized ? "Restore layout" : "Expand panel"}</span>
           </button>
-        ) : (
-          <span className="status-principle">Observations first. Conclusions earned.</span>
-        )}
+          <button
+            className="icon"
+            aria-label="Reset panel layout"
+            title="Reset layout for this window size"
+            disabled={!wb.snapshot}
+            onClick={() => {
+              if (layout.current) {
+                defaultLayout(layout.current, mode.current);
+                wb.notify("Panel layout reset. Your work is retained.");
+              }
+            }}
+          >
+            <LayoutTemplate size={15} />
+          </button>
+        </div>
       </footer>
       <div className={`toast ${wb.notice ? "visible" : ""}`} role="status" aria-live="polite">
         {wb.notice && (
@@ -437,8 +411,8 @@ export function App() {
           <div className="help-section">
             <h3>Keep your work in view</h3>
             <p>
-              Use the left rail to open any panel. Expand panel gives it the full workspace; Escape
-              brings the workspace back.
+              Use the bottom navigation to open any panel. Expand panel gives it the full workspace;
+              Escape brings the workspace back.
             </p>
           </div>
           <div className="help-section">
@@ -456,7 +430,7 @@ export function App() {
               <dd>
                 <kbd>{modifier}</kbd> <kbd>Enter</kbd>
               </dd>
-              <dt>Open a panel in rail order</dt>
+              <dt>Open a panel in navigation order</dt>
               <dd>
                 <kbd>Alt</kbd> <kbd>1–8</kbd>
               </dd>

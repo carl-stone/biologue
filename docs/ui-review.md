@@ -5,11 +5,23 @@ scripted conversation, approval, conflict, and connection states. No model calls
 
 ## Changes
 
-- Retained the sidebar and light neutral palette; added panel gutters, quieter
-  tabs, consistent spacing, and comfortable reading widths in expanded panels.
-- Widened the default conversation pane. Below 900 pixels, the sidebar switches
-  between full-height panels. Existing desktop layouts are retained; old narrow
-  split layouts are replaced. Local drafts survive layout changes.
+- Followed [Zed's interface](https://zed.dev/) and
+  [visual customization](https://zed.dev/docs/visual-customization) as references:
+  continuous light surfaces, compact tabs, IBM Plex Sans typography, and fine pane
+  dividers. Removed the dark header, icon rail, rounded pane frames, and gutters.
+  The generated concept was a direction, not a pixel specification.
+- Moved labeled panel navigation, session selection, and layout controls to the
+  bottom edge. Below 900 pixels, all eight panel choices remain visible in two
+  rows and switch between full-height panels. Existing layouts and local drafts
+  are retained.
+- Simplified conversations into a readable transcript; labeled New, Send, and
+  Stop actions. Kept research notes freeform with guidance distinguishing
+  observations, interpretations, assumptions, and corrections. The Save footer
+  remains visible while longer notes and guidance scroll above it.
+- Aligned Save and Run with the document, softened Python and R syntax colors,
+  and retained exact-code review, source links, object inspection, and output
+  recovery. Only existing capabilities have controls; the concept's illustrative
+  project search and attachment actions were not introduced.
 - Replaced ambiguous action labels with “Run,” “Expand panel,” “Run once,” and
   “Apply edit.” Removed expand controls when a panel already fills the workspace.
 - Made approval actions visible in short panels and added a larger exact-code

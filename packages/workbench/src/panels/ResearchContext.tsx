@@ -30,79 +30,76 @@ export function ResearchContext() {
   }
   return (
     <div className="pane research">
-      <div className="research-intro">
-        <span className="eyebrow">Shared understanding</span>
-        <h2>Research context</h2>
-        <p>
-          Keep the question, observations, and corrections together. Saved notes inform new
-          conversations and the next time you ask Biologue to work.
-        </p>
-        <details className="context-guide">
-          <summary>What belongs here?</summary>
-          <dl>
-            <dt>Observations</dt>
-            <dd>What you measured or directly noticed.</dd>
-            <dt>Interpretations</dt>
-            <dd>What you think those observations mean.</dd>
-            <dt>Assumptions</dt>
-            <dd>What the analysis takes for granted.</dd>
-            <dt>Corrections</dt>
-            <dd>What Biologue should stop assuming, and why.</dd>
-          </dl>
-        </details>
-      </div>
-      <label className="sr-only" htmlFor="research-notes">
-        Research context
-      </label>
-      <textarea
-        id="research-notes"
-        placeholder={
-          "Question\nWhat are you trying to understand?\n\nObservations\nWhat have you actually observed?\n\nInterpretations & assumptions\nWhat do you suspect, and what remains uncertain?\n\nCorrections\nWhat should Biologue know about your system?"
-        }
-        value={draft?.text ?? context.text}
-        onChange={(event) => {
-          const text = event.target.value;
-          setDraft(
-            text === context.text ? null : { text, version: draft?.version ?? context.version },
-          );
-          setSaved(false);
-        }}
-        onKeyDown={(event) => {
-          if (event.key.toLowerCase() === "s" && (event.ctrlKey || event.metaKey)) {
-            event.preventDefault();
-            void action.run(save);
-          }
-        }}
-      />
-      {conflict && (
-        <div className="conflict" role="status">
-          <strong>These notes changed elsewhere.</strong>
-          <p>Your draft is retained. Review the saved notes before replacing it.</p>
-          <details>
-            <summary>Review saved notes · version {context.version}</summary>
-            <pre>{context.text || "No notes"}</pre>
+      <div className="research-body">
+        <div className="research-intro">
+          <p>Your question, observations, and corrections. Saved notes inform the next run.</p>
+          <details className="context-guide">
+            <summary>What belongs here?</summary>
+            <dl>
+              <dt>Observations</dt>
+              <dd>What you measured or directly noticed.</dd>
+              <dt>Interpretations</dt>
+              <dd>What you think those observations mean.</dd>
+              <dt>Assumptions</dt>
+              <dd>What the analysis takes for granted.</dd>
+              <dt>Corrections</dt>
+              <dd>What Biologue should stop assuming, and why.</dd>
+            </dl>
           </details>
-          <div className="button-row">
-            <button onClick={() => downloadText(draft!.text, "research-context-draft.txt")}>
-              <Download size={14} />
-              Download draft
-            </button>
-            <button onClick={() => setDraft(null)}>Use saved notes</button>
-          </div>
         </div>
-      )}
-      <div className="research-save-state">
-        {!draft && context.version === 0 ? (
-          <span className="small-note">No context saved yet</span>
-        ) : (
-          <SavedLabel dirty={!!draft}>
-            {draft
-              ? "Local draft · not yet shared with Biologue"
-              : saved
-                ? "Saved · ready for the next run"
-                : "Saved notes"}
-          </SavedLabel>
+        <label className="sr-only" htmlFor="research-notes">
+          Research context
+        </label>
+        <textarea
+          id="research-notes"
+          placeholder={
+            "Question\nWhat are you trying to understand?\n\nObservations\nWhat have you actually observed?\n\nInterpretations & assumptions\nWhat do you suspect, and what remains uncertain?\n\nCorrections\nWhat should Biologue know about your system?"
+          }
+          value={draft?.text ?? context.text}
+          onChange={(event) => {
+            const text = event.target.value;
+            setDraft(
+              text === context.text ? null : { text, version: draft?.version ?? context.version },
+            );
+            setSaved(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key.toLowerCase() === "s" && (event.ctrlKey || event.metaKey)) {
+              event.preventDefault();
+              void action.run(save);
+            }
+          }}
+        />
+        {conflict && (
+          <div className="conflict" role="status">
+            <strong>These notes changed elsewhere.</strong>
+            <p>Your draft is retained. Review the saved notes before replacing it.</p>
+            <details>
+              <summary>Review saved notes · version {context.version}</summary>
+              <pre>{context.text || "No notes"}</pre>
+            </details>
+            <div className="button-row">
+              <button onClick={() => downloadText(draft!.text, "research-context-draft.txt")}>
+                <Download size={14} />
+                Download draft
+              </button>
+              <button onClick={() => setDraft(null)}>Use saved notes</button>
+            </div>
+          </div>
         )}
+        <div className="research-save-state">
+          {!draft && context.version === 0 ? (
+            <span className="small-note">No context saved yet</span>
+          ) : (
+            <SavedLabel dirty={!!draft}>
+              {draft
+                ? "Local draft · not yet shared with Biologue"
+                : saved
+                  ? "Saved · ready for the next run"
+                  : "Saved notes"}
+            </SavedLabel>
+          )}
+        </div>
       </div>
       <div className="pane-toolbar">
         <span className="small-note">

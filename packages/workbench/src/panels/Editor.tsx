@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
-import { StreamLanguage } from "@codemirror/language";
+import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { r } from "@codemirror/legacy-modes/mode/r";
 import { keymap, EditorView } from "@codemirror/view";
 import { FileCode2, Play, Save, Square, Download } from "lucide-react";
@@ -18,6 +19,17 @@ import {
 } from "../ui.tsx";
 
 const editorSetup = { foldGutter: true, autocompletion: true, highlightActiveLine: true };
+const syntax = syntaxHighlighting(
+  HighlightStyle.define([
+    { tag: tags.comment, color: "#687668" },
+    { tag: [tags.keyword, tags.modifier], color: "#8050a0" },
+    { tag: [tags.string, tags.regexp], color: "#86602f" },
+    { tag: [tags.number, tags.bool, tags.null], color: "#a24b3d" },
+    { tag: tags.function(tags.variableName), color: "#326b8b" },
+    { tag: [tags.typeName, tags.className], color: "#7c632f" },
+    { tag: tags.invalid, color: "#a44133", textDecoration: "underline" },
+  ]),
+);
 
 export function Editor() {
   const wb = useWorkbench(
@@ -83,6 +95,7 @@ export function Editor() {
   const extensions = useMemo(
     () => [
       EditorView.contentAttributes.of({ "aria-label": `Code editor: ${file}` }),
+      syntax,
       ...(fileLanguage === "python"
         ? [python()]
         : fileLanguage === "r"

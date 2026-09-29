@@ -1,15 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpRight,
-  FlaskConical,
-  NotebookPen,
-  Plus,
-  Square,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpRight, NotebookPen, Plus, Square } from "lucide-react";
 import type { Conversation } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
 import {
@@ -131,7 +123,7 @@ export function Chat() {
           ))}
         </select>
         <button
-          className="icon"
+          className="text-button"
           title="New conversation"
           aria-label="New conversation"
           disabled={!connected}
@@ -140,7 +132,7 @@ export function Chat() {
             setCreating(true);
           }}
         >
-          <Plus size={17} />
+          <Plus size={14} /> New
         </button>
       </div>
       <button className="context-link" onClick={() => wb.showPanel("context")}>
@@ -171,15 +163,8 @@ export function Chat() {
         {wb.chat.loading && !wb.chat.loaded && <div role="status">Loading conversation…</div>}
         {wb.chat.loaded && !messages.length && (
           <div className="conversation-empty">
-            <div className="carl-mark">
-              <FlaskConical size={27} strokeWidth={1.5} />
-            </div>
             <span className="eyebrow">A place to think together</span>
-            <h1>
-              What are you trying
-              <br />
-              to understand?
-            </h1>
+            <h1>What are you trying to understand?</h1>
             <p>
               A result you don’t trust. A pattern you can’t explain. Start with the question that
               matters to you.
@@ -250,7 +235,7 @@ export function Chat() {
           )}
           <span className="spacer" />
           <button
-            className="icon"
+            className="text-button"
             aria-label="Stop agent run"
             title="Stop agent run"
             disabled={!connected || stopAction.busy}
@@ -259,6 +244,7 @@ export function Chat() {
             }
           >
             <Square size={13} />
+            Stop
           </button>
         </div>
       )}
@@ -315,7 +301,8 @@ export function Chat() {
               !conversation
             }
           >
-            {sendAction.busy ? <Spinner /> : <ArrowUp size={18} />}
+            {sendAction.busy ? <Spinner /> : <ArrowUp size={14} />}
+            Send
           </button>
         </div>
       </form>
