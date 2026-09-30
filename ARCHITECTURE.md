@@ -1,0 +1,351 @@
+# Biologue architecture
+
+Biologue is a scientific workbench where a scientist and agents work with the
+same project files, live R and Python sessions, and recorded evidence. This
+document defines the architecture of the intended product and marks which parts
+are implemented. The diagrams are the primary map; each numbered area in the
+overview has a matching zoom view below.
+
+Update this document when an architectural boundary, ownership rule, or committed
+capability changes. Routine features, dependency versions, tuning, and release
+history belong in other documents. Setup, checks, and operational details live in
+[development](docs/development.md).
+
+## Reading the diagrams
+
+**Solid boxes and arrows describe implemented responsibilities and connections.**
+**Orange boxes with dashed borders and the word PLANNED describe committed parts
+that are not implemented.** Connections involving those parts are dashed too.
+Planned additions inside an existing area are shown separately from its working
+core. Color otherwise identifies ownership: teal for the workbench, blue for
+Biologue services, purple for Pi and model interaction, green for scientific
+runtimes, and gray for storage.
+
+Arrows show requests, data, or results. A box is a responsibility, not necessarily
+a separate operating-system process. Biologue services initially remain modules
+in one Node application; Jupyter and its kernels run separately.
+
+## Overview
+
+```mermaid
+%%{init: {"theme":"base","htmlLabels":false,"markdownAutoWrap":false,"themeVariables":{"fontFamily":"Arial, sans-serif","lineColor":"#475569","edgeLabelBackground":"#FFFFFF"},"flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":30,"rankSpacing":40,"wrappingWidth":240,"minNodeWidth":200}}}%%
+flowchart TB
+    Workbench["1 · Workbench and project<br/>Chat · code · scientist's context"]
+    Agents["2 · Agents and workflows<br/>Run supervision · Pi sessions"]
+    Execution["3 · Shared scientific execution<br/>Recorded code · queues"]
+    Evidence["4 · Evidence and persistence<br/>History · source · captured outputs"]
+    Models["Model providers"]
+    Runtime["Jupyter<br/>Separate Python and R kernels"]
+    Multi["PLANNED<br/>Child tasks and workflow coordination"]
+
+    Workbench -->|"Ask, steer, stop"| Agents
+    Workbench -->|"Run or inspect"| Execution
+    Agents -->|"Authorized scientific actions"| Execution
+    Agents <--> Models
+    Execution <--> Runtime
+    Execution -->|"Source and captured results"| Evidence
+    Workbench <--> Evidence
+    Agents <--> Evidence
+    Multi -.-> Agents
+
+    classDef workbench fill:#E6FFFB,stroke:#0F766E,color:#134E4A
+    classDef app fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef pi fill:#F5F3FF,stroke:#7C3AED,color:#3B0764
+    classDef runtime fill:#F0FDF4,stroke:#15803D,color:#14532D
+    classDef storage fill:#F1F5F9,stroke:#64748B,color:#1E293B
+    classDef planned fill:#FFF7ED,stroke:#C2410C,color:#7C2D12,stroke-width:2px,stroke-dasharray:6 4
+    class Workbench workbench
+    class Agents,Execution app
+    class Models pi
+    class Runtime runtime
+    class Evidence storage
+    class Multi planned
+```
+
+The workbench, agents, and workflows all operate on the same project. Agent
+conversations have separate histories, while files and scientific sessions stay
+shared within that project. Different projects have separate workspace state and
+scientific sessions.
+
+## 1. Workbench and project
+
+The workbench is a React interface using Dockview for panels and CodeMirror for
+editing. The same interface works in a browser or a Tauri desktop shell. Its
+application API carries requests, paged results, and live updates.
+
+```mermaid
+%%{init: {"theme":"base","htmlLabels":false,"markdownAutoWrap":false,"themeVariables":{"fontFamily":"Arial, sans-serif","lineColor":"#475569","edgeLabelBackground":"#FFFFFF"},"flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":30,"rankSpacing":40,"wrappingWidth":240,"minNodeWidth":200}}}%%
+flowchart TB
+    UI["Scientist's workbench<br/>Chat · editor · console<br/>Objects · plots · tables"]
+    API["Application API and event stream"]
+    Tools["2 · Authorized agent tools"]
+    Documents["Document service<br/>Shared working buffers<br/>Versioned edits"]
+    Notes["Context service<br/>Scientist-authored notes<br/>Version history"]
+    Attachments["Attachment snapshots<br/>Text · images · source revisions"]
+    Files[("4 · Project files")]
+    Agents["2 · Agent supervision"]
+    Knowledge["PLANNED<br/>Structured scientific claims<br/>and source links"]
+    Desktop["PLANNED<br/>Desktop runtime packaging"]
+
+    UI <-->|"Requests and updates"| API
+    API <--> Documents
+    Tools <-->|"Read and edit buffers"| Documents
+    Documents <-->|"Save and reconcile"| Files
+    API <--> Notes
+    Notes -->|"Context snapshot"| Agents
+    API --> Attachments
+    Attachments -->|"Selected message attachments"| Agents
+    Knowledge -.-> Notes
+    Desktop -.->|"Launch workbench and local services"| UI
+
+    classDef workbench fill:#E6FFFB,stroke:#0F766E,color:#134E4A
+    classDef app fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef storage fill:#F1F5F9,stroke:#64748B,color:#1E293B
+    classDef planned fill:#FFF7ED,stroke:#C2410C,color:#7C2D12,stroke-width:2px,stroke-dasharray:6 4
+    class UI workbench
+    class API,Tools,Documents,Notes,Attachments,Agents app
+    class Files storage
+    class Knowledge,Desktop planned
+```
+
+The editor keeps a responsive local copy and recovery journal. Acknowledged
+server revisions are the shared document authority, including unsaved edits.
+Saving writes to disk; file watching and reconciliation expose conflicts for
+review. Creating files, Save As, and attachment snapshots are implemented.
+
+Scientist-authored notes have their own version history. A run receives an
+explicit context snapshot; later corrections reach an active agent through
+conversation input or the next run's notes. Structured claims and source links
+extend this context boundary, but currently the notes are text.
+
+The desktop shell exists. Bundling and launching the application server and
+scientific runtime as an installed desktop product remain planned. Today the
+development launcher manages the local services. Browser access uses those same
+services, with the application API listening locally by default.
+
+## 2. Agents and workflows
+
+Pi owns each agent's model loop and conversation transcript. Biologue owns the
+agent's task, its authorization, its scientific context, and its connection to
+the shared project. The accepted multi-agent target extends the working run
+lifecycle into one service used by both delegation and workflows.
+
+```mermaid
+%%{init: {"theme":"base","htmlLabels":false,"markdownAutoWrap":false,"themeVariables":{"fontFamily":"Arial, sans-serif","lineColor":"#475569","edgeLabelBackground":"#FFFFFF"},"flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":30,"rankSpacing":40,"wrappingWidth":240,"minNodeWidth":200}}}%%
+flowchart TB
+    UI["1 · Conversation input<br/>Start · steer · stop"]
+    Workflow["PLANNED<br/>Workflow supervisor<br/>Dependencies · scientist review"]
+    Delegate["PLANNED<br/>Pi agent delegation tools"]
+    subgraph Runs["Shared agent-run service"]
+        Lifecycle["Run lifecycle<br/>Input receipts · progress<br/>Settled outcomes"]
+        Tasks["PLANNED<br/>Durable task ownership<br/>Parent / child · workflow steps"]
+    end
+    Context["1 · Selected context<br/>Notes · instructions · skills"]
+    Pi["Pi AgentSession<br/>Model loop · tools<br/>Retries · compaction"]
+    Models["Model providers"]
+    Tools["Authorized tools<br/>Workspace · MCP<br/>Questions · orchestration"]
+    Project["1 · Shared project workspace"]
+    Execution["3 · Shared scientific execution"]
+    Evidence["4 · History and evidence"]
+
+    UI --> Lifecycle
+    Workflow <-.->|"Launch · await · cancel"| Tasks
+    Delegate <-.->|"Same task interface"| Tasks
+    Tasks -.-> Lifecycle
+    Lifecycle -->|"Create, steer, stop session"| Pi
+    Context --> Pi
+    Pi <--> Models
+    Pi --> Tools
+    Tools <--> Project
+    Tools --> Execution
+    Lifecycle --> Evidence
+    Pi <--> Evidence
+
+    classDef workbench fill:#E6FFFB,stroke:#0F766E,color:#134E4A
+    classDef app fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef pi fill:#F5F3FF,stroke:#7C3AED,color:#3B0764
+    classDef storage fill:#F1F5F9,stroke:#64748B,color:#1E293B
+    classDef planned fill:#FFF7ED,stroke:#C2410C,color:#7C2D12,stroke-width:2px,stroke-dasharray:6 4
+    class UI workbench
+    class Lifecycle,Context,Tools,Project,Execution app
+    class Pi,Models pi
+    class Evidence storage
+    class Workflow,Delegate,Tasks planned
+    style Runs fill:#F8FAFC,stroke:#64748B,color:#1E293B
+```
+
+Run supervision, steering, cancellation, durable input receipts, permissions,
+and Pi sessions are implemented. The current Supervisor supplies the run
+lifecycle; generalized task ownership, delegation, and workflow coordination
+are planned. Each child will use a Pi AgentSession with its own selected context
+and transcript, backed by the same Biologue services. A run's live AgentSession
+can be disposed while its transcript and the shared scientific kernels persist.
+
+Task lifetime belongs to the shared service, independently of a parent's active
+model turn. Both callers use a common request containing parent or workflow
+identity, input and selected context, research-context version, model
+configuration, permission scope, and expected result. Results include lifecycle
+status, findings, and evidence references. Cancellation propagates to descendants;
+restart recovery records uncertainty and never automatically replays scientific
+code. A workflow manages dependencies and scientist input without requiring a
+parent conversational agent to stay active. It initially lives in the Node
+application, with a service boundary that permits a separate process later.
+
+Biologue's permission service gates workspace edits and analysis execution
+according to the scientist's selected mode. Inspection is recorded and directly
+available. MCP tools use the same permission system unless declared read-only.
+Pi's built-in shell and file-writing tools are excluded. Code mode orchestrates
+tools; it does not supply a second scientific runtime. Child permissions must
+stay within their caller's authorization.
+
+Pi loads skills and project instructions and compacts its canonical history.
+Pi also manages model-provider configuration and authentication on the
+application side.
+Biologue supplies the scientific collaboration policy, versioned notes, and
+retention instructions that preserve observations, interpretations, assumptions,
+corrections, and uncertainty distinctly. These instructions guide model behavior;
+scientific quality requires evaluation with scientists.
+
+## 3. Shared scientific execution
+
+Every request to execute scientific code or inspect live kernel objects,
+including automatic environment refreshes, enters ExecutionService. Human and
+agent code use the same persistent session for a language. Python and R have
+separate object namespaces.
+
+```mermaid
+%%{init: {"theme":"base","htmlLabels":false,"markdownAutoWrap":false,"themeVariables":{"fontFamily":"Arial, sans-serif","lineColor":"#475569","edgeLabelBackground":"#FFFFFF"},"flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":30,"rankSpacing":40,"wrappingWidth":240,"minNodeWidth":200}}}%%
+flowchart TB
+    Human["1 · Human code and inspection"]
+    Agent["2 · Authorized agent code and inspection"]
+    Refresh["Automatic environment refresh"]
+    Execution["ExecutionService<br/>Exact code · one queue per language<br/>Dispatch checks · capture results"]
+    Client["Jupyter kernel client<br/>Sessions · messages · interrupt"]
+    Jupyter["Jupyter Server"]
+    Python["Python session · ipykernel<br/>Shared live objects"]
+    R["R session · Ark<br/>Shared live objects"]
+    Outputs["4 · OutputService<br/>Captured results<br/>Immutable artifacts"]
+    Provenance["PLANNED<br/>Complete runtime and<br/>environment provenance"]
+
+    Human --> Execution
+    Agent --> Execution
+    Refresh --> Execution
+    Execution <-->|"Code and kernel events"| Client
+    Client <--> Jupyter
+    Jupyter <--> Python
+    Jupyter <--> R
+    Execution -->|"Captured outputs"| Outputs
+    Provenance -.-> Execution
+
+    classDef workbench fill:#E6FFFB,stroke:#0F766E,color:#134E4A
+    classDef app fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef runtime fill:#F0FDF4,stroke:#15803D,color:#14532D
+    classDef planned fill:#FFF7ED,stroke:#C2410C,color:#7C2D12,stroke-width:2px,stroke-dasharray:6 4
+    class Human workbench
+    class Agent,Refresh,Execution,Client,Outputs app
+    class Jupyter,Python,R runtime
+    class Provenance planned
+```
+
+Code and source identity are captured before queuing and remain immutable.
+Editing a file later cannot change what an execution record says ran. Language
+adapters generate inspection requests and decode results; ExecutionService calls
+the kernel client for both ordinary code and those requests.
+
+Immediately before dispatch, agent analysis is checked against recorded activity
+since that conversation's observations. A relevant change can return a
+"not executed" result for inspection, revision, or explicit acknowledgment.
+The check uses static code analysis and observation receipts, not deep copies of
+scientific objects. Acknowledgment is separate from execution permission, and
+absence of a warning does not establish unchanged inputs.
+
+Cancellation and shutdown cover every actor. If kernel completion cannot be
+confirmed, the outcome stays uncertain and that language's session must pass a
+readiness check before dispatching further execution. Nothing is automatically
+replayed. Agents can reason concurrently, but scientific operations remain
+serialized within each language's queue.
+
+Execution provenance already includes exact source, actor, relevant document
+revision, kernel identity, status, and output references. Complete environment
+provenance remains planned: package versions, external inputs, randomness, and
+external service responses are not comprehensively captured today. Recorded
+history does not restore live R or Python objects.
+
+## 4. Evidence and persistence
+
+Each kind of state has one authority. Pi owns delivered conversation history;
+Biologue owns application records; project files and captured outputs remain
+independent of any individual agent session.
+
+```mermaid
+%%{init: {"theme":"base","htmlLabels":false,"markdownAutoWrap":false,"themeVariables":{"fontFamily":"Arial, sans-serif","lineColor":"#475569","edgeLabelBackground":"#FFFFFF"},"flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":30,"rankSpacing":40,"wrappingWidth":240,"minNodeWidth":200}}}%%
+flowchart TB
+    Documents["1 · Document service"]
+    Domain["Biologue services<br/>Context · supervision<br/>Permissions · execution"]
+    Pi["2 · Pi SessionManager"]
+    Outputs["OutputService<br/>Captured events and display views"]
+    Files[("Project files<br/>Scripts · data · reports")]
+    SQLite[("SQLite<br/>Revisions · input receipts<br/>Runs · permissions<br/>Execution source and metadata<br/>Output references")]
+    History[("Pi JSONL<br/>Canonical conversation transcripts")]
+    Blobs[("Artifact store<br/>Immutable output payloads<br/>Content hashes")]
+    Projection["Rebuildable conversation display index"]
+    Chat["1 · Conversation display"]
+    Readers["Workbench and agent tools<br/>Exact source and artifacts"]
+    Tasks["PLANNED<br/>Durable child-task<br/>and workflow records"]
+
+    Documents <--> Files
+    Documents <--> SQLite
+    Domain <--> SQLite
+    Pi <--> History
+    History --> Projection
+    SQLite -->|"Pending input receipts"| Projection
+    Outputs --> SQLite
+    Outputs --> Blobs
+    Projection -->|"Selected conversation"| Chat
+    SQLite -->|"Records and references"| Readers
+    Blobs -->|"Exact captured payloads"| Readers
+    Tasks -.-> Domain
+
+    classDef workbench fill:#E6FFFB,stroke:#0F766E,color:#134E4A
+    classDef app fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef pi fill:#F5F3FF,stroke:#7C3AED,color:#3B0764
+    classDef storage fill:#F1F5F9,stroke:#64748B,color:#1E293B
+    classDef planned fill:#FFF7ED,stroke:#C2410C,color:#7C2D12,stroke-width:2px,stroke-dasharray:6 4
+    class Documents,Domain,Outputs,Projection app
+    class Pi pi
+    class Files,SQLite,History,Blobs storage
+    class Chat,Readers workbench
+    class Tasks planned
+```
+
+Accepted scientist input is recorded before Pi consumes it. Durable receipts
+preserve queued corrections across cancellation or restart; the conversation
+display is derived from Pi history plus pending inputs. The display index can be
+rebuilt without changing canonical history. Conversation branching copies
+history; branches continue using the same project files and live kernels.
+Branching, archival, and Markdown conversation export are implemented.
+
+Execution source is stored separately from changing status metadata. OutputService
+preserves captured events and immutable payloads, with a separate display view
+for plots and tables. A display update points to new content rather than rewriting
+historical bytes. Display identities are scoped to a kernel generation, so a
+restart cannot silently overwrite an earlier figure. The workbench and agent
+tools retrieve the same recorded evidence without rerunning code.
+
+The project state directory holds SQLite, Pi session files, and artifact blobs;
+all three are needed to preserve its history. Live kernel objects are separate
+runtime state. Historical evidence keeps its original source and observation
+checkpoint when another agent retrieves it. Successful computation, receipt
+delivery, and scientific understanding are distinct claims.
+
+## Implementation anchors
+
+These entry points connect the diagrams to the code. They identify ownership,
+without prescribing internal class structure or API details.
+
+| View                            | Main implementation anchors                                                                                                                                                                                                                                                                                |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 · Workbench and project       | [Workbench](packages/workbench/src/App.tsx), [API composition](packages/server/src/app.ts), [documents](packages/server/src/documents.ts), [editor synchronization](packages/workbench/src/document-sync.ts), [context](packages/server/src/context.ts), [attachments](packages/server/src/attachments.ts) |
+| 2 · Agents and workflows        | [Supervisor](packages/server/src/supervisor.ts), [Pi adapter](packages/server/src/pi.ts), [scientific extension](packages/pi-science/index.ts), [permissions](packages/server/src/permissions.ts), [workspace tools](packages/server/src/workspace-tools.ts)                                               |
+| 3 · Shared scientific execution | [ExecutionService](packages/server/src/execution.ts), [kernel client](packages/server/src/kernels.ts), [language adapters](packages/server/src/adapters.ts), [context checks](packages/server/src/stale-context.ts), [environment refresh](packages/server/src/environment.ts)                             |
+| 4 · Evidence and persistence    | [Conversation sessions](packages/server/src/conversation-sessions.ts), [execution repository](packages/server/src/execution-repository.ts), [outputs](packages/server/src/outputs.ts), [SQLite store](packages/server/src/store.ts)                                                                        |

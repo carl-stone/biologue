@@ -1,54 +1,74 @@
 # Development
 
-Use Node 22.19+ (`.nvmrc` selects Node 22), the locked Python environment from
-`uv sync`, and Rust 1.88 for the Tauri shell. `npm ci`, `uv.lock`, and `Cargo.lock`
-pin the dependencies used by their respective runtimes.
+Use Node 22.19+ (`.nvmrc` selects Node 22), Python 3.11+ with
+[uv](https://docs.astral.sh/uv/), and Rust from `rust-toolchain.toml` for the Tauri
+shell. Install dependencies with `npm ci` and `uv sync`.
+[README.md](../README.md) covers launching the workbench;
+[ARCHITECTURE.md](../ARCHITECTURE.md) defines ownership and planned capabilities.
 
-For this workspace, prefix commands with:
+## Supplied workspace
+
+Edit files and use Git on the host. Run install, build, test, lint, and application
+commands inside `codex-universal`, mapping `/root/workspace/<checkout>` to
+`/workspace/<checkout>`. For this checkout:
 
 ```bash
-docker exec -i -w /workspace/biologue codex-universal bash -lc '<command>'
+docker exec -i -w /workspace/carl-harness codex-universal bash -lc \
+  'source /root/.nvm/nvm.sh && nvm use 22 && npm run build'
 ```
 
-Select Node 22 inside that shell with `source /root/.nvm/nvm.sh && nvm use 22`.
-Edit source and use Git on the host.
+Use the same wrapper for the commands below. Container ports are not published to
+the host; use the environment's port forwarding for port 5173 or the
+[private browser setup](remote-access.md).
 
-The supplied Docker network does not publish application ports to the host.
-Use your development environment's port forwarding to access port 5173, or run
-the checkout on your own desktop. The verification commands below run entirely
-inside the container.
+## Code map
 
-For private access from another computer, see [Tailscale setup](remote-access.md).
-`npm run serve` starts the built workbench and managed Jupyter runtime. Its optional
-`BIOLOGUE_EXTERNAL_ORIGIN` admits one HTTPS browser origin, and `BIOLOGUE_SOCKET` selects a
-Unix socket instead of the default loopback TCP listener.
+| Area                                    | Start here                                                                                                                                                                                                             |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workbench and panels                    | [App.tsx](../packages/workbench/src/App.tsx), [panels](../packages/workbench/src/panels/)                                                                                                                              |
+| Application API and project lifecycle   | [app.ts](../packages/server/src/app.ts), [projects.ts](../packages/server/src/projects.ts)                                                                                                                             |
+| Agent sessions, tools, and permissions  | [pi.ts](../packages/server/src/pi.ts), [supervisor.ts](../packages/server/src/supervisor.ts), [workspace-tools.ts](../packages/server/src/workspace-tools.ts), [permissions.ts](../packages/server/src/permissions.ts) |
+| Shared scientific execution and outputs | [execution.ts](../packages/server/src/execution.ts), [kernels.ts](../packages/server/src/kernels.ts), [outputs.ts](../packages/server/src/outputs.ts)                                                                  |
+| Frontend/backend types                  | [protocol](../packages/protocol/src/index.ts)                                                                                                                                                                          |
+| Scientific behavior and compaction      | [collaborator prompt](../prompts/collaborator.md), [Pi science extension](../packages/pi-science/index.ts)                                                                                                             |
+| Launching and checks                    | [dev launcher](../scripts/dev.mjs), [server tests](../packages/server/test/), [browser tests](../tests/)                                                                                                               |
 
-## Verification
+## Checks
+
+Run the core checks for code changes:
 
 ```bash
 npm run build
-npm run lint
 npm test
-npm run test:integration
-npx playwright install chromium
-npm run test:ui
-cargo check --manifest-path src-tauri/Cargo.toml
+npm run lint
 ```
 
-The unit tests exercise shared queuing, cancellation, permission decisions,
-document conflicts, research-context revisions, and display events. Pi tests use
-real AgentSession instances with a scripted model provider; they check tool routing and
-permission enforcement without sending data to an external model.
+For kernel changes, run `npm run test:integration`. It starts a temporary
+authenticated Jupyter server and a real Python kernel. Set `BIOLOGUE_TEST_R=1`
+to include an installed Ark/R kernel.
 
-The integration test starts a temporary authenticated Jupyter server and a real
-ipykernel. It checks live state shared between human and agent execution, plots,
-errors, interruption, and reconnection. Set `BIOLOGUE_TEST_R=1` to also exercise an
-installed Ark kernel. The browser test creates a temporary project and uses its
-own application, Jupyter, and Vite ports. It leaves screenshots in `test-results`.
+For workbench changes:
 
-These tests establish software behavior. They do not evaluate the scientific
-quality of model responses. [First-session review cases](first-session.md) are
-the starting point for that separate evaluation.
+```bash
+npx playwright install chromium
+npm run test:ui
+```
+
+Playwright starts its own application, Jupyter, and Vite ports with a temporary
+project. Screenshots and traces go in ignored `test-results/`; retain them when
+investigating a failure rather than committing them as review history.
+
+Pi regression tests use real AgentSession instances with scripted providers and
+make no external model calls. When upgrading Pi, run the full core suite; a
+focused session-lifecycle check is:
+
+```bash
+npx tsx --test packages/server/test/supervisor.test.ts
+```
+
+These checks establish software behavior. Scientist-led review must separately
+assess whether context changes the next action, corrections change dependent
+reasoning, claims remain supported, and questions justify the attention they cost.
 
 ## R / Ark
 
@@ -61,159 +81,93 @@ R must already be installed. Install a compatible binary from the official
 Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org")'
 ```
 
-The default R kernel name is `ark`; override it with `BIOLOGUE_R_KERNEL` when needed.
-The Python default is `python3`, configurable with `BIOLOGUE_PYTHON_KERNEL`.
-The R adapter uses ordinary Jupyter execution and `jsonlite` for inspection and
-table previews. Positron-specific comms and language services are not implemented.
-Select **R session** in the workbench to use it. Missing kernels produce an
-execution error; they never fall back silently to another language.
+The R adapter uses ordinary Jupyter execution and `jsonlite` for object inspection
+and table previews. Missing kernels produce an error rather than changing the
+requested language. Positron-specific comms and language services are planned.
 
-## Services and configuration
+## Configuration
 
-| Setting                               | Default                    | Purpose                                             |
-| ------------------------------------- | -------------------------- | --------------------------------------------------- |
-| `BIOLOGUE_PROJECT`                    | `examples/sandbox`         | Existing project directory                          |
-| `BIOLOGUE_STATE_DIR`                  | `<project>/.biologue`      | Pi sessions, SQLite state, and captured outputs     |
-| `BIOLOGUE_ROOT`                       | Launch working directory   | Repository resources and built frontend             |
-| `BIOLOGUE_PORT`                       | `4317`                     | Node API and built workbench                        |
-| `BIOLOGUE_UI_PORT`                    | `5173`                     | Vite development frontend                           |
-| `BIOLOGUE_JUPYTER_PORT`               | `8889`                     | Managed local Jupyter server                        |
-| `JUPYTER_URL`                         | Managed runtime            | Connect to an existing local Jupyter server instead |
-| `JUPYTER_TOKEN`                       | Random for managed runtime | Jupyter authentication; never sent to the browser   |
-| `BIOLOGUE_PROVIDER`, `BIOLOGUE_MODEL` | Unset                      | Explicit Pi provider/model selection                |
+Environment variables are read by the server and launcher; `.env` files are not
+loaded automatically.
 
-For an existing Jupyter server, supply its matching `JUPYTER_TOKEN` and configure
-its root directory to the project directory. This slice assumes a local Jupyter
-server with the same filesystem as Node. Kernel session paths include the project
-identity, so separate projects do not intentionally reuse a session.
+| Setting                               | Default                                            | Purpose                                              |
+| ------------------------------------- | -------------------------------------------------- | ---------------------------------------------------- |
+| `BIOLOGUE_PROJECT`                    | `examples/sandbox`                                 | Initial project directory                            |
+| `BIOLOGUE_STATE_DIR`                  | `<project>/.biologue`                              | Initial project's Pi sessions, SQLite, and artifacts |
+| `BIOLOGUE_ROOT`                       | Launch working directory                           | Repository resources and built frontend              |
+| `BIOLOGUE_PORT`                       | `4317`                                             | Node API and built workbench                         |
+| `BIOLOGUE_UI_PORT`                    | `5173`                                             | Vite development frontend                            |
+| `BIOLOGUE_JUPYTER_PORT`               | `8889`                                             | Managed Jupyter server                               |
+| `JUPYTER_URL`                         | Managed runtime                                    | Existing local Jupyter server                        |
+| `JUPYTER_TOKEN`                       | Random for managed runtime                         | Jupyter authentication                               |
+| `JUPYTER_ROOT`                        | `/` for managed runtime; initial project otherwise | Jupyter filesystem root                              |
+| `BIOLOGUE_R_KERNEL`                   | `ark`                                              | R kernel name                                        |
+| `BIOLOGUE_PYTHON_KERNEL`              | `python3`                                          | Python kernel name                                   |
+| `BIOLOGUE_PROVIDER`, `BIOLOGUE_MODEL` | Unset                                              | Fallback Pi provider/model                           |
+| `BIOLOGUE_EXTERNAL_ORIGIN`            | Unset                                              | One exact HTTPS browser origin for private access    |
+| `BIOLOGUE_SOCKET`                     | Unset                                              | Unix socket listener with `npm run serve`            |
 
-`npm run build && npm start` serves the built workbench at port 4317 and expects
-Jupyter to be running already. The Tauri development command uses port 5173;
-the built shell connects to Node at port 4317. Both use the same frontend and API.
+An existing Jupyter server must share the server's filesystem. Supply its matching
+`JUPYTER_TOKEN`, and set `JUPYTER_ROOT` to its root directory. `npm start` serves built assets but expects
+Jupyter to be running; `npm run serve` manages Jupyter unless `JUPYTER_URL` is set.
+
+## Pi and model providers
+
+Select a model, thinking level, and permission mode per conversation in Agent
+settings. Provider credentials can be configured under Providers. For server-side
+API-key setup, set `BIOLOGUE_PROVIDER`, `BIOLOGUE_MODEL`, and the provider's key
+variable, such as `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`, before starting.
+Keys stay on the server.
+
+Pi settings are in `<stateDir>/pi/settings.json`, with project `.pi/settings.json`
+also supported. Saved `defaultProvider` and `defaultModel` take precedence over
+the environment fallback; conversation settings override the defaults. Credentials
+live in `<stateDir>/pi/auth.json`, and custom models in `pi/models.json`. Projects
+opened through the picker share the initial workspace's provider credentials.
+
+For a ChatGPT/Codex subscription, run `npm run login:codex` with the same
+`BIOLOGUE_PROJECT` and `BIOLOGUE_STATE_DIR` as the server. Complete the displayed
+OpenAI device-code flow, then select the `openai-codex` provider and a model.
+Use Biologue's own sign-in so rotating tokens are managed independently.
+
+Put project skills in `.pi/skills/<name>/SKILL.md` using Pi's name/description
+frontmatter. Resources exposes skills, prompts, and project instructions; slash
+commands expand through Pi. The [science package](../packages/pi-science/README.md)
+supplies the research-context and compaction integration.
+
+Configure native Pi MCP in **Agent settings → MCP**; project configuration lives
+in `<stateDir>/pi/mcp.json`. `/mcp` checks connections and `/mcp login <name>`
+starts sign-in. MCP OAuth credentials use Pi's `~/.pi/agent/mcp-auth.json` store.
+Code mode orchestrates tools; it has no direct filesystem or network access, and
+auxiliary model calls are disabled. Native shell/file-writing tools are excluded,
+and executable extensions require an explicit host integration.
 
 ## State and recovery
 
-The SQLite store uses WAL mode. Document revisions and research-context revisions
-are retained. Agent prompts include the selected context version. Pi session
-files retain the canonical model transcript and tool results; SQLite holds run
-inputs, domain records, and durable input receipts. Display messages are projected
-from Pi history and pending receipts.
-An application restart marks unfinished runs/executions as abandoned. Existing
-Jupyter sessions can be reattached while Jupyter remains alive. Restarting the
-managed launcher also restarts its Jupyter process; persisted history does not
-restore Python or R objects.
+Back up the entire project state directory: SQLite alone does not contain the
+canonical Pi transcripts or artifact payloads. Branching a conversation copies
+history while retaining the project's shared files and live kernels.
 
-The editor is an optimistic replica of the server's versioned working document.
-It synchronizes automatically after a short typing pause, serializes requests per
-file, and retains edits made during a request. Pending edits survive offline
-reloads. Run, Save, and sending a chat message wait for the relevant edits to be
-acknowledged. Concurrent changes require review; neither side silently wins.
+Documents synchronize to the server's versioned working buffers; saving writes
+them to project files. Execution captures exact source independently of later
+edits. All human, agent, and inspection code goes through ExecutionService.
 
-The document service watches opened directories. Clean documents follow disk
-changes; dirty documents retain their content and expose the disk version for
-review. Reconciliation checks both the working revision and reviewed disk hash.
-Opening a document also recovers a save that renamed the file before recording
-its saved revision. There is no automatic textual merge.
+Unfinished runs and executions are marked abandoned on server restart and never
+replayed automatically. A surviving Jupyter session can be reattached; restarting
+the managed launcher restarts Jupyter and clears live objects. Cancellation with
+an uncertain outcome gates further dispatch until the kernel is reconciled.
+Recorded source and outputs do not capture a complete reproducible environment.
 
-Execution metadata and immutable source have separate SQLite tables. OutputService
-owns raw output events, generation-scoped display slots, and typed inspection results.
-Large payloads live under `artifacts/blobs/`, addressed by SHA-256. Existing embedded
-execution outputs migrate on startup, retaining their IDs, source, and provenance;
-verified legacy artifact copies are removed after the new payload is durable.
-Snapshots contain bounded execution summaries; output references are paginated,
-and payload/source reads are explicit. React panels subscribe to their consumed
-state fields, so token streaming does not update the editor or output queries.
+## Desktop shell
 
-Shutdown stops submissions, cancels queued human and agent work, and waits for
-active work before closing kernel connections and SQLite. A kernel that does not
-respond within ten seconds is recorded as abandoned; later callbacks cannot write
-to closed storage, and the code is never replayed automatically. The development
-launcher stops the application before stopping its managed Jupyter process.
-
-Individual cancellation waits at most two seconds for completion. A timeout is
-recorded as `completion_unknown` and persists a language-session quarantine.
-Further work requires an idle, connected kernel and a fresh kernel-info response;
-reconciliation also has a two-second deadline. Readiness does not change the
-original unknown outcome. No computation is replayed during recovery.
-
-The workbench keeps message drafts per conversation, console drafts per language,
-and unsaved research context in project-scoped local storage. Research notes are
-shared with new agent runs only after **Save context**. In the editor, **Share
-buffer** creates a server revision; **Save** also writes to the project file.
-Running a `.py` or `.R` file selects its matching session, independently of the
-session previously selected in the header.
-
-Use the left rail or `Alt+1` through `Alt+8` to open a panel. `Alt+F` focuses the
-active panel; Escape restores the workspace. `Ctrl/Cmd+Enter` runs the entire
-editor file, runs console input, or sends a message according to focus.
-`Ctrl/Cmd+S` saves the focused file or research notes. The help dialog explains
-these shortcuts. Panel arrangements are retained separately for wide, compact,
-and narrow windows. Figure downloads and clipboard actions are verified in the
-browser; native webview behavior still needs a desktop smoke test.
-
-Execution records are a provenance foundation, not a complete environment replay
-system. Package versions inside an arbitrary attached kernel, external files read
-by code, randomness, and external service responses are not automatically captured.
-
-## Pi SDK configuration and compatibility
-
-Biologue pins `pi-coding-agent`, `pi-agent-core`, and `pi-ai` to 0.99.1. Agent-core is
-used for message types; session construction and lifecycle use the higher-level
-SDK. The composer settings select a model, supported thinking level and permission mode per conversation. Project defaults also use `BIOLOGUE_PROVIDER` and `BIOLOGUE_MODEL`, or Pi settings'
-`defaultProvider` and `defaultModel`. Explicit adapter options take precedence over
-saved Pi settings, which take precedence over environment variables. Pi's ModelRuntime handles
-provider credentials/catalogs, using the configured state directory's
-`pi/auth.json` and `pi/models.json` when supplied. Never commit credential files.
-Pi settings live in `pi/settings.json` under that state directory, with project
-`.pi/settings.json` supported by the SDK. Cache warming is forced off in Biologue.
-
-Use `npm run login:codex` to sign Biologue into ChatGPT through Pi's device-code
-flow. It uses `BIOLOGUE_PROJECT` and `BIOLOGUE_STATE_DIR` to select the same credential
-store as the server; it does not change the configured model. Complete the login
-on OpenAI's page instead of pasting credentials into chat. The SDK owns login,
-credential locking, persistence, and token refresh. Give Biologue its own login
-instead of copying rotating tokens from an active Codex session. See
-[OpenAI's headless sign-in guidance](https://learn.chatgpt.com/docs/auth#login-on-headless-devices).
-
-Place a scientific skill in `.pi/skills/<name>/SKILL.md` with Pi's standard name
-and description frontmatter. Biologue loads skill descriptions and lets the model
-read selected skill resources. Resources lists skills, prompts and project instructions;
-slash commands expand through Pi. The bundled `@biologue/pi-science` workspace
-package exports the scientific context/compaction extension and analysis prompts.
-`pi-ask-user` 0.15.1 is installed and uses the browser's Pi dialog bridge.
-
-Native Pi MCP, code mode and tool search are explicitly loaded. Configure MCP in
-Agent settings → MCP; configuration lives in the project's state directory under
-`pi/mcp.json`. Pi's MCP OAuth implementation uses its standard global
-`~/.pi/agent/mcp-auth.json` credential store. `/mcp` checks connections and
-`/mcp login <name>` starts sign-in, including pasted loopback callback URLs when
-the browser runs elsewhere. Code mode only orchestrates tools: it has no Node,
-filesystem or network access, and auxiliary model calls are disabled. Scientific
-execution and inspection still use ExecutionService. MCP tools lacking a read-only
-annotation use the same approval system as workspace actions. Native shell and
-file-writing tools remain excluded. Arbitrary installed executable extensions are
-not auto-loaded; each extension needs a host integration review.
-
-Conversation settings offer Ask, Plan (read/inspect), Allow edits and Allow all
-modes. Provider sign-in is available through Pi's own OAuth/API-key challenges in
-the Providers section. Credential values are never returned in challenge payloads.
-Attachments preserve file snapshots and source revisions separately from display
-text. Branches copy conversation history, not project files or live kernel state.
-
-Back up the entire state directory, including Pi session files and artifacts.
-Existing SQLite transcripts are imported automatically and retained as migration
-evidence. A session file that disappears after persistence produces an error;
-restore it before continuing that conversation.
-
-When upgrading Pi, run the AgentSession regression suite, especially message
-metadata persistence, prompt preflight cancellation, retry/compaction settlement,
-steering delivery, and skill discovery. The historical audit's command now runs
-that suite:
+Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+`npm run desktop` launches the development shell and the same local services.
+After Rust or Tauri configuration changes, run:
 
 ```bash
-npx tsx scripts/audits/pi-boundary.ts
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-In the supplied environment, run this inside `codex-universal`, as with all other
-checks. The live kernel integration also routes scripted model tool calls through
-AgentSession and the same ExecutionService used by the human UI.
+A built shell currently needs the Node server and Jupyter started separately;
+bundled sidecars and installers are planned. Native webview behavior needs a
+manual desktop smoke test.

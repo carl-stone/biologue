@@ -44,12 +44,12 @@ instead of a TCP port. Its parent directory must exist; the socket is restricted
 to its owner. Give Tailscale the host-side path:
 
 ```bash
-tailscale serve --bg unix:/root/workspace/biologue/.biologue/serve/http.sock
+tailscale serve --bg unix:/root/workspace/carl-harness/.carl/serve/http.sock
 ```
 
 The configured deployment runs as `biologue.service`, enabled at host startup.
 It uses `examples/sandbox` and its saved Pi configuration. Machine-specific
-settings, launcher scripts, and the process ID live in ignored `.biologue/serve/`;
+settings, launcher scripts, and the process ID live in ignored `.carl/serve/`;
 the unit is `/etc/systemd/system/biologue.service`.
 
 Host administration:
