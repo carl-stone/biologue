@@ -290,6 +290,7 @@ export function App() {
       view.onDidMaximizedGroupChange(() => setMaximized(view.hasMaximizedGroup())),
       view.onDidLayoutChange(() => {
         if (restoring) return;
+        view.groups.forEach(updateHeader);
         clearTimeout(timer);
         timer = setTimeout(() => {
           if (disposed) return;

@@ -607,6 +607,7 @@ test("an older figure opens its own artifact and exact source", async ({ page })
   await fixture(page, { executions });
   await page.goto("/");
   await expect(page.locator(".figure-count")).toHaveText("Figure 2 of 2");
+  await expect(page.locator(".dv-single-tab .dv-tab:visible")).toHaveCount(0);
   await page.locator(".execution").first().getByRole("button", { name: "View figure" }).click();
   await expect(page.locator(".figure-count")).toHaveText("Figure 1 of 2");
   await page.locator(".plots").getByRole("button", { name: "View output" }).click();

@@ -13,3 +13,5 @@ Implemented the second set of 17 browser comments:
 - The project button opens a folder browser. Each folder has separate documents, conversations, notes, executions, settings, and kernels. Project URLs isolate simultaneous browser tabs. Unsaved buffers persist when switching folders.
 
 Verification covers server persistence and request boundaries, real R/Python kernels, project working directories and variable isolation, browser keyboard behavior, model selection, table filtering/export, folder switching, and wide/narrow layouts. Scientific interpretation is not assessed by these UI and execution checks.
+
+Release checks: build and formatting passed; 95 server tests and 45 browser tests passed across the full runs and targeted rechecks. Real-kernel integration verified R/Python behavior and project isolation. The deployed browser exposed all nine Codex models returned by Pi and reported no page errors. Deployment preserved document contents and versions, conversations, notes, executions, and agent runs; restarting the managed runtime cleared live variables.

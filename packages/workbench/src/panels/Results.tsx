@@ -209,9 +209,7 @@ export function Plots() {
           <p>{page.error}</p>
           <button onClick={page.retry}>Try again</button>
         </Empty>
-      ) : (
-        <div className="pane-toolbar">Plots</div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -552,8 +550,11 @@ export function Data() {
       ) : table && record ? (
         <>
           <div className="pane-toolbar data-toolbar">
-            <Table2 size={15} />
-            <strong title={title}>{title}</strong>
+            <div className="table-meta">
+              {filter ? `${rows.length} of ${table.rows.length}` : table.rows.length} rows ·{" "}
+              {table.columns.length} columns
+              {table.truncated && <Badge>First 100 rows</Badge>}
+            </div>
             <span className="spacer" />
             <CopyButton
               label="Copy table"
@@ -601,11 +602,6 @@ export function Data() {
                 <X size={13} />
               </button>
             )}
-          </div>
-          <div className="table-meta">
-            {filter ? `${rows.length} of ${table.rows.length}` : table.rows.length} rows ·{" "}
-            {table.columns.length} columns
-            {table.truncated && <Badge>First 100 rows</Badge>}
           </div>
           <div className="table-scroll" tabIndex={0} role="region" aria-label={`${title} table`}>
             <table>

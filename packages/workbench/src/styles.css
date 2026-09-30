@@ -2549,3 +2549,7 @@ kbd {
 .environment > .pane-toolbar .search-field input {
   min-width: 0;
 }
+.data-toolbar .table-meta {
+  padding: 0;
+  border: 0;
+}
