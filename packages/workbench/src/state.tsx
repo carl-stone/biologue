@@ -55,6 +55,13 @@ function upsert<T extends { id: string }>(items: T[], value: T) {
 }
 export function applyEvent(state: Snapshot, event: AppEvent): Snapshot {
   switch (event.type) {
+    case "question":
+      return { ...state, questions: upsert(state.questions ?? [], event.question) };
+    case "question-resolved":
+      return {
+        ...state,
+        questions: (state.questions ?? []).filter((item) => item.id !== event.id),
+      };
     case "agent-settings":
       return { ...state, agent: event.agent };
     case "execution":
@@ -238,6 +245,11 @@ class WorkbenchStore {
       },
       setConversation: (conversation) => {
         this.update({ conversation });
+        try {
+          localStorage.setItem(`carl-active-conversation:${this.project}`, conversation);
+        } catch {
+          /* Keep the current selection in memory. */
+        }
         void this.history.select(conversation);
       },
       notify: (notice) => {
@@ -411,9 +423,13 @@ class WorkbenchStore {
   }
   snapshot(snapshot: Snapshot) {
     let preferred = this.state.file;
+    let preferredConversation = this.state.conversation;
     if (this.project !== snapshot.project) {
       try {
         preferred = localStorage.getItem(`carl-active-file:${snapshot.project}`) ?? preferred;
+        preferredConversation =
+          localStorage.getItem(`carl-active-conversation:${snapshot.project}`) ??
+          preferredConversation;
       } catch {
         /* Use the default file. */
       }
@@ -421,9 +437,9 @@ class WorkbenchStore {
     this.update({
       snapshot,
       ready: true,
-      conversation: snapshot.conversations.some((item) => item.id === this.state.conversation)
-        ? this.state.conversation
-        : snapshot.conversations[0]?.id || "",
+      conversation: snapshot.conversations.some((item) => item.id === preferredConversation)
+        ? preferredConversation
+        : snapshot.conversations.find((item) => !item.archived)?.id || "",
       streaming: {},
       file:
         snapshot.files.includes(preferred) ||

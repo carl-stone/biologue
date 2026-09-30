@@ -41,7 +41,7 @@ test("model and thinking selections use the available catalog and update the com
     "gpt-6-astra",
   );
   await page.getByRole("combobox", { name: "Thinking level", exact: true }).selectOption("max");
-  await expect.poll(() => ui.state.agent.thinking).toBe("max");
+  await expect.poll(() => ui.state.conversations[0].settings?.thinking).toBe("max");
   await page.screenshot({ path: "test-results/cleanup-model-settings.png" });
 });
 

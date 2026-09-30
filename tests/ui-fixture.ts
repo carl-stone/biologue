@@ -189,7 +189,14 @@ export async function fixture(
           thinkingLevels: ["low", "medium", "high", "xhigh", "max"],
         },
       ];
-    else if (request.path === "/agent/settings") {
+    else if (/^\/conversations\/[^/]+\/settings$/.test(request.path)) {
+      const conversation = state.conversations.find(
+        (item) => item.id === request.path.split("/")[2],
+      )!;
+      conversation.settings = request.body;
+      result = conversation;
+      await emit({ type: "conversation", conversation });
+    } else if (request.path === "/agent/settings") {
       state.agent = { enabled: true, ...request.body };
       result = state.agent;
       await emit({ type: "agent-settings", agent: state.agent });
@@ -315,8 +322,8 @@ export async function fixture(
       const conversation = state.conversations.find(
         (item) => item.id === request.path.split("/")[2],
       )!;
-      conversation.title = request.body.title;
-      conversation.titleMode = "manual";
+      Object.assign(conversation, request.body);
+      if (request.body.title) conversation.titleMode = "manual";
       await emit({ type: "conversation", conversation });
       result = conversation;
     } else if (request.path === "/conversations") {

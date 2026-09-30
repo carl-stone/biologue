@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   WifiOff,
   X,
+  Search,
 } from "lucide-react";
 import {
   api,
@@ -24,6 +25,7 @@ import {
 import type { DisplayOutput, Page } from "@carl/protocol";
 import { Dialog, Spinner, modifier } from "./ui.tsx";
 import { ProjectPicker } from "./ProjectPicker.tsx";
+import { CommandPalette } from "./CommandPalette.tsx";
 import { Chat } from "./panels/Chat.tsx";
 import { Editor } from "./panels/Editor.tsx";
 import { Console } from "./panels/Console.tsx";
@@ -135,6 +137,18 @@ export function App() {
   const [isArranging, setIsArranging] = useState(false);
   const [help, setHelp] = useState(false);
   const [projects, setProjects] = useState(false);
+  const [commands, setCommands] = useState(false);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        event.stopPropagation();
+        setCommands((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", keydown, true);
+    return () => window.removeEventListener("keydown", keydown, true);
+  }, []);
   const [layoutMode, setLayoutMode] = useState(mode.current);
   const plotVersion = useOutputVersion(wb.language);
   const plotPage = useResource<Page<DisplayOutput>>(
@@ -379,6 +393,15 @@ export function App() {
           <span>{wb.snapshot?.project.split("/").pop() || "Opening workspace"}</span>
         </button>
         <div className="header-actions">
+          <button
+            className="text-button"
+            title="Commands (Ctrl/Cmd+K)"
+            aria-label="Open commands"
+            onClick={() => setCommands(true)}
+          >
+            <Search size={14} />
+            Commands
+          </button>
           {reviewCount > 0 && (
             <button className="review-badge" onClick={() => wb.revealPermission(reviewRequests[0])}>
               <ShieldCheck size={14} />
@@ -535,6 +558,13 @@ export function App() {
         )}
       </div>
       {projects && <ProjectPicker onClose={() => setProjects(false)} />}
+      {commands && (
+        <CommandPalette
+          onClose={() => setCommands(false)}
+          onProjects={() => setProjects(true)}
+          onHelp={() => setHelp(true)}
+        />
+      )}
       {help && (
         <Dialog title="Keyboard shortcuts" onClose={() => setHelp(false)}>
           <p>Arrange: drag panels to move or group them. Escape to finish.</p>
@@ -555,6 +585,10 @@ export function App() {
               <dt>Find / replace</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>F</kbd>
+              </dd>
+              <dt>Commands</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>K</kbd>
               </dd>
               <dt>Save</dt>
               <dd>

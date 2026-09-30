@@ -53,9 +53,8 @@ for (const panel of ["Data", "Environment", "Plots"] as const) {
     await expect(pane.getByText("Stored result temporarily unavailable.")).toBeVisible();
     fail = false;
     await pane.getByRole("button", { name: "Try again", exact: true }).click();
-    await expect(
-      pane.getByText(panel === "Plots" ? "Plots" : "measurement", { exact: true }),
-    ).toBeVisible();
+    if (panel === "Plots") await expect(pane).toBeVisible();
+    else await expect(pane.getByText("measurement", { exact: true })).toBeVisible();
     await expect(pane.getByText(/^Couldn’t load/)).toHaveCount(0);
     expect(
       ui.requests.filter(

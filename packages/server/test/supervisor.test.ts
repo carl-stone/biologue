@@ -575,6 +575,9 @@ test(
       assert.deepEqual(
         names.sort(),
         [
+          "ask_user",
+          "codemode",
+          "tool_search",
           "edit_document",
           "execute_code",
           "inspect_environment",
@@ -1007,6 +1010,8 @@ test(
     const release = deferred();
     const runtime = f.options.modelRuntime;
     const checkAuth = runtime.checkAuth.bind(runtime);
+    // Pi 0.99 skips the asynchronous check when credentials are already configured.
+    runtime.hasConfiguredAuth = () => false;
     runtime.checkAuth = async (provider, options) => {
       entered.resolve();
       await release.promise;

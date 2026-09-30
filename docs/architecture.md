@@ -224,7 +224,7 @@ work; requests cancelled before dispatch need no quarantine.
 ## The implemented Pi boundary
 
 Biologue embeds the **AgentSession SDK** from `@earendil-works/pi-coding-agent`,
-pinned to 0.87.1 alongside its Pi dependencies. Biologue no longer constructs an
+pinned to 0.99.1 alongside its Pi dependencies. Biologue no longer constructs an
 `Agent` or runs a separate turn loop. The SDK owns requests, tool dispatch,
 steering, retries, context projection, and automatic compaction. Biologue waits for
 its complete recovery and idle lifecycle before assigning a final run outcome.
@@ -256,7 +256,7 @@ flowchart TB
 ```
 
 `pi.ts` configures the SDK, provider runtime, resource loader, and Biologue's inline
-extension. `supervisor.ts` manages application runs and maps SDK events to the
+extension factory from `@biologue/pi-science`, native MCP/code-mode/tool-search extensions, and the installed `pi-ask-user` package. `supervisor.ts` manages application runs and maps SDK events to the
 workbench. `conversation-sessions.ts` connects each conversation to its Pi session
 file, projects chat messages, imports older histories, and reconciles input
 receipts. `workspace-tools.ts` exposes the application services as Pi tools.
@@ -387,7 +387,7 @@ integration failure during asynchronous authentication/compaction, before the
 abortable agent loop starts. This small compatibility bridge is covered by
 regression tests against the pinned SDK.
 
-See the [Pi session SDK documentation](https://github.com/earendil-works/pi/blob/v0.87.1/packages/coding-agent/docs/sdk.md)
+See the [Pi session SDK documentation](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/sdk.md)
 and the historical [boundary audit](pi-boundary-audit.md).
 Kernel execution uses the
 [`@jupyterlab/services` kernel connection](https://jupyterlab.readthedocs.io/en/stable/api/classes/services.KernelConnection.html).

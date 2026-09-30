@@ -3,6 +3,7 @@ import type {
   PermissionRequest,
   PermissionDecision,
   PermissionDecisionSummary,
+  AgentRun,
 } from "@carl/protocol";
 import type { Events } from "./events.ts";
 import type { Store } from "./store.ts";
@@ -39,11 +40,30 @@ export class Permissions {
   }
   request(input: Omit<PermissionRequest, "id" | "createdAt">, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return Promise.reject(new Error("Agent run cancelled."));
+    const mode = this.store.get<AgentRun>("run", input.runId)?.settings?.mode ?? "ask";
+    if (mode === "plan")
+      return Promise.reject(
+        new Error(
+          "Plan mode permits reading and inspection only. Ask the scientist to change modes before editing or executing code.",
+        ),
+      );
     const request: PermissionRequest = {
       ...input,
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
+    if (mode === "auto" || (mode === "edit" && input.tool === "edit_document")) {
+      const record: PermissionDecision = {
+        ...request,
+        decision: "allow",
+        resolvedAt: new Date().toISOString(),
+        feedback: `Allowed by ${mode} mode.`,
+      };
+      this.store.put("permission", request.id, record);
+      const { code: _code, before: _before, ...resolution } = record;
+      this.events.emit({ type: "permission-resolved", id: request.id, resolution });
+      return Promise.resolve();
+    }
     return new Promise((resolve, reject) => {
       const abort = () => {
         try {

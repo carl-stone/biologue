@@ -19,6 +19,8 @@ import { Supervisor } from "./supervisor.ts";
 import { ConversationSessions } from "./conversation-sessions.ts";
 import { EnvironmentService } from "./environment.ts";
 import { adapters } from "./adapters.ts";
+import { ProviderAuth } from "./provider-auth.ts";
+import { Attachments } from "./attachments.ts";
 
 export interface AppOptions {
   project: string;
@@ -43,7 +45,7 @@ export async function createApp(options: AppOptions) {
     (externalOrigin.protocol !== "https:" || externalOrigin.origin !== options.externalOrigin)
   )
     throw new Error("externalOrigin must be an HTTPS origin without a path.");
-  const app = Fastify({ logger: options.logger ?? false, bodyLimit: 2_100_000 });
+  const app = Fastify({ logger: options.logger ?? false, bodyLimit: 6_000_000 });
   const events = new Events();
   const store = new Store(resolve(options.stateDir, "carl.sqlite"));
   const documents = new Documents(options.project, store, events, true);
@@ -62,6 +64,8 @@ export async function createApp(options: AppOptions) {
   const permissions = new Permissions(store, events);
   const sessions = new ConversationSessions(documents.root, options.stateDir, store, events);
   const pi = options.pi ?? new PiAdapter({ project: documents.root, stateDir: options.stateDir });
+  const auth = new ProviderAuth(pi);
+  const attachments = new Attachments(store, documents);
   const supervisor = new Supervisor(
     store,
     events,
@@ -103,7 +107,7 @@ export async function createApp(options: AppOptions) {
     if (request.method === "OPTIONS")
       return reply
         .header("Access-Control-Allow-Headers", "Content-Type, X-Carl-Client")
-        .header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
         .code(204)
         .send();
     if (
@@ -135,6 +139,7 @@ export async function createApp(options: AppOptions) {
       permissionHistory: permissions.history(),
       sessions: kernel instanceof JupyterKernels ? kernel.sessions() : [],
       agent: pi.status(),
+      questions: supervisor.dialogs.list(),
       layout: store.get("settings", "layout"),
     };
   };
@@ -355,14 +360,273 @@ export async function createApp(options: AppOptions) {
       z.object({ title: z.string().trim().min(1).max(120).optional() }).parse(request.body).title,
     ),
   );
-  app.patch("/api/conversations/:id", async (request) =>
-    context.renameConversation(
-      z.object({ id: z.string().uuid() }).parse(request.params).id,
-      z.object({ title: z.string().trim().min(1).max(120) }).parse(request.body).title,
-    ),
+  const conversationId = (params: unknown) => z.object({ id: z.string().uuid() }).parse(params).id;
+  app.patch("/api/conversations/:id", async (request) => {
+    const id = conversationId(request.params);
+    const body = z
+      .object({
+        title: z.string().trim().min(1).max(120).optional(),
+        archived: z.boolean().optional(),
+        pinned: z.boolean().optional(),
+      })
+      .parse(request.body);
+    if (body.archived && supervisor.isActive(id))
+      throw Object.assign(new Error("Stop this response before archiving."), { statusCode: 409 });
+    if (body.title) context.renameConversation(id, body.title);
+    return context.updateConversation(id, {
+      ...(body.archived !== undefined ? { archived: body.archived } : {}),
+      ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+    });
+  });
+  app.get("/api/conversations/search", async (request) => {
+    const { q } = z.object({ q: z.string().min(1).max(200) }).parse(request.query);
+    return { ids: sessions.search(q) };
+  });
+  app.post("/api/conversations/:id/fork", async (request) => {
+    const id = conversationId(request.params);
+    if (supervisor.isActive(id))
+      throw Object.assign(new Error("Stop this response before branching."), { statusCode: 409 });
+    const body = z.object({ entryId: z.string().min(1).max(100).optional() }).parse(request.body);
+    const parent = store.get<Conversation>("conversation", id);
+    if (!parent) throw Object.assign(new Error("Conversation not found."), { statusCode: 404 });
+    const leaf = body.entryId ?? sessions.get(id).getLeafId();
+    if (
+      !leaf ||
+      !sessions
+        .get(id)
+        .getBranch()
+        .some((entry) => entry.id === leaf)
+    )
+      throw Object.assign(new Error("Choose a delivered message to branch from."), {
+        statusCode: 400,
+      });
+    const child = context.createConversation(`${parent.title.slice(0, 100)} (branch)`);
+    sessions.fork(id, child.id, leaf);
+    return context.updateConversation(child.id, { parentId: id, settings: parent.settings });
+  });
+  app.get("/api/conversations/:id/export", async (request, reply) => {
+    const id = conversationId(request.params);
+    const conversation = store.get<Conversation>("conversation", id);
+    if (!conversation) return reply.code(404).send({ error: "Conversation not found." });
+    const text =
+      `# ${conversation.title}\n\n` +
+      sessions
+        .export(id)
+        .map(
+          (message) =>
+            `## ${message.role === "user" ? "You" : "Biologue"}\n\n${message.text}${message.attachments?.length ? "\n\nAttachments: " + message.attachments.map((item) => item.name).join(", ") : ""}`,
+        )
+        .join("\n\n");
+    return reply
+      .type("text/markdown; charset=utf-8")
+      .header("Content-Disposition", 'attachment; filename="conversation.md"')
+      .send(text);
+  });
+  app.post("/api/conversations/:id/compact", async (request) =>
+    supervisor.start(conversationId(request.params), "", { kind: "compaction" }),
   );
   let modelConfiguring = false;
-  app.get("/api/agent/models", async () => pi.models());
+  app.get("/api/agent/models", async (request) =>
+    pi.models(
+      z.object({ all: z.enum(["true", "false"]).optional() }).parse(request.query).all === "true",
+    ),
+  );
+  app.put("/api/conversations/:id/settings", async (request) => {
+    const id = conversationId(request.params);
+    if (supervisor.isActive(id))
+      throw Object.assign(new Error("Stop this response before changing settings."), {
+        statusCode: 409,
+      });
+    const body = z
+      .object({
+        provider: z.string().min(1),
+        model: z.string().min(1),
+        thinking: z.string(),
+        mode: z.enum(["ask", "plan", "edit", "auto"]).default("ask"),
+      })
+      .parse(request.body);
+    await pi.validate(body);
+    if (supervisor.isActive(id))
+      throw Object.assign(
+        new Error("This conversation started responding. Stop it before changing settings."),
+        { statusCode: 409 },
+      );
+    return context.updateConversation(id, { settings: body });
+  });
+  app.get("/api/agent/preferences", async () => pi.preferences());
+  app.put("/api/agent/preferences", async (request) =>
+    pi.configurePreferences(
+      z
+        .object({
+          autoCompact: z.boolean(),
+          autoRetry: z.boolean(),
+          steeringMode: z.enum(["all", "one-at-a-time"]),
+          followUpMode: z.enum(["all", "one-at-a-time"]),
+        })
+        .parse(request.body),
+    ),
+  );
+  app.get("/api/agent/resources", async () => pi.resources());
+  const mcpExposure = z.enum(["direct", "codemode", "codemode-deferred", "deferred", "hidden"]);
+  const mcpCommon = {
+    enabled: z.boolean().optional(),
+    exposure: mcpExposure.optional(),
+    toolExposure: z.record(z.string(), mcpExposure).optional(),
+    timeout: z.number().min(1).max(600).optional(),
+  };
+  // Configure MCP explicitly in Pi's project agent directory. Secrets use environment references.
+  const referenceValue = z
+    .string()
+    .max(2000)
+    .refine(
+      (value) => !value.trim().startsWith("!"),
+      "Use an environment variable reference instead of a command.",
+    );
+  const mcpConfig = z.union([
+    z
+      .object({
+        ...mcpCommon,
+        type: z.literal("http").optional(),
+        url: z.url(),
+        headers: z.record(z.string(), referenceValue).optional(),
+        oauth: z
+          .object({
+            clientId: z.string().optional(),
+            clientSecret: referenceValue.optional(),
+            callbackPort: z.number().int().min(1).max(65535).optional(),
+            callbackUrl: z
+              .url()
+              .refine((value) => {
+                const url = new URL(value);
+                return (
+                  url.protocol === "http:" &&
+                  ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+                );
+              }, "Use an HTTP loopback callback URL.")
+              .optional(),
+            scope: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...mcpCommon,
+        type: z.literal("stdio").optional(),
+        command: z.string().min(1).max(1000),
+        args: z.array(z.string().max(2000)).max(100).optional(),
+        env: z.record(z.string(), referenceValue).optional(),
+        cwd: z.string().max(1000).optional(),
+      })
+      .strict(),
+  ]);
+  app.get("/api/agent/mcp", async () =>
+    pi.mcpServers().map(({ name, config }) => {
+      const visible = structuredClone(config);
+      for (const field of ["headers", "env"] as const) {
+        const values =
+          field in visible
+            ? (visible as unknown as Record<string, Record<string, string>>)[field]
+            : undefined;
+        for (const [key, value] of Object.entries(values ?? {}))
+          if (!/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)) values![key] = "[configured]";
+      }
+      if ("oauth" in visible && visible.oauth && visible.oauth.clientSecret)
+        visible.oauth.clientSecret = "[configured]";
+      return { name, config: visible };
+    }),
+  );
+  app.put("/api/agent/mcp/:name", async (request) => {
+    const { name } = z
+      .object({ name: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/) })
+      .parse(request.params);
+    const config = mcpConfig.nullable().parse(request.body);
+    if (supervisor.isActive())
+      throw Object.assign(new Error("Stop active responses before changing connections."), {
+        statusCode: 409,
+      });
+    if (config && "url" in config && !["http:", "https:"].includes(new URL(config.url).protocol))
+      throw Object.assign(new Error("Use an HTTP or HTTPS endpoint."), { statusCode: 400 });
+    const previous = pi.mcpServers().find((item) => item.name === name)?.config;
+    for (const field of ["headers", "env"] as const) {
+      const values =
+        config && field in config
+          ? ((config as Record<string, unknown>)[field] as Record<string, string> | undefined)
+          : undefined;
+      for (const [key, value] of Object.entries(values ?? {}))
+        if (value === "[configured]") {
+          const saved =
+            previous && field in previous
+              ? (previous as unknown as Record<string, Record<string, string>>)[field]?.[key]
+              : undefined;
+          if (saved === undefined)
+            throw Object.assign(new Error("Enter a value for this configuration field."), {
+              statusCode: 400,
+            });
+          values![key] = saved;
+        }
+    }
+    if (
+      config &&
+      "oauth" in config &&
+      config.oauth &&
+      config.oauth.clientSecret === "[configured]"
+    ) {
+      const saved =
+        previous && "oauth" in previous && previous.oauth ? previous.oauth.clientSecret : undefined;
+      if (!saved)
+        throw Object.assign(new Error("Enter the OAuth client secret."), { statusCode: 400 });
+      config.oauth.clientSecret = saved;
+    }
+    pi.saveMcpServer(name, config);
+    return { ok: true };
+  });
+  app.get("/api/agent/providers", async () => auth.providers());
+  app.get("/api/agent/auth", async () => auth.current());
+  app.post("/api/agent/auth", async (request) => {
+    const body = z
+      .object({ provider: z.string().min(1).max(200), type: z.enum(["oauth", "api_key"]) })
+      .parse(request.body);
+    return auth.start(body.provider, body.type);
+  });
+  app.get("/api/agent/auth/:id", async (request) => auth.get(conversationId(request.params)));
+  app.post("/api/agent/auth/:id/answer", async (request) => {
+    const body = z
+      .object({ promptId: z.string().uuid(), value: z.string().min(1).max(16000) })
+      .parse(request.body);
+    return auth.respond(conversationId(request.params), body.promptId, body.value);
+  });
+  app.post("/api/agent/auth/:id/cancel", async (request) =>
+    auth.cancel(conversationId(request.params)),
+  );
+  app.post("/api/agent/providers/logout", async (request) => {
+    if (supervisor.isActive())
+      throw Object.assign(new Error("Stop active responses before signing out."), {
+        statusCode: 409,
+      });
+    return auth.logout(
+      z.object({ provider: z.string().min(1).max(200) }).parse(request.body).provider,
+    );
+  });
+  app.post("/api/agent/questions/:id", async (request) =>
+    supervisor.dialogs.answer(
+      conversationId(request.params),
+      z.object({ answer: z.string().max(50000).optional() }).parse(request.body).answer,
+    ),
+  );
+  app.post("/api/attachments", async (request) =>
+    attachments.create(
+      z
+        .object({
+          path: z.string().max(1000).optional(),
+          name: z.string().max(200).optional(),
+          mimeType: z.string().max(200).optional(),
+          data: z.string().max(5_400_000).optional(),
+        })
+        .parse(request.body),
+    ),
+  );
   app.put("/api/agent/settings", async (request, reply) => {
     if (
       modelConfiguring ||
@@ -393,21 +657,44 @@ export async function createApp(options: AppOptions) {
     if (modelConfiguring)
       return reply.code(409).send({ error: "Model settings are updating. Try sending again." });
     const body = z
-      .object({ conversationId: z.string().uuid(), text: z.string().trim().min(1).max(50_000) })
+      .object({
+        conversationId: z.string().uuid(),
+        text: z.string().trim().min(1).max(50_000),
+        attachments: z.array(z.string().uuid()).max(8).default([]),
+      })
       .parse(request.body);
-    return reply.code(202).send(supervisor.start(body.conversationId, body.text));
+    const prepared = attachments.prepare(body.text, body.attachments);
+    return reply.code(202).send(
+      supervisor.start(body.conversationId, body.text, {
+        prepared,
+        attachments: prepared.attachments,
+      }),
+    );
   });
   app.post("/api/agent/runs/:id/cancel", async (request) => {
     await supervisor.cancel(z.object({ id: z.string().uuid() }).parse(request.params).id);
     return { ok: true };
   });
   app.post("/api/agent/runs/:id/steer", async (request) => {
+    const body = z
+      .object({
+        text: z.string().trim().min(1).max(50_000),
+        mode: z.enum(["steer", "followUp"]).default("steer"),
+        attachments: z.array(z.string().uuid()).max(8).default([]),
+      })
+      .parse(request.body);
+    const prepared = attachments.prepare(body.text, body.attachments);
     await supervisor.steer(
       z.object({ id: z.string().uuid() }).parse(request.params).id,
-      z.object({ text: z.string().trim().min(1).max(50_000) }).parse(request.body).text,
+      body.text,
+      body.mode,
+      { prepared, attachments: prepared.attachments },
     );
     return { ok: true };
   });
+  app.post("/api/agent/runs/:id/clear-queue", async (request) =>
+    supervisor.clearQueue(conversationId(request.params)),
+  );
   app.get("/api/permissions/:id", async (request, reply) => {
     const id = z.object({ id: z.string().uuid() }).parse(request.params).id;
     const record = permissions.get(id);
@@ -440,6 +727,7 @@ export async function createApp(options: AppOptions) {
   });
   app.addHook("onClose", async () => {
     environment.close();
+    auth.close();
     documents.close();
     context.close();
     try {

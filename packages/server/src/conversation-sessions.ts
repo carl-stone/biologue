@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Conversation, Message, Page } from "@carl/protocol";
+import type { Conversation, Message, Page, Attachment } from "@carl/protocol";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 
@@ -80,7 +81,7 @@ export class ConversationSessions {
     const previous = this.store.get<SessionReference>("pi-session", conversationId);
     this.store.put<SessionReference>("pi-session", conversationId, {
       file,
-      sdkVersion: "0.87.1",
+      sdkVersion: "0.99.1",
       persisted: !!previous?.persisted || existsSync(file),
     });
   }
@@ -115,7 +116,16 @@ export class ConversationSessions {
       manager.appendCustomEntry("carl.legacy-import", { version: 1, conversationId });
   }
 
-  accept(conversationId: string, text: string, runId: string): Message {
+  accept(
+    conversationId: string,
+    text: string,
+    runId: string,
+    extra?: {
+      queue?: Message["queue"];
+      attachments?: Attachment[];
+      prepared?: { text: string; images: ImageContent[] };
+    },
+  ): Message {
     this.synchronize(conversationId);
     const message: Message = {
       id: randomUUID(),
@@ -125,13 +135,65 @@ export class ConversationSessions {
       runId,
       createdAt: new Date().toISOString(),
       delivery: "pending",
+      ...(extra?.queue ? { queue: extra.queue } : {}),
+      ...(extra?.attachments?.length ? { attachments: extra.attachments } : {}),
     };
     this.store.transaction(() => {
       this.store.put("input-receipt", message.id, message);
+      if (extra?.prepared) this.store.put("input-content", message.id, extra.prepared);
       this.put(message);
     });
     this.events.emit({ type: "message", message });
     return message;
+  }
+  content(input: Message): { text: string; images: ImageContent[] } {
+    return this.store.get("input-content", input.id) ?? { text: input.text, images: [] };
+  }
+  discardPending(conversationId: string, ids: string[]) {
+    const pending = new Set(this.pending(conversationId).map((item) => item.id));
+    this.store.transaction(() => {
+      for (const id of ids) {
+        if (!pending.has(id)) throw new Error("This message was already delivered.");
+        this.store.delete("input-receipt", id);
+        this.store.delete("input-content", id);
+        this.store.db
+          .prepare("DELETE FROM chat_messages WHERE conversation_id = ? AND id = ?")
+          .run(conversationId, id);
+      }
+    });
+    this.events.emit({ type: "messages-reset", conversationId });
+  }
+  fork(sourceId: string, targetId: string, entryId?: string) {
+    const source = this.get(sourceId);
+    const leaf = entryId ?? source.getLeafId();
+    if (!leaf || !source.getBranch().some((entry) => entry.id === leaf))
+      throw Object.assign(new Error("Choose a delivered message to branch from."), {
+        statusCode: 400,
+      });
+    const temporary = SessionManager.open(source.getSessionFile()!, this.directory, this.project);
+    temporary.createBranchedSession(leaf);
+    this.managers.set(targetId, temporary);
+    this.checkpoint(targetId);
+    this.synchronize(targetId);
+  }
+  export(conversationId: string) {
+    this.synchronize(conversationId);
+    return this.store.db
+      .prepare(
+        "SELECT value FROM chat_messages WHERE conversation_id = ? ORDER BY created_at, position",
+      )
+      .all(conversationId)
+      .map((row) => JSON.parse(row.value as string) as Message);
+  }
+  search(query: string) {
+    for (const conversation of this.store.list<Conversation>("conversation"))
+      this.synchronize(conversation.id);
+    return this.store.db
+      .prepare(
+        "SELECT DISTINCT conversation_id FROM chat_messages WHERE instr(lower(json_extract(value, '$.text')), lower(?)) > 0 LIMIT 100",
+      )
+      .all(query)
+      .map((row) => row.conversation_id as string);
   }
 
   private pendingInputs(conversationId: string): Message[] {
@@ -158,7 +220,7 @@ export class ConversationSessions {
       if (input.id === exceptInputId) continue;
       const message: CarlMessage = {
         role: "user",
-        content: input.text,
+        content: [{ type: "text", text: this.content(input).text }, ...this.content(input).images],
         timestamp: Date.parse(input.createdAt),
         carl: { inputId: input.id, runId: input.runId },
       };
@@ -222,6 +284,9 @@ export class ConversationSessions {
       runId: input?.runId ?? message.carl?.runId,
       createdAt: input?.createdAt ?? legacy?.createdAt ?? entry.timestamp,
       delivery: "delivered",
+      entryId: entry.id,
+      attachments: input?.attachments,
+      queue: input?.queue,
     };
   }
 

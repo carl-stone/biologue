@@ -207,13 +207,13 @@ test("new requests preserve reading and typing until the scientist explicitly op
     .boundingBox();
   const transcript = await page.locator(".chat-messages").boundingBox();
   expect(jump!.y).toBeGreaterThanOrEqual(transcript!.y + transcript!.height);
-  await expect(page.locator(".composer-bottom")).toContainText("Sent after your decision");
+  await expect(page.getByRole("combobox", { name: "Message delivery" })).toHaveValue("steer");
   await page.getByRole("button", { name: "Review request", exact: true }).click();
   await expect(page.locator("#permission-request-1")).toBeFocused();
   await expect(page.getByRole("button", { name: "Run once", exact: true })).toBeInViewport();
   await page.setViewportSize({ width: 1024, height: 768 });
   const send = page.getByRole("button", { name: "Send context", exact: true });
-  await expect(send).toHaveText("Queue message");
+  await expect(send).toHaveText("Send");
   await expect
     .poll(() => send.evaluate((el) => el.scrollWidth - el.clientWidth))
     .toBeLessThanOrEqual(1);

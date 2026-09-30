@@ -35,6 +35,14 @@ export class ContextService {
     if (!previous) throw new Error("Conversation does not exist.");
     return this.publishTitle({ ...previous, title, titleMode: "manual" });
   }
+  updateConversation(
+    id: string,
+    changes: Partial<Pick<Conversation, "archived" | "pinned" | "settings" | "parentId">>,
+  ) {
+    const previous = this.store.get<Conversation>("conversation", id);
+    if (!previous) throw new Error("Conversation does not exist.");
+    return this.publishTitle({ ...previous, ...changes });
+  }
   private publishTitle(conversation: Conversation) {
     this.store.put("conversation", conversation.id, conversation);
     this.events.emit({ type: "conversation", conversation });

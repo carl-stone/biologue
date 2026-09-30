@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { AgentRun, Message, ResearchContext } from "@carl/protocol";
+import type { AgentRun, Message, ResearchContext, Conversation, Attachment } from "@carl/protocol";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import { ExtensionDialogs } from "./extension-ui.ts";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 import type { Documents } from "./documents.ts";
@@ -28,6 +30,7 @@ type ActiveRun = {
 export class Supervisor {
   private active = new Map<string, ActiveRun>();
   private closing = false;
+  readonly dialogs: ExtensionDialogs;
   constructor(
     private store: Store,
     private events: Events,
@@ -39,6 +42,7 @@ export class Supervisor {
     private prompt: string,
     readonly sessions: ConversationSessions,
   ) {
+    this.dialogs = new ExtensionDialogs(store, events);
     for (const run of store.list<AgentRun>("run"))
       if (run.status === "running")
         store.put("run", run.id, {
@@ -50,11 +54,31 @@ export class Supervisor {
         });
   }
 
-  start(conversationId: string, text: string): AgentRun {
+  start(
+    conversationId: string,
+    text: string,
+    options?: {
+      kind?: "compaction";
+      prepared?: { text: string; images: ImageContent[] };
+      attachments?: Attachment[];
+    },
+  ): AgentRun {
     if (this.closing) throw new Conflict("The application is shutting down.");
     if (!this.context.hasConversation(conversationId))
       throw new Error("Conversation does not exist.");
-    if (!this.pi.status().enabled)
+    const conversation = this.store.get<Conversation>("conversation", conversationId)!;
+    const defaults = this.pi.status();
+    const settings =
+      conversation.settings ??
+      (defaults.provider && defaults.model
+        ? {
+            provider: defaults.provider,
+            model: defaults.model,
+            thinking: defaults.thinking,
+            mode: "ask" as const,
+          }
+        : undefined);
+    if (!settings)
       throw new Error("Configure CARL_PROVIDER and CARL_MODEL to enable the collaborator.");
     if ([...this.active.values()].some((item) => item.run.conversationId === conversationId))
       throw new Conflict("A collaborator run is already active in this conversation.");
@@ -71,16 +95,21 @@ export class Supervisor {
       startedAt: new Date().toISOString(),
       contextVersion: research.version,
       piSessionId: manager.getSessionId(),
+      settings,
+      kind: options?.kind ?? "response",
     };
-    const input = this.sessions.accept(conversationId, text, run.id);
-    this.context.firstTitle(conversationId, text);
+    const input =
+      options?.kind === "compaction"
+        ? undefined
+        : this.sessions.accept(conversationId, text, run.id, options);
+    if (input) this.context.firstTitle(conversationId, text);
     let markReady!: () => void;
     const ready = new Promise<void>((resolve) => {
       markReady = resolve;
     });
     const active: ActiveRun = {
       run,
-      incoming: [input],
+      incoming: input ? [input] : [],
       ready,
       markReady,
       completion: Promise.resolve(),
@@ -88,14 +117,14 @@ export class Supervisor {
     this.store.transaction(() => {
       this.store.put("run-input", run.id, {
         schemaVersion: 1,
-        piSdkVersion: "0.87.1",
+        piSdkVersion: "0.99.1",
         piSessionId: manager.getSessionId(),
         sessionFile: manager.getSessionFile(),
         fromEntryId: manager.getLeafId(),
-        inputId: input.id,
+        inputId: input?.id,
         prompt: this.prompt,
         researchContext: research,
-        model: this.pi.status(),
+        model: settings,
       });
       this.store.put("run", run.id, run);
     });
@@ -107,20 +136,63 @@ export class Supervisor {
     return run;
   }
 
-  private async perform(active: ActiveRun, input: Message, research: ResearchContext) {
+  private async perform(active: ActiveRun, input: Message | undefined, research: ResearchContext) {
     const { run } = active;
     const cancelled = () => run.status === "cancelled";
     let unsubscribe: (() => void) | undefined;
+    let handled = false;
     try {
       const manager = this.sessions.get(run.conversationId);
       const session = await this.pi.create({
         manager,
         prompt: this.prompt,
         research,
+        settings: run.settings,
+        ui: this.dialogs.context(run),
+        extensions: [
+          (pi) => {
+            // Native MCP and nested codemode calls pass through the same permission pipeline.
+            pi.on("tool_call", async (event, ctx) => {
+              if (
+                !event.toolName.startsWith("mcp__") &&
+                ![
+                  "read_mcp_resource",
+                  "list_mcp_resources",
+                  "list_mcp_resource_templates",
+                ].includes(event.toolName)
+              )
+                return;
+              const definition = pi.getAllTools().find((tool) => tool.name === event.toolName);
+              if (definition?.annotations?.readOnlyHint) return;
+              try {
+                await this.permissions.request(
+                  {
+                    runId: run.id,
+                    conversationId: run.conversationId,
+                    tool: event.toolName,
+                    toolCallId: event.toolCallId,
+                    description: `Call ${event.toolName}`,
+                    code: JSON.stringify(event.input, null, 2),
+                  },
+                  ctx.signal,
+                );
+              } catch (error) {
+                return {
+                  block: true,
+                  reason: error instanceof Error ? error.message : String(error),
+                };
+              }
+            });
+          },
+        ],
         tools: (skills) =>
           workspaceTools(run, this.documents, this.execution, this.permissions, skills),
         attributeMessage: (message) => {
-          const accepted = message.role === "user" ? active.incoming.shift() : undefined;
+          const index = active.incoming.findIndex((item) => !item.queue || item.queue === "steer");
+          const accepted =
+            message.role === "user"
+              ? active.incoming.splice(index < 0 ? 0 : index, 1)[0]
+              : undefined;
           return {
             ...message,
             carl: {
@@ -160,6 +232,44 @@ export class Supervisor {
       });
       active.session = session;
       unsubscribe = session.subscribe((event) => {
+        if (event.type === "tool_execution_start") {
+          run.activity = [
+            ...(run.activity ?? []),
+            {
+              id: event.toolCallId,
+              tool: event.toolName,
+              label: event.toolName.replace(/_/g, " "),
+              status: "running",
+            },
+          ].slice(-40) as AgentRun["activity"];
+          this.publish(active);
+        }
+        if (event.type === "tool_execution_end") {
+          run.activity = run.activity?.map((item) =>
+            item.id === event.toolCallId
+              ? { ...item, status: event.isError ? "failed" : "completed" }
+              : item,
+          );
+          this.publish(active);
+        }
+        if (event.type === "compaction_start") {
+          run.phase = "compacting";
+          this.publish(active);
+        }
+        if (event.type === "compaction_end") {
+          run.phase = "working";
+          this.publish(active);
+        }
+        if (event.type === "auto_retry_start") {
+          run.phase = "retrying";
+          run.phaseDetail = `Retry ${event.attempt}/${event.maxAttempts} in ${Math.ceil(event.delayMs / 1000)}s`;
+          this.publish(active);
+        }
+        if (event.type === "auto_retry_end") {
+          run.phase = "working";
+          delete run.phaseDetail;
+          this.publish(active);
+        }
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta")
           this.events.emit({
             type: "agent-delta",
@@ -173,6 +283,8 @@ export class Supervisor {
             if (!this.active.has(run.id)) return;
             try {
               this.sessions.publishMessages(run.conversationId);
+              this.updateUsage(active);
+              this.publish(active);
             } catch (error) {
               this.failure(active, "Conversation update", error);
               void this.stop(active);
@@ -183,21 +295,33 @@ export class Supervisor {
       active.markReady();
       if (cancelled()) return;
       if (active.integrationError) throw active.integrationError;
-      await session.prompt(input.text, {
-        expandPromptTemplates: false,
-        // Pi's preflight can await auth or compaction before its abortable loop starts.
-        // Use the SDK's RPC preflight hook to honor a stop during that interval too.
-        preflightResult: (accepted) => {
-          if (!accepted) return;
-          if (active.integrationError) throw active.integrationError;
-          if (cancelled()) throw new Error("Run cancelled before the model turn started.");
-        },
-      });
+      const content = input && this.sessions.content(input);
+      if (content?.images.length && !session.model?.input.includes("image"))
+        throw new Error(
+          "This model does not accept images. Choose a vision model or remove the image.",
+        );
+      if (run.kind === "compaction") await session.compact();
+      else
+        await session.prompt(content!.text, {
+          images: content!.images,
+          expandPromptTemplates: true,
+          // Pi's preflight can await auth or compaction before its abortable loop starts.
+          // Use the SDK's RPC preflight hook to honor a stop during that interval too.
+          preflightResult: (accepted) => {
+            if (accepted === "handled") {
+              handled = true;
+              if (input) this.sessions.discardPending(run.conversationId, [input.id]);
+            }
+            if (!accepted) return;
+            if (active.integrationError) throw active.integrationError;
+            if (cancelled()) throw new Error("Run cancelled before the model turn started.");
+          },
+        });
       await session.waitForIdle();
       if (active.integrationError) throw active.integrationError;
       if (!cancelled()) {
         const last = active.lastAssistant;
-        if (last?.stopReason === "stop") {
+        if (handled || run.kind === "compaction" || last?.stopReason === "stop") {
           run.status = "completed";
           run.endReason = "response";
         } else {
@@ -226,8 +350,14 @@ export class Supervisor {
       // Each step is independent: a failed disposal or write must not strand the run.
       if (active.stopping) await active.stopping;
       this.attempt(active, "Unsubscribe", () => unsubscribe?.());
+      this.attempt(active, "Update usage", () => this.updateUsage(active));
+      this.dialogs.cancelRun(run.id);
       this.attempt(active, "Clear queued messages", () => active.session?.clearQueue());
-      this.attempt(active, "Dispose Pi session", () => active.session?.dispose());
+      try {
+        if (active.session) await this.pi.dispose(active.session);
+      } catch (error) {
+        this.failure(active, "Dispose Pi session", error);
+      }
       this.attempt(active, "Cancel permissions", () => this.permissions.cancelRun(run.id));
       this.attempt(active, "Conversation update", () =>
         this.sessions.publishMessages(run.conversationId),
@@ -235,7 +365,7 @@ export class Supervisor {
       run.finishedAt = new Date().toISOString();
       this.active.delete(run.id);
       this.publish(active);
-      if (run.status === "completed") {
+      if (run.status === "completed" && run.kind !== "compaction" && !handled) {
         try {
           this.context.refreshTitle(
             run.conversationId,
@@ -247,6 +377,20 @@ export class Supervisor {
         }
       }
     }
+  }
+  private updateUsage(active: ActiveRun) {
+    if (!active.session) return;
+    const stats = active.session.getSessionStats();
+    active.run.usage = {
+      tokens: stats.tokens,
+      cost: stats.cost,
+      context: active.session.getContextUsage(),
+    };
+  }
+  isActive(conversationId?: string) {
+    return [...this.active.values()].some(
+      (item) => !conversationId || item.run.conversationId === conversationId,
+    );
   }
 
   private failure(active: ActiveRun, operation: string, cause: unknown) {
@@ -285,6 +429,7 @@ export class Supervisor {
   private stop(active: ActiveRun): Promise<void> {
     return (active.stopping ??= (async () => {
       this.attempt(active, "Cancel permissions", () => this.permissions.cancelRun(active.run.id));
+      this.dialogs.cancelRun(active.run.id);
       await active.ready;
       // abort waits for tools, so request both stops before waiting for either.
       const results = await Promise.allSettled([
@@ -307,15 +452,56 @@ export class Supervisor {
     await active.completion;
   }
 
-  async steer(id: string, text: string) {
+  async steer(
+    id: string,
+    text: string,
+    mode: "steer" | "followUp" = "steer",
+    extra?: { attachments?: Attachment[]; prepared?: { text: string; images: ImageContent[] } },
+  ) {
     const active = this.active.get(id);
     if (!active || active.run.status !== "running")
       throw new Conflict("This run is no longer active.");
-    const input = this.sessions.accept(active.run.conversationId, text, id);
+    if (/^\/mcp(?:\s|$)/.test(text.trim()))
+      throw new Conflict("Stop the response before running an MCP command.");
+    if (
+      extra?.prepared?.images.length &&
+      active.session &&
+      !active.session.model?.input.includes("image")
+    )
+      throw new Conflict(
+        "This model does not accept images. Choose a vision model or remove the image.",
+      );
+    const input = this.sessions.accept(active.run.conversationId, text, id, {
+      ...extra,
+      queue: mode,
+    });
     active.incoming.push(input);
     await active.ready;
-    if (active.run.status === "running") await active.session?.steer(text);
+    if (active.run.status === "running") {
+      const content = this.sessions.content(input);
+      await active.session?.[mode](content.text, content.images);
+    }
     // A cancellation during startup leaves a durable pending receipt for the next run.
+  }
+  async clearQueue(id: string) {
+    const active = this.active.get(id);
+    if (!active) throw new Conflict("This response has already ended.");
+    await active.ready;
+    const queue = active.session?.clearQueue();
+    if (!queue) return [];
+    const pending = active.incoming.filter((item) => item.queue);
+    // Pi stores expanded prompt/skill text in its queues. Queue lengths identify
+    // the undelivered suffix without comparing that expansion to display text.
+    const suffix = (mode: Message["queue"], count: number) =>
+      count ? pending.filter((item) => item.queue === mode).slice(-count) : [];
+    const removed = [
+      ...suffix("steer", queue.steering.length),
+      ...suffix("followUp", queue.followUp.length),
+    ];
+    const ids = new Set(removed.map((item) => item.id));
+    active.incoming = active.incoming.filter((item) => !ids.has(item.id));
+    this.sessions.discardPending(active.run.conversationId, [...ids]);
+    return removed;
   }
 
   async close() {

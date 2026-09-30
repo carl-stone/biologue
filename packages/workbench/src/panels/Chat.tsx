@@ -1,17 +1,32 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowDown, ArrowUp, ArrowUpRight, Plus, Square, Pencil, Settings2 } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpRight,
+  Plus,
+  Square,
+  Pencil,
+  Settings2,
+  Search,
+  Paperclip,
+  GitBranch,
+  X,
+} from "lucide-react";
 import type {
   Conversation,
+  Attachment,
   Message,
   PermissionRequest,
   PermissionDecisionSummary,
 } from "@carl/protocol";
-import { api, useWorkbench, useSnapshot } from "../state.tsx";
+import { api, useWorkbench, useSnapshot, useResource } from "../state.tsx";
+import type { AgentResources } from "@carl/protocol";
 import { RunActivity } from "./RunActivity.tsx";
 import { PermissionCard } from "./PermissionCard.tsx";
 import { Controls } from "./Controls.tsx";
+import { ConversationManager, QuestionCard, UsageDialog } from "./ConversationTools.tsx";
 import {
   Dialog,
   CopyButton,
@@ -85,11 +100,42 @@ export function Chat() {
     "agent",
     "conversations",
     "researchContext",
+    "questions",
+    "files",
   );
   const [drafts, setDrafts] = useProjectDraft<Record<string, string>>("messages", {});
   const text = drafts[conversation] || "";
+  const slash = /^\/\S*$/.test(text);
+  const resources = useResource<AgentResources>(slash ? "/agent/resources" : null);
+  const suggestions = slash
+    ? [
+        { command: "/mcp", description: "MCP connection status" },
+        ...(resources.data?.prompts ?? []).map((item) => ({
+          command: `/${item.name}`,
+          description: item.description,
+        })),
+        ...(resources.data?.skills ?? []).map((item) => ({
+          command: `/skill:${item.name}`,
+          description: item.description,
+        })),
+      ]
+        .filter((item) => item.command.startsWith(text))
+        .slice(0, 8)
+    : [];
   const [renaming, setRenaming] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [history, setHistory] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [fileFilter, setFileFilter] = useState("");
+  const [queueMode, setQueueMode] = useState<"steer" | "followUp">("steer");
+  const [attachmentDrafts, setAttachmentDrafts] = useProjectDraft<Record<string, Attachment[]>>(
+    "attachments",
+    {},
+  );
+  const attachments = attachmentDrafts[conversation] ?? [];
+  const upload = useRef<HTMLInputElement>(null);
+  const attachmentAction = useAction();
   useEffect(() => {
     if (wb.panelRequest?.id === "controls") setSettings(true);
   }, [wb.panelRequest]);
@@ -131,6 +177,13 @@ export function Chat() {
   const runs = snapshot!.runs.filter((run) => run.conversationId === conversation);
   const active = runs.find((run) => run.status === "running");
   const latest = runs.at(-1);
+  const current = snapshot.conversations.find((item) => item.id === conversation);
+  const agent = current?.settings ?? snapshot.agent;
+  const enabled = current?.settings ? !!(agent.provider && agent.model) : snapshot.agent.enabled;
+  const questions = (snapshot.questions ?? []).filter(
+    (item) => item.conversationId === conversation,
+  );
+  const usage = active?.usage ?? [...runs].reverse().find((run) => run.usage)?.usage;
   const lastResponse = new Map<string, string>();
   for (const message of messages)
     if (message.role === "assistant" && message.runId) lastResponse.set(message.runId, message.id);
@@ -179,7 +232,14 @@ export function Chat() {
   );
   const workStatus = activeExecution
     ? `${activeExecution.purpose === "inspection" ? "Inspecting" : "Running"} ${activeExecution.language === "r" ? "R" : "Python"} ${activeExecution.purpose === "inspection" ? "objects" : "code"}`
-    : "Biologue is working…";
+    : questions.length
+      ? "Waiting for your answer"
+      : active?.phase === "compacting"
+        ? "Compacting context…"
+        : active?.phase === "retrying"
+          ? (active.phaseDetail ?? "Retrying…")
+          : ([...(active?.activity ?? [])].reverse().find((item) => item.status === "running")
+              ?.label ?? "Working…");
   const scroll = useFollowOutput(
     `${messages.length}:${active && streaming[active.id]}:${requests.map((request) => request.id + ("decision" in request ? request.decision : "pending")).join(":")}`,
     conversation,
@@ -252,22 +312,56 @@ export function Chat() {
   function setText(value: string) {
     setDrafts((current) => ({ ...current, [conversation]: value }));
   }
+  function addAttachment(item: Attachment) {
+    setAttachmentDrafts((current) => ({
+      ...current,
+      [conversation]: [...(current[conversation] ?? []), item].slice(0, 8),
+    }));
+  }
+  async function attachFiles(files: File[]) {
+    if (files.length + attachments.length > 8) throw new Error("Attach up to 8 files per message.");
+    for (const file of files) {
+      if (file.size > 4_000_000) throw new Error("Attachments must be under 4 MB.");
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("Could not read attachment."));
+        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.readAsDataURL(file);
+      });
+      addAttachment(
+        await api<Attachment>("/attachments", "POST", {
+          name: file.name,
+          mimeType: file.type || "text/plain",
+          data,
+        }),
+      );
+    }
+  }
   async function send() {
-    if (!text.trim() || !snapshot!.agent.enabled || !connected || !conversation) return;
+    if ((!text.trim() && !attachments.length) || !enabled || !connected || !conversation) return;
     const submitted = text;
     await wb.syncDocuments();
-    await api(
-      active ? `/agent/runs/${active.id}/steer` : "/agent/runs",
-      "POST",
-      active ? { text: submitted } : { text: submitted, conversationId: conversation },
-    );
+    await api(active ? `/agent/runs/${active.id}/steer` : "/agent/runs", "POST", {
+      text: submitted.trim() || "Review the attached files.",
+      attachments: attachments.map((item) => item.id),
+      ...(active ? { mode: queueMode } : { conversationId: conversation }),
+    });
     setDrafts((current) => ({
       ...current,
       [conversation]: current[conversation] === submitted ? "" : current[conversation],
     }));
+    setAttachmentDrafts((current) => ({
+      ...current,
+      [conversation]: (current[conversation] ?? []).filter(
+        (item) => !attachments.some((sent) => sent.id === item.id),
+      ),
+    }));
     scroll.toLatest();
     input.current?.focus();
-    if (active) wb.notify("Message queued for Biologue.");
+    if (active)
+      wb.notify(
+        queueMode === "steer" ? "Sent to the running response." : "Queued after this response.",
+      );
   }
   return (
     <div className="chat pane">
@@ -278,12 +372,22 @@ export function Chat() {
           title={snapshot.conversations.find((item) => item.id === conversation)?.title}
           onChange={(event) => setConversation(event.target.value)}
         >
-          {snapshot!.conversations.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.title}
-            </option>
-          ))}
+          {snapshot!.conversations
+            .filter((item) => !item.archived || item.id === conversation)
+            .map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.title}
+              </option>
+            ))}
         </select>
+        <button
+          className="icon"
+          aria-label="Search conversations"
+          title="Search and manage conversations"
+          onClick={() => setHistory(true)}
+        >
+          <Search size={14} />
+        </button>
         <button
           className="icon"
           aria-label="Rename conversation"
@@ -355,9 +459,33 @@ export function Chat() {
                   {message.role === "assistant" && (
                     <CopyButton text={message.text} label="Copy response" />
                   )}
+                  {message.entryId && !active && (
+                    <button
+                      className="icon"
+                      aria-label="Branch from message"
+                      title="Branch from this message; files and sessions stay shared"
+                      disabled={createAction.busy || !connected}
+                      onClick={() =>
+                        void createAction.run(async () => {
+                          const child = await api<Conversation>(
+                            `/conversations/${conversation}/fork`,
+                            "POST",
+                            { entryId: message.entryId },
+                          );
+                          setConversation(child.id);
+                        })
+                      }
+                    >
+                      <GitBranch size={13} />
+                    </button>
+                  )}
                   {message.delivery === "pending" && (
                     <span className="message-delivery" role="status">
-                      {active ? "Queued" : "Saved for your next message"}
+                      {active
+                        ? message.queue === "steer"
+                          ? "Steering"
+                          : "Queued"
+                        : "Saved for your next message"}
                     </span>
                   )}
                 </div>
@@ -365,6 +493,23 @@ export function Chat() {
                   <MessageContent text={message.text} />
                 ) : (
                   <div className="message-text">{message.text}</div>
+                )}
+                {!!message.attachments?.length && (
+                  <div className="attachment-list">
+                    {message.attachments.map((item) => (
+                      <span
+                        key={item.id}
+                        title={
+                          item.document
+                            ? `Snapshot of revision ${item.document.version}`
+                            : item.mimeType
+                        }
+                      >
+                        <Paperclip size={12} />
+                        {item.name}
+                      </span>
+                    ))}
+                  </div>
                 )}
                 {message.runId &&
                   message.runId !== active?.id &&
@@ -375,6 +520,51 @@ export function Chat() {
             );
           })}
           {active && <RunActivity runId={active.id} />}
+          {(active ?? latest)?.notices?.map((notice, i) => (
+            <div
+              className={`agent-notice ${notice.level}`}
+              key={`${(active ?? latest)?.id}:${i}`}
+              role="status"
+            >
+              <MessageContent text={notice.text} />
+            </div>
+          ))}
+          {questions.map((question) => (
+            <QuestionCard key={question.id} question={question} />
+          ))}
+          {active &&
+            messages.some((message) => message.delivery === "pending" && message.queue) && (
+              <button
+                className="text-button"
+                disabled={sendAction.busy}
+                onClick={() =>
+                  void sendAction.run(async () => {
+                    const removed = await api<Message[]>(
+                      `/agent/runs/${active.id}/clear-queue`,
+                      "POST",
+                      {},
+                    );
+                    if (removed.length) {
+                      setText(
+                        [text, ...removed.map((item) => item.text)].filter(Boolean).join("\n\n"),
+                      );
+                      setAttachmentDrafts((current) => ({
+                        ...current,
+                        [conversation]: [
+                          ...(current[conversation] ?? []),
+                          ...removed.flatMap((item) => item.attachments ?? []),
+                        ].filter(
+                          (item, i, all) => all.findIndex((other) => other.id === item.id) === i,
+                        ),
+                      }));
+                      input.current?.focus();
+                    }
+                  })
+                }
+              >
+                Edit queued messages
+              </button>
+            )}
           {latest?.error && !active && (
             <div className="inline-error" role="status">
               <strong>Biologue couldn’t finish responding.</strong>
@@ -434,11 +624,59 @@ export function Chat() {
       )}
       <form
         className="composer"
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+        }}
+        onDrop={(event) => {
+          if (event.dataTransfer.files.length) {
+            event.preventDefault();
+            void attachmentAction.run(() => attachFiles([...event.dataTransfer.files]));
+          }
+        }}
         onSubmit={(event) => {
           event.preventDefault();
           void sendAction.run(send);
         }}
       >
+        {!!suggestions.length && (
+          <div className="slash-suggestions" aria-label="Prompt and skill suggestions">
+            {suggestions.map((item) => (
+              <button
+                type="button"
+                key={item.command}
+                title={item.description}
+                onClick={() => {
+                  setText(item.command + " ");
+                  input.current?.focus();
+                }}
+              >
+                {item.command}
+              </button>
+            ))}
+          </div>
+        )}
+        {!!attachments.length && (
+          <div className="attachment-list">
+            {attachments.map((item) => (
+              <span key={item.id}>
+                {item.name}
+                <button
+                  type="button"
+                  className="icon"
+                  aria-label={`Remove ${item.name}`}
+                  onClick={() =>
+                    setAttachmentDrafts((current) => ({
+                      ...current,
+                      [conversation]: attachments.filter((other) => other.id !== item.id),
+                    }))
+                  }
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={input}
           aria-label="Message Biologue"
@@ -446,6 +684,12 @@ export function Chat() {
           value={text}
           onChange={(event) => setText(event.target.value)}
           rows={3}
+          onPaste={(event) => {
+            if (event.clipboardData.files.length) {
+              event.preventDefault();
+              void attachmentAction.run(() => attachFiles([...event.clipboardData.files]));
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
@@ -454,6 +698,16 @@ export function Chat() {
           }}
         />
         <div className="composer-bottom">
+          <button
+            type="button"
+            className="icon"
+            aria-label="Attach files"
+            title="Attach files"
+            disabled={attachmentAction.busy || attachments.length >= 8}
+            onClick={() => setAttachOpen(true)}
+          >
+            <Paperclip size={15} />
+          </button>
           <button
             type="button"
             className="text-button model-settings"
@@ -465,38 +719,115 @@ export function Chat() {
           >
             <Settings2 size={14} />
             <span>
-              {snapshot.agent.enabled ? snapshot.agent.model : "Choose model"}
-              {snapshot.agent.enabled && snapshot.agent.thinking
-                ? ` · ${snapshot.agent.thinking}`
-                : ""}
+              {enabled ? agent.model : "Choose model"}
+              {enabled && agent.thinking ? ` · ${agent.thinking}` : ""}
             </span>
           </button>
-          <span className="composer-hint">
-            {reviewing ? "Sent after your decision" : active ? "Send a follow-up" : "Enter ↵"}
-          </span>
+          {usage && (
+            <button
+              className="text-button context-usage"
+              type="button"
+              aria-label="Context and usage"
+              title="Context and usage"
+              onClick={() => setUsageOpen(true)}
+            >
+              {usage.context?.percent == null ? "Usage" : `${Math.round(usage.context.percent)}%`}
+            </button>
+          )}
+          {active ? (
+            <select
+              className="queue-mode"
+              aria-label="Message delivery"
+              value={queueMode}
+              onChange={(e) => setQueueMode(e.target.value as typeof queueMode)}
+            >
+              <option value="steer">Steer</option>
+              <option value="followUp">Queue</option>
+            </select>
+          ) : (
+            <span className="composer-hint" title="Enter sends · Shift+Enter adds a line">
+              Enter ↵
+            </span>
+          )}
           <button
             className="send"
             aria-label={active ? "Send context" : "Send message"}
             title={
               !connected
                 ? "Reconnect to send"
-                : !snapshot!.agent.enabled
+                : !enabled
                   ? "Set up a model to send"
                   : "Send message"
             }
             disabled={
-              !text.trim() ||
-              !snapshot!.agent.enabled ||
+              (!text.trim() && !attachments.length) ||
+              !enabled ||
               !connected ||
               sendAction.busy ||
+              attachmentAction.busy ||
               !conversation
             }
           >
             {sendAction.busy ? <Spinner /> : <ArrowUp size={14} />}
-            {reviewing ? "Queue message" : "Send"}
+            {active && queueMode === "followUp" ? "Queue" : "Send"}
           </button>
         </div>
       </form>
+      <input
+        hidden
+        ref={upload}
+        type="file"
+        multiple
+        accept="image/png,image/jpeg,image/webp,text/*,.csv,.tsv,.json,.md,.py,.R,.r,.txt,.yaml,.yml"
+        onChange={(e) => {
+          const files = [...(e.target.files ?? [])];
+          e.target.value = "";
+          void attachmentAction.run(() => attachFiles(files));
+        }}
+      />
+      {attachOpen && (
+        <Dialog title="Attach files" onClose={() => setAttachOpen(false)}>
+          <button
+            onClick={() => {
+              setAttachOpen(false);
+              upload.current?.click();
+            }}
+          >
+            Upload files
+          </button>
+          <input
+            autoFocus
+            aria-label="Find project file"
+            placeholder="Find project file…"
+            value={fileFilter}
+            onChange={(e) => setFileFilter(e.target.value)}
+          />
+          <div className="resource-list">
+            {snapshot.files
+              .filter((path) => path.toLowerCase().includes(fileFilter.toLowerCase()))
+              .slice(0, 100)
+              .map((path) => (
+                <button
+                  key={path}
+                  disabled={attachmentAction.busy}
+                  onClick={() =>
+                    void attachmentAction.run(async () => {
+                      await wb.syncDocuments();
+                      addAttachment(await api<Attachment>("/attachments", "POST", { path }));
+                      setAttachOpen(false);
+                    })
+                  }
+                >
+                  {path}
+                </button>
+              ))}
+          </div>
+        </Dialog>
+      )}
+      {history && <ConversationManager onClose={() => setHistory(false)} />}
+      {usageOpen && usage && (
+        <UsageDialog usage={usage} active={!!active} onClose={() => setUsageOpen(false)} />
+      )}
       {settings && (
         <div
           className="conversation-settings"
@@ -511,7 +842,13 @@ export function Chat() {
               Done
             </button>
           </div>
-          <Controls />
+          <Controls
+            onInsert={(value) => {
+              setText(value.startsWith("/mcp") ? value : value + text);
+              setSettings(false);
+              input.current?.focus();
+            }}
+          />
         </div>
       )}
       {renaming && (

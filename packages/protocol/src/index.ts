@@ -123,6 +123,72 @@ export interface Conversation {
   createdAt: string;
   titleMode?: "automatic" | "manual";
   titledThrough?: number;
+  archived?: boolean;
+  pinned?: boolean;
+  parentId?: string;
+  settings?: AgentSettings;
+}
+export type PermissionMode = "ask" | "plan" | "edit" | "auto";
+export interface AgentSettings {
+  provider: string;
+  model: string;
+  thinking: string;
+  mode?: PermissionMode;
+}
+export interface Attachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  document?: { path: string; version: number };
+}
+export interface AgentUsage {
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  cost: number;
+  subscription?: boolean;
+  context?: { tokens: number | null; contextWindow: number; percent: number | null };
+}
+export interface AgentActivity {
+  id: string;
+  tool: string;
+  label: string;
+  status: "running" | "completed" | "failed";
+}
+export interface AgentResources {
+  skills: { name: string; description: string; path: string }[];
+  prompts: { name: string; description: string; path: string }[];
+  instructions: { path: string; content: string }[];
+  diagnostics: string[];
+}
+export interface AgentProvider {
+  id: string;
+  name: string;
+  connected: boolean;
+  methods: { type: "oauth" | "api_key"; label: string }[];
+}
+export interface AuthFlow {
+  id: string;
+  provider: string;
+  status: "pending" | "complete" | "cancelled" | "failed";
+  message?: string;
+  url?: string;
+  code?: string;
+  prompt?: {
+    id: string;
+    type: "text" | "secret" | "select" | "manual_code";
+    message: string;
+    placeholder?: string;
+    options?: { id: string; label: string }[];
+  };
+}
+export interface AgentQuestion {
+  id: string;
+  runId: string;
+  conversationId: string;
+  kind: "select" | "input" | "confirm";
+  title: string;
+  options?: string[];
+  placeholder?: string;
 }
 export interface Message {
   /** Ordering within the rebuildable conversation display index. */
@@ -134,6 +200,9 @@ export interface Message {
   createdAt: string;
   runId?: string;
   delivery?: "pending" | "delivered";
+  queue?: "steer" | "followUp";
+  attachments?: Attachment[];
+  entryId?: string;
 }
 export interface ResearchContext {
   text: string;
@@ -149,6 +218,13 @@ export interface AgentRun {
   error?: string;
   contextVersion: number;
   piSessionId?: string;
+  kind?: "response" | "compaction";
+  settings?: AgentSettings;
+  phase?: "working" | "compacting" | "retrying";
+  phaseDetail?: string;
+  usage?: AgentUsage;
+  activity?: AgentActivity[];
+  notices?: { text: string; level: "info" | "warning" | "error" }[];
   endReason?:
     "response" | "cancelled" | "provider_error" | "integration_error" | "truncated" | "interrupted";
 }
@@ -191,6 +267,7 @@ export interface Snapshot {
   permissionHistory?: PermissionDecisionSummary[];
   sessions: SessionInfo[];
   agent: { enabled: boolean; provider?: string; model?: string; thinking?: string };
+  questions?: AgentQuestion[];
   layout?: unknown;
 }
 export interface AgentModel {
@@ -198,8 +275,16 @@ export interface AgentModel {
   id: string;
   name: string;
   thinkingLevels: string[];
+  available?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  input?: string[];
+  subscription?: boolean;
+  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 export type AppEvent =
+  | { type: "question"; question: AgentQuestion }
+  | { type: "question-resolved"; id: string }
   | { type: "agent-settings"; agent: Snapshot["agent"] }
   | { type: "execution"; execution: ExecutionSummary }
   | { type: "outputs"; executionId: string; language: Language }

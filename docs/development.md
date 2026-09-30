@@ -160,11 +160,11 @@ by code, randomness, and external service responses are not automatically captur
 
 ## Pi SDK configuration and compatibility
 
-Biologue pins `pi-coding-agent`, `pi-agent-core`, and `pi-ai` to 0.87.1. Agent-core is
+Biologue pins `pi-coding-agent`, `pi-agent-core`, and `pi-ai` to 0.99.1. Agent-core is
 used for message types; session construction and lifecycle use the higher-level
-SDK. Select a model using `CARL_PROVIDER` and `CARL_MODEL`, or Pi settings'
+SDK. The composer settings select a model, supported thinking level and permission mode per conversation. Project defaults also use `CARL_PROVIDER` and `CARL_MODEL`, or Pi settings'
 `defaultProvider` and `defaultModel`. Explicit adapter options take precedence over
-environment variables, which take precedence over saved Pi settings. Pi's ModelRuntime handles
+saved Pi settings, which take precedence over environment variables. Pi's ModelRuntime handles
 provider credentials/catalogs, using the configured state directory's
 `pi/auth.json` and `pi/models.json` when supplied. Never commit credential files.
 Pi settings live in `pi/settings.json` under that state directory, with project
@@ -180,9 +180,28 @@ instead of copying rotating tokens from an active Codex session. See
 
 Place a scientific skill in `.pi/skills/<name>/SKILL.md` with Pi's standard name
 and description frontmatter. Biologue loads skill descriptions and lets the model
-read selected skill resources. There is no skill-management UI yet. External
-extensions and native shell/file-writing tools are not enabled; Biologue supplies
-its own permission-checked workspace tools.
+read selected skill resources. Resources lists skills, prompts and project instructions;
+slash commands expand through Pi. The bundled `@biologue/pi-science` workspace
+package exports the scientific context/compaction extension and analysis prompts.
+`pi-ask-user` 0.15.1 is installed and uses the browser's Pi dialog bridge.
+
+Native Pi MCP, code mode and tool search are explicitly loaded. Configure MCP in
+Agent settings → MCP; configuration lives in the project's state directory under
+`pi/mcp.json`. Pi's MCP OAuth implementation uses its standard global
+`~/.pi/agent/mcp-auth.json` credential store. `/mcp` checks connections and
+`/mcp login <name>` starts sign-in, including pasted loopback callback URLs when
+the browser runs elsewhere. Code mode only orchestrates tools: it has no Node,
+filesystem or network access, and auxiliary model calls are disabled. Scientific
+execution and inspection still use ExecutionService. MCP tools lacking a read-only
+annotation use the same approval system as workspace actions. Native shell and
+file-writing tools remain excluded. Arbitrary installed executable extensions are
+not auto-loaded; each extension needs a host integration review.
+
+Conversation settings offer Ask, Plan (read/inspect), Allow edits and Allow all
+modes. Provider sign-in is available through Pi's own OAuth/API-key challenges in
+the Providers section. Credential values are never returned in challenge payloads.
+Attachments preserve file snapshots and source revisions separately from display
+text. Branches copy conversation history, not project files or live kernel state.
 
 Back up the entire state directory, including Pi session files and artifacts.
 Existing SQLite transcripts are imported automatically and retained as migration
