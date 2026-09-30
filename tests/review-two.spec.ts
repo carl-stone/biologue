@@ -149,14 +149,20 @@ test("console retrieval failures can be retried without running code again", asy
   ).toHaveLength(0);
 });
 
-test("editor executions retain output without echoing source or metadata", async ({ page }) => {
+test("editor executions show the recorded code even after the document changes", async ({
+  page,
+}) => {
   await fixture(page, { executions: [execution] });
   await page.goto("/");
   await expect(page.locator(".editor-footer")).not.toContainText(/Revision|Finished|View output/);
   await page
     .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
     .fill("print('new code')");
-  await expect(page.locator(".older-code, .console-code, .execution details")).toHaveCount(0);
+  await expect(page.locator(".older-code, .execution details")).toHaveCount(0);
+  await expect(page.locator("#execution-recorded-run .console-code")).toContainText(
+    execution.code.trim(),
+  );
+  await expect(page.locator("#execution-recorded-run .console-code")).not.toContainText("new code");
   await expect(page.locator("#execution-recorded-run")).toHaveCount(1);
 });
 

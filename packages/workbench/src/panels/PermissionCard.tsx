@@ -12,11 +12,14 @@ type Request = PermissionRequest | PermissionDecisionSummary;
 const heading = (request: Request) =>
   request.tool === "execute_code"
     ? `Run ${languageName(request.language || "python")} code`
-    : request.document
-      ? `Edit ${request.document.path}`
-      : "Edit document";
+    : request.tool === "edit_document"
+      ? request.document
+        ? `Edit ${request.document.path}`
+        : "Edit document"
+      : `Run ${request.tool}`;
 
 function ExactProposal({ request, expand }: { request: PermissionRequest; expand?: () => void }) {
+  const external = !["execute_code", "edit_document"].includes(request.tool);
   return (
     <div className="proposal-contents">
       {request.before !== undefined && (
@@ -29,13 +32,19 @@ function ExactProposal({ request, expand }: { request: PermissionRequest; expand
       )}
       <div className="permission-code">
         <div className="code-record-heading">
-          <span>{request.tool === "execute_code" ? "Exact code" : "Proposed contents"}</span>
+          <span>
+            {external
+              ? "Arguments"
+              : request.tool === "execute_code"
+                ? "Code"
+                : "Proposed contents"}
+          </span>
           <span className="spacer" />
           {expand && (
             <button
               className="icon"
-              aria-label="Expand proposed code"
-              title="Expand proposed code"
+              aria-label={external ? "Expand tool request" : "Expand proposed code"}
+              title={external ? "Expand tool request" : "Expand proposed code"}
               onClick={expand}
             >
               <Maximize2 size={14} />
@@ -43,7 +52,7 @@ function ExactProposal({ request, expand }: { request: PermissionRequest; expand
           )}
           <CopyButton text={request.code ?? ""} />
         </div>
-        <pre>{request.code || "(Empty document)"}</pre>
+        <pre>{request.code || (external ? "(No arguments)" : "(Empty document)")}</pre>
       </div>
     </div>
   );
@@ -91,12 +100,6 @@ function Decision({ request }: { request: PermissionDecisionSummary }) {
           <strong>Your feedback</strong>
           <p>{request.feedback}</p>
         </blockquote>
-      )}
-      {request.decision === "allow" && (
-        <p className="small-note">
-          This records your approval. Execution results and document revisions show what happened
-          next.
-        </p>
       )}
       {open && <PastProposal id={request.id} />}
     </details>
@@ -194,7 +197,7 @@ function PendingProposal({ request }: { request: PermissionRequest }) {
             onClick={() => void resolve(true)}
           >
             {action.busy && decision ? <Spinner /> : <Check size={14} />}
-            {execute ? "Run once" : "Apply edit"}
+            {execute ? "Run once" : request.tool === "edit_document" ? "Apply edit" : "Allow once"}
           </button>
         </div>
       )}

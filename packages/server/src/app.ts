@@ -183,7 +183,11 @@ export async function createApp(options: AppOptions) {
   app.post("/api/documents/untitled", async (request, reply) =>
     reply
       .code(201)
-      .send(documents.createUntitled(z.object({ language }).parse(request.body).language)),
+      .send(
+        documents.createUntitled(
+          z.object({ language: z.enum(["r", "python", "text"]) }).parse(request.body).language,
+        ),
+      ),
   );
   app.post("/api/documents/save-as", async (request) => {
     const body = z

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AgentProvider, AuthFlow } from "@carl/protocol";
-import { api, useResource } from "../state.tsx";
+import { api, useResource, useWorkbench } from "../state.tsx";
 import { useAction, Spinner } from "../ui.tsx";
 
 export function ProviderSettings({ onConnected }: { onConnected: () => void }) {
@@ -62,6 +62,7 @@ export function ProviderSettings({ onConnected }: { onConnected: () => void }) {
         <div className="auth-flow" aria-live="polite">
           <strong>{flow.provider}</strong>
           {flow.message && <p>{flow.message}</p>}
+          {flow.status === "complete" && <p>Connected.</p>}
           {flow.url && /^https?:/.test(flow.url) && (
             <a href={flow.url} target="_blank" rel="noreferrer">
               Open sign-in page ↗
@@ -122,10 +123,15 @@ export function ProviderSettings({ onConnected }: { onConnected: () => void }) {
               Cancel sign-in
             </button>
           )}
+          {flow.status !== "pending" && <button onClick={() => setFlow(undefined)}>Done</button>}
         </div>
       )}
       {providers.loading && <Spinner />}
       <div className="provider-list">
+        {providers.data &&
+          !providers.data.some((item) =>
+            `${item.name} ${item.id}`.toLowerCase().includes(filter.toLowerCase()),
+          ) && <p className="small-note">No providers match this search.</p>}
         {providers.data
           ?.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(filter.toLowerCase()))
           .sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name))
@@ -151,7 +157,13 @@ export function ProviderSettings({ onConnected }: { onConnected: () => void }) {
                       )
                     }
                   >
-                    {method.type === "oauth" ? "Sign in" : "API key"}
+                    {method.type === "oauth"
+                      ? provider.connected
+                        ? "Reconnect"
+                        : "Sign in"
+                      : provider.connected
+                        ? "Update key"
+                        : "API key"}
                   </button>
                 ))}
                 {provider.connected && (
@@ -178,8 +190,10 @@ export function ProviderSettings({ onConnected }: { onConnected: () => void }) {
 }
 
 export function McpSettings({ onCommand }: { onCommand?: (command: string) => void }) {
+  const { notify } = useWorkbench("notify");
   const resource = useResource<{ name: string; config: Record<string, unknown> }[]>("/agent/mcp");
   const action = useAction();
+  const [error, setError] = useState("");
   const [name, setName] = useState("");
   const [config, setConfig] = useState(
     '{\n  "url": "https://example.com/mcp",\n  "exposure": "codemode"\n}',
@@ -187,8 +201,7 @@ export function McpSettings({ onCommand }: { onCommand?: (command: string) => vo
   return (
     <div className="settings-section">
       <p className="small-note">
-        Pi MCP servers. Changes apply to the next response. Use <code>${"{ENV_VAR}"}</code> for
-        credentials.
+        Changes apply to the next response. Use <code>${"{ENV_VAR}"}</code> for credentials.
       </p>
       <button onClick={() => onCommand?.("/mcp")}>Check connections</button>
       {resource.error && (
@@ -243,8 +256,14 @@ export function McpSettings({ onCommand }: { onCommand?: (command: string) => vo
         onSubmit={(e) => {
           e.preventDefault();
           void action.run(async () => {
-            await api(`/agent/mcp/${encodeURIComponent(name)}`, "PUT", JSON.parse(config));
-            resource.retry();
+            setError("");
+            try {
+              await api(`/agent/mcp/${encodeURIComponent(name)}`, "PUT", JSON.parse(config));
+              resource.retry();
+              notify("MCP server saved.");
+            } catch (error) {
+              setError(error instanceof Error ? error.message : String(error));
+            }
           });
         }}
       >
@@ -254,7 +273,7 @@ export function McpSettings({ onCommand }: { onCommand?: (command: string) => vo
             aria-label="MCP server name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            pattern="[a-zA-Z0-9_-]+"
+            pattern={"[a-zA-Z0-9_\\-]+"}
             required
           />
         </label>
@@ -267,8 +286,14 @@ export function McpSettings({ onCommand }: { onCommand?: (command: string) => vo
             value={config}
             onChange={(e) => setConfig(e.target.value)}
             spellCheck={false}
+            aria-invalid={!!error}
           />
         </label>
+        {error && (
+          <p className="inline-error" role="alert">
+            {error}
+          </p>
+        )}
         <button disabled={!name || action.busy}>Save server</button>
       </form>
     </div>

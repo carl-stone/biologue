@@ -209,7 +209,9 @@ export function Plots() {
           <p>{page.error}</p>
           <button onClick={page.retry}>Try again</button>
         </Empty>
-      ) : null}
+      ) : (
+        <Empty>No plots yet</Empty>
+      )}
     </div>
   );
 }
@@ -341,31 +343,50 @@ export function Environment() {
               </button>
             </Empty>
           )}
-          {filtered.map((row) => (
-            <div className="object" key={row.name}>
-              <div>
-                <code>{row.name}</code>
-                <Badge>{row.type}</Badge>
-              </div>
-              <p title={row.preview}>{row.preview}</p>
-              {row.type.split("/").some((type) => ["DataFrame", "data.frame"].includes(type)) && (
-                <button
-                  className="text-button"
-                  disabled={!connected || preview.busy}
-                  onClick={() =>
-                    void preview.run(async () => {
-                      setPreviewing(row.name);
-                      await previewTable(row.name);
-                    })
-                  }
-                >
-                  {preview.busy && previewing === row.name ? <Spinner /> : <Table2 size={13} />}
-                  Preview in Data
-                  <ArrowUpRight size={12} />
-                </button>
-              )}
-            </div>
-          ))}
+          <table className="object-table">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Type</th>
+                <th scope="col">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((row) => (
+                <tr className="object" key={row.name}>
+                  <td>
+                    {row.type
+                      .split("/")
+                      .some((type) => ["DataFrame", "data.frame"].includes(type)) ? (
+                      <button
+                        className="text-button"
+                        aria-label="Preview in Data"
+                        title={`Open ${row.name} in Data`}
+                        disabled={!connected || preview.busy}
+                        onClick={() =>
+                          void preview.run(async () => {
+                            setPreviewing(row.name);
+                            await previewTable(row.name);
+                          })
+                        }
+                      >
+                        {preview.busy && previewing === row.name ? (
+                          <Spinner />
+                        ) : (
+                          <Table2 size={13} />
+                        )}
+                        <code>{row.name}</code>
+                      </button>
+                    ) : (
+                      <code>{row.name}</code>
+                    )}
+                  </td>
+                  <td title={row.type}>{row.type}</td>
+                  <td title={row.preview}>{row.preview}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : (
         <Empty>{pending ? "Refreshing…" : "No objects"}</Empty>
@@ -482,12 +503,24 @@ export function Data() {
   const filterSource = `${language}:${target?.outputId ?? record?.id ?? ""}`;
   const filter = tableFilter?.source === filterSource ? tableFilter.value : "";
   const setFilter = (value: string) => setTableFilter({ source: filterSource, value });
+  const [sort, setSort] = useState<{ source: string; column: number; descending: boolean }>();
   const rows =
     table?.rows
       .map((cells, index) => ({ cells, index }))
       .filter(({ cells }) =>
         cells.some((cell) => cellText(cell).toLowerCase().includes(filter.toLowerCase())),
       ) ?? [];
+  if (sort?.source === filterSource) {
+    rows.sort((a, b) => {
+      const left = a.cells[sort.column],
+        right = b.cells[sort.column];
+      const order =
+        typeof left === "number" && typeof right === "number"
+          ? left - right
+          : cellText(left).localeCompare(cellText(right), undefined, { numeric: true });
+      return (sort.descending ? -order : order) || a.index - b.index;
+    });
+  }
   return (
     <div className="pane data-pane">
       <form
@@ -550,6 +583,25 @@ export function Data() {
       ) : table && record ? (
         <>
           <div className="pane-toolbar data-toolbar">
+            <div className="table-filter">
+              <Search size={14} aria-hidden="true" />
+              <input
+                aria-label="Filter table preview"
+                placeholder="Filter this preview…"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+              />
+              {filter && (
+                <button
+                  className="icon"
+                  aria-label="Clear table filter"
+                  title="Clear filter"
+                  onClick={() => setFilter("")}
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
             <div className="table-meta">
               {filter ? `${rows.length} of ${table.rows.length}` : table.rows.length} rows ·{" "}
               {table.columns.length} columns
@@ -584,25 +636,6 @@ export function Data() {
               <Maximize2 size={15} />
             </button>
           </div>
-          <div className="table-filter">
-            <Search size={14} aria-hidden="true" />
-            <input
-              aria-label="Filter table preview"
-              placeholder="Filter this preview…"
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-            />
-            {filter && (
-              <button
-                className="icon"
-                aria-label="Clear table filter"
-                title="Clear filter"
-                onClick={() => setFilter("")}
-              >
-                <X size={13} />
-              </button>
-            )}
-          </div>
           <div className="table-scroll" tabIndex={0} role="region" aria-label={`${title} table`}>
             <table>
               <caption className="sr-only">
@@ -615,8 +648,36 @@ export function Data() {
                     #
                   </th>
                   {table.columns.map((column, i) => (
-                    <th scope="col" key={i}>
-                      {String(column)}
+                    <th
+                      scope="col"
+                      key={i}
+                      aria-sort={
+                        sort?.source === filterSource && sort.column === i
+                          ? sort.descending
+                            ? "descending"
+                            : "ascending"
+                          : "none"
+                      }
+                    >
+                      <button
+                        className="table-sort"
+                        title={`Sort preview by ${String(column)}`}
+                        onClick={() =>
+                          setSort({
+                            source: filterSource,
+                            column: i,
+                            descending:
+                              sort?.source === filterSource && sort.column === i
+                                ? !sort.descending
+                                : false,
+                          })
+                        }
+                      >
+                        {String(column)}
+                        {sort?.source === filterSource &&
+                          sort.column === i &&
+                          (sort.descending ? " ↓" : " ↑")}
+                      </button>
                     </th>
                   ))}
                 </tr>

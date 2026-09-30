@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { FolderOpen, ArrowUp } from "lucide-react";
 import { origin, useWorkbench, useSnapshot } from "./state.tsx";
-import { Dialog, useAction } from "./ui.tsx";
+import { Dialog, Spinner, useAction } from "./ui.tsx";
 
 type Folders = {
   path: string;
@@ -24,12 +24,14 @@ export function ProjectPicker({ onClose }: { onClose: () => void }) {
   const { syncDocuments } = useWorkbench("syncDocuments");
   const [path, setPath] = useState(project);
   const [listing, setListing] = useState<Folders>();
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const action = useAction();
   const [location, setLocation] = useState(project);
   useEffect(() => {
     let cancelled = false;
     setError("");
+    setLoading(true);
     void projects<Folders>(`?path=${encodeURIComponent(location)}`)
       .then((result) => {
         if (!cancelled) {
@@ -39,6 +41,9 @@ export function ProjectPicker({ onClose }: { onClose: () => void }) {
       })
       .catch((error) => {
         if (!cancelled) setError(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
@@ -70,6 +75,11 @@ export function ProjectPicker({ onClose }: { onClose: () => void }) {
       </form>
       {error && <p role="alert">{error}</p>}
       <div className="folder-list">
+        {loading && (
+          <p className="small-note" role="status">
+            <Spinner /> Loading folders…
+          </p>
+        )}
         {listing?.folders.map((folder) => (
           <button key={folder.path} onClick={() => setLocation(folder.path)}>
             <FolderOpen size={15} />
@@ -99,7 +109,7 @@ export function ProjectPicker({ onClose }: { onClose: () => void }) {
         <button onClick={onClose}>Cancel</button>
         <button
           className="primary"
-          disabled={action.busy || !listing || !!error || path !== listing.path}
+          disabled={loading || action.busy || !listing || !!error || path !== listing.path}
           onClick={() =>
             void action.run(async () => {
               await syncDocuments();

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AgentQuestion, Conversation, AgentUsage } from "@carl/protocol";
 import { api, base, useResource, useSnapshot, useWorkbench } from "../state.tsx";
-import { Dialog, useAction } from "../ui.tsx";
+import { Dialog, Spinner, useAction } from "../ui.tsx";
 
 export function ConversationManager({ onClose }: { onClose: () => void }) {
   const { conversations, runs } = useSnapshot("conversations", "runs");
@@ -41,6 +41,20 @@ export function ConversationManager({ onClose }: { onClose: () => void }) {
       </label>
       {search.error && <p role="alert">{search.error}</p>}
       <div className="conversation-list">
+        {search.loading && (
+          <p className="small-note">
+            <Spinner /> Searching…
+          </p>
+        )}
+        {!visible.length && !search.loading && (
+          <p className="small-note">
+            {query
+              ? "No matching conversations"
+              : archived
+                ? "No archived conversations"
+                : "No conversations"}
+          </p>
+        )}
         {visible.map((item) => (
           <div key={item.id} className="conversation-row">
             <button
@@ -195,12 +209,17 @@ export function UsageDialog({
         <dd>${usage.cost.toFixed(4)}</dd>
       </dl>
       <p className="small-note">
-        Session totals reported by Pi. Subscription billing may differ. Compaction keeps the
-        transcript and summarizes the model's context.
+        Subscription billing may differ. Compaction summarizes the model’s context and keeps your
+        transcript.
       </p>
       <div className="dialog-actions">
         <button
           disabled={active || action.busy}
+          title={
+            active
+              ? "Stop the response before compacting context"
+              : "Summarize conversation context"
+          }
           onClick={() =>
             void action.run(async () => {
               await api(`/conversations/${conversation}/compact`, "POST", {});

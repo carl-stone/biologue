@@ -1,9 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CodeMirror, { Prec, type EditorState, type ViewUpdate } from "@uiw/react-codemirror";
-import { historyField, undo, redo } from "@codemirror/commands";
-import { openSearchPanel } from "@codemirror/search";
+import CodeMirror, { Prec, EditorState, type ViewUpdate } from "@uiw/react-codemirror";
+import {
+  historyField,
+  undo,
+  redo,
+  toggleComment,
+  copyLineDown,
+  moveLineUp,
+  moveLineDown,
+  indentMore,
+  indentLess,
+  selectAll,
+} from "@codemirror/commands";
+import { openSearchPanel, search, gotoLine, selectNextOccurrence } from "@codemirror/search";
 import { python } from "@codemirror/lang-python";
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
+import {
+  HighlightStyle,
+  StreamLanguage,
+  syntaxHighlighting,
+  foldAll,
+  unfoldAll,
+  indentUnit,
+} from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { r } from "@codemirror/legacy-modes/mode/r";
 import { keymap, EditorView } from "@codemirror/view";
@@ -20,6 +38,7 @@ import {
   Undo2,
   Redo2,
   ChevronsRight,
+  PanelLeft,
 } from "lucide-react";
 import type { Document, Execution, Language } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
@@ -33,6 +52,9 @@ import {
   useAction,
   useProjectDraft,
 } from "../ui.tsx";
+
+import { EditorMenu } from "./EditorMenu.tsx";
+import { FileExplorer } from "./FileExplorer.tsx";
 
 const editorSetup = { foldGutter: true, autocompletion: true, highlightActiveLine: true };
 // Ephemeral editing history, not a second document authority. Restore only when
@@ -84,6 +106,20 @@ export function Editor() {
   const action = useAction();
   const createAction = useAction();
   const [savingAs, setSavingAs] = useState(false);
+  const [savingAll, setSavingAll] = useState(false);
+  const [options, setOptions] = useProjectDraft("editor-options", {
+    explorer: true,
+    wordWrap: true,
+    lineNumbers: true,
+    fontSize: 13,
+    tabSize: 4,
+  });
+  const setup = useMemo(
+    () => ({ ...editorSetup, lineNumbers: options.lineNumbers }),
+    [options.lineNumbers],
+  );
+  const changeOption = <K extends keyof typeof options>(key: K, value: (typeof options)[K]) =>
+    setOptions((current) => ({ ...current, [key]: value }));
   const [tabs, setTabs] = useProjectDraft<string[]>(
     "editor-tabs",
     snapshot.files.filter((path) => /\.(py|r)$/i.test(path)),
@@ -117,8 +153,9 @@ export function Editor() {
     if (drafts[path] || (closed && closed.version !== closed.savedVersion))
       wb.notify("Tab closed. Unsaved work is retained in Open file.");
   }
-  async function newFile() {
-    const created = await api<Document>("/documents/untitled", "POST", { language });
+  async function newFile(nextLanguage: Language | "text" = language) {
+    if (!connected) return;
+    const created = await api<Document>("/documents/untitled", "POST", { language: nextLanguage });
     await wb.open(created.path);
     chooseFile(created.path);
     requestAnimationFrame(() => editorView.current?.focus());
@@ -177,6 +214,42 @@ export function Editor() {
     });
     wb.notify(`Saved ${current.path}`);
   }
+  function saveAs() {
+    if (!doc || conflict || !connected) return;
+    setNewPath(doc.untitled ? "" : doc.path.replace(/(\.[^/.]+)?$/, "-copy$1"));
+    setCreateError("");
+    setSavingAs(true);
+  }
+  async function saveAll() {
+    if (!connected) return;
+    const pending = snapshot.documents.filter(
+      (item) => !item.savedAs && (drafts[item.path] || item.version !== item.savedVersion),
+    );
+    for (const item of pending.filter((item) => !item.untitled)) {
+      if (item.diskConflict)
+        throw new Error(`Resolve the disk conflict in ${item.path} before saving.`);
+      const current = await wb.flush(item);
+      await api("/documents/save", "POST", {
+        path: current.path,
+        expectedVersion: current.version,
+      });
+    }
+    const untitled = pending.find((item) => item.untitled);
+    if (untitled) {
+      setSavingAll(true);
+      chooseFile(untitled.path);
+      setNewPath("");
+      setCreateError("");
+      setSavingAs(true);
+    } else wb.notify("All files saved.");
+  }
+  function edit(command: (view: EditorView) => boolean) {
+    const view = editorView.current;
+    if (view) {
+      view.focus();
+      command(view);
+    }
+  }
   async function run(scope: "file" | "selection" | "line" = "file") {
     if (!doc || !fileLanguage || conflict || !connected) return;
     const state = editorView.current?.state;
@@ -214,6 +287,29 @@ export function Editor() {
     }
     view?.focus();
   }
+  const editorActions = useRef<Record<string, () => void>>({});
+  editorActions.current = {
+    open: () => {
+      wb.showPanel("editor");
+      setFileQuery("");
+      setOpening(true);
+    },
+    new: () => {
+      wb.showPanel("editor");
+      void createAction.run(() => newFile());
+    },
+    saveAs,
+    saveAll: () => void action.run(saveAll),
+    goToLine: () => edit(gotoLine),
+    explorer: () => changeOption("explorer", !options.explorer),
+    find: () => edit(openSearchPanel),
+  };
+  useEffect(() => {
+    const handle = (event: Event) =>
+      editorActions.current[(event as CustomEvent<string>).detail]?.();
+    window.addEventListener("biologue:editor-command", handle);
+    return () => window.removeEventListener("biologue:editor-command", handle);
+  }, []);
   // Streaming and kernel events should not reconfigure the editor on every event.
   // Stable extensions read the current document/actions through this ref.
   const commands = useRef({ doc, draft: wb.draft, run, save, action });
@@ -222,14 +318,19 @@ export function Editor() {
     () => [
       EditorView.contentAttributes.of({ "aria-label": `Code editor: ${file}` }),
       syntax,
+      search({ top: true }),
       ...(fileLanguage === "python"
         ? [python()]
         : fileLanguage === "r"
           ? [StreamLanguage.define(r)]
           : []),
-      EditorView.lineWrapping,
+      ...(options.wordWrap ? [EditorView.lineWrapping] : []),
+      EditorState.tabSize.of(options.tabSize),
+      indentUnit.of(" ".repeat(options.tabSize)),
+      EditorView.theme({ "&": { fontSize: `${options.fontSize}px` } }),
       Prec.highest(
         keymap.of([
+          { key: "Mod-g", run: gotoLine },
           {
             key: "Mod-Enter",
             run: (view) => {
@@ -267,7 +368,7 @@ export function Editor() {
         ]),
       ),
     ],
-    [file, fileLanguage],
+    [file, fileLanguage, options.wordWrap, options.tabSize, options.fontSize],
   );
   const change = useCallback((content: string) => {
     const current = commands.current;
@@ -294,7 +395,222 @@ export function Editor() {
     [memoryKey],
   );
   return (
-    <div className="pane editor-pane">
+    <div
+      className="pane editor-pane"
+      onKeyDownCapture={(event) => {
+        if (event.defaultPrevented) return;
+        if (event.altKey && event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          changeOption("wordWrap", !options.wordWrap);
+        }
+        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          event.stopPropagation();
+          saveAs();
+        }
+      }}
+    >
+      <div className="editor-menubar" aria-label="Editor commands">
+        <EditorMenu
+          label="File"
+          commands={[
+            {
+              label: "New Python file",
+              shortcut: language === "python" ? `${modifier}+N` : undefined,
+              disabled: !connected,
+              run: () => void createAction.run(() => newFile("python")),
+            },
+            {
+              label: "New R file",
+              shortcut: language === "r" ? `${modifier}+N` : undefined,
+              disabled: !connected,
+              run: () => void createAction.run(() => newFile("r")),
+            },
+            {
+              label: "New text file",
+              disabled: !connected,
+              run: () => void createAction.run(() => newFile("text")),
+            },
+            { label: "Open file…", shortcut: `${modifier}+P`, run: () => setOpening(true) },
+            null,
+            {
+              label: "Save",
+              shortcut: `${modifier}+S`,
+              disabled: !doc || !connected || conflict || !!doc.diskConflict || action.busy,
+              run: () => void action.run(save),
+            },
+            {
+              label: "Save As…",
+              shortcut: `${modifier}+Shift+S`,
+              disabled: !doc || !connected || conflict || action.busy,
+              run: saveAs,
+            },
+            {
+              label: "Save all",
+              disabled: !connected || action.busy,
+              run: () => void action.run(saveAll),
+            },
+            null,
+            { label: "Close file", disabled: !doc, run: () => closeTab(file) },
+            { label: "Close other files", disabled: !doc, run: () => setTabs([file]) },
+          ]}
+        />
+        <EditorMenu
+          label="Edit"
+          commands={[
+            { label: "Undo", shortcut: `${modifier}+Z`, disabled: !doc, run: () => edit(undo) },
+            {
+              label: "Redo",
+              shortcut: `${modifier}+Shift+Z`,
+              disabled: !doc,
+              run: () => edit(redo),
+            },
+            null,
+            {
+              label: "Find / Replace…",
+              shortcut: `${modifier}+F`,
+              disabled: !doc,
+              run: () => edit(openSearchPanel),
+            },
+            {
+              label: "Go to line…",
+              shortcut: `${modifier}+G`,
+              disabled: !doc,
+              run: () => edit(gotoLine),
+            },
+            null,
+            {
+              label: "Toggle line comment",
+              shortcut: `${modifier}+/`,
+              disabled: !doc,
+              run: () => edit(toggleComment),
+            },
+            {
+              label: "Duplicate line",
+              shortcut: "Alt+Shift+↓",
+              disabled: !doc,
+              run: () => edit(copyLineDown),
+            },
+            {
+              label: "Move line up",
+              shortcut: "Alt+↑",
+              disabled: !doc,
+              run: () => edit(moveLineUp),
+            },
+            {
+              label: "Move line down",
+              shortcut: "Alt+↓",
+              disabled: !doc,
+              run: () => edit(moveLineDown),
+            },
+            {
+              label: "Indent",
+              shortcut: `${modifier}+]`,
+              disabled: !doc,
+              run: () => edit(indentMore),
+            },
+            {
+              label: "Outdent",
+              shortcut: `${modifier}+[`,
+              disabled: !doc,
+              run: () => edit(indentLess),
+            },
+            null,
+            {
+              label: "Select next occurrence",
+              shortcut: `${modifier}+D`,
+              disabled: !doc,
+              run: () => edit(selectNextOccurrence),
+            },
+            {
+              label: "Select all",
+              shortcut: `${modifier}+A`,
+              disabled: !doc,
+              run: () => edit(selectAll),
+            },
+          ]}
+        />
+        <EditorMenu
+          label="View"
+          commands={[
+            {
+              label: "File explorer",
+              checked: options.explorer,
+              run: () => changeOption("explorer", !options.explorer),
+            },
+            {
+              label: "Word wrap",
+              checked: options.wordWrap,
+              shortcut: "Alt+Z",
+              run: () => changeOption("wordWrap", !options.wordWrap),
+            },
+            {
+              label: "Line numbers",
+              checked: options.lineNumbers,
+              run: () => changeOption("lineNumbers", !options.lineNumbers),
+            },
+            null,
+            { label: "Fold all", disabled: !doc, run: () => edit(foldAll) },
+            { label: "Unfold all", disabled: !doc, run: () => edit(unfoldAll) },
+            null,
+            {
+              label: "Increase font size",
+              disabled: options.fontSize >= 24,
+              run: () => changeOption("fontSize", Math.min(24, options.fontSize + 1)),
+            },
+            {
+              label: "Decrease font size",
+              disabled: options.fontSize <= 10,
+              run: () => changeOption("fontSize", Math.max(10, options.fontSize - 1)),
+            },
+            { label: "Reset font size", run: () => changeOption("fontSize", 13) },
+          ]}
+        />
+        <EditorMenu
+          label="Run"
+          commands={[
+            {
+              label: position.selected ? "Run selection" : "Run current line",
+              shortcut: `${modifier}+Enter`,
+              disabled:
+                !doc ||
+                !fileLanguage ||
+                !connected ||
+                conflict ||
+                action.busy ||
+                !(draft?.content ?? doc.content).trim(),
+              run: () => void action.run(() => run(position.selected ? "selection" : "line")),
+            },
+            {
+              label: "Run file",
+              shortcut: `${modifier}+Shift+Enter`,
+              disabled:
+                !doc ||
+                !fileLanguage ||
+                !connected ||
+                conflict ||
+                action.busy ||
+                !(draft?.content ?? doc.content).trim(),
+              run: () => void action.run(() => run("file")),
+            },
+            {
+              label: "Interrupt",
+              disabled: !active || !connected,
+              run: () => void action.run(() => api(`/executions/${active!.id}/cancel`, "POST", {})),
+            },
+          ]}
+        />
+        <span className="spacer" />
+        <button
+          className="icon"
+          aria-label="Toggle file explorer"
+          aria-pressed={options.explorer}
+          title="Toggle file explorer"
+          onClick={() => changeOption("explorer", !options.explorer)}
+        >
+          <PanelLeft size={14} />
+        </button>
+      </div>
       <div className="editor-tab-strip">
         <div className="file-tabs" role="tablist" aria-label="Open files">
           {openTabs.map((path, index) => {
@@ -579,64 +895,81 @@ export function Editor() {
           </div>
         </div>
       )}
-      {doc ? (
-        <CodeMirror
-          key={file}
-          className="editor"
-          id="editor-document"
-          role="tabpanel"
-          aria-labelledby={`file-tab-${openTabs.indexOf(file)}`}
-          aria-label={`Code editor: ${file}`}
-          value={draft?.content ?? doc.content}
-          onChange={change}
-          onUpdate={update}
-          initialState={initialState}
-          onCreateEditor={(view) => {
-            editorView.current = view;
-            const selection = view.state.selection.main;
-            const line = view.state.doc.lineAt(selection.head);
-            setPosition({
-              line: line.number,
-              column: selection.head - line.from + 1,
-              selected: !selection.empty,
-            });
-            const top = editorMemory.get(memoryKey)?.scrollTop ?? 0;
-            requestAnimationFrame(() => {
-              if (view.dom.isConnected) view.scrollDOM.scrollTop = top;
-            });
-          }}
-          height="100%"
-          extensions={extensions}
-          basicSetup={editorSetup}
-        />
-      ) : (
-        <Empty icon={<FileCode2 size={25} />}>
-          <strong>
-            {fileError
-              ? "Couldn’t open this file"
-              : file
-                ? "Opening your file…"
-                : "Your project starts here"}
-          </strong>
-          <p>
-            {fileError ||
-              (file
-                ? "Loading the working document."
-                : "Create a script or notes file to develop your work alongside the conversation.")}
-          </p>
-          {fileError && (
-            <button disabled={!connected || action.busy} onClick={() => void action.run(retryOpen)}>
-              Retry opening file
-            </button>
+      <div className="editor-workspace">
+        {options.explorer && (
+          <FileExplorer
+            files={availableFiles}
+            selected={file}
+            dirty={(path) =>
+              !!drafts[path] ||
+              snapshot.documents.some(
+                (item) => item.path === path && item.version !== item.savedVersion,
+              )
+            }
+            onOpen={chooseFile}
+            onClose={() => changeOption("explorer", false)}
+          />
+        )}
+        <div className="editor-document-column">
+          {file && !file.startsWith("untitled:") && file.includes("/") && (
+            <div className="editor-breadcrumb" title={file}>
+              {file.split("/").join(" › ")}
+            </div>
           )}
-          {!file && (
-            <button disabled={!connected} onClick={() => void createAction.run(newFile)}>
-              <FilePlus2 size={14} />
-              Create a file
-            </button>
+          {doc ? (
+            <CodeMirror
+              key={file}
+              className="editor"
+              id="editor-document"
+              role="tabpanel"
+              aria-labelledby={`file-tab-${openTabs.indexOf(file)}`}
+              aria-label={`Code editor: ${file}`}
+              value={draft?.content ?? doc.content}
+              onChange={change}
+              onUpdate={update}
+              initialState={initialState}
+              onCreateEditor={(view) => {
+                editorView.current = view;
+                const selection = view.state.selection.main;
+                const line = view.state.doc.lineAt(selection.head);
+                setPosition({
+                  line: line.number,
+                  column: selection.head - line.from + 1,
+                  selected: !selection.empty,
+                });
+                const top = editorMemory.get(memoryKey)?.scrollTop ?? 0;
+                requestAnimationFrame(() => {
+                  if (view.dom.isConnected) view.scrollDOM.scrollTop = top;
+                });
+              }}
+              height="100%"
+              extensions={extensions}
+              basicSetup={setup}
+            />
+          ) : (
+            <Empty icon={<FileCode2 size={25} />}>
+              <strong>
+                {fileError ? "Couldn’t open this file" : file ? "Opening file…" : "No file open"}
+              </strong>
+              {fileError && <p>{fileError}</p>}
+              {fileError && (
+                <button
+                  disabled={!connected || action.busy}
+                  onClick={() => void action.run(retryOpen)}
+                >
+                  Retry opening file
+                </button>
+              )}
+              {!file && (
+                <button disabled={!connected} onClick={() => void createAction.run(newFile)}>
+                  <FilePlus2 size={14} />
+                  New file
+                </button>
+              )}
+            </Empty>
           )}
-        </Empty>
-      )}
+        </div>
+      </div>
       <div className="editor-footer">
         <span>{fileLanguage ? languageName(fileLanguage) : "Text"}</span>
         {doc && (
@@ -644,13 +977,26 @@ export function Editor() {
             Ln {position.line}, Col {position.column}
           </span>
         )}
+        <select
+          aria-label="Indentation"
+          value={options.tabSize}
+          onChange={(event) => changeOption("tabSize", Number(event.target.value))}
+        >
+          {[2, 4, 8].map((size) => (
+            <option key={size} value={size}>
+              Spaces: {size}
+            </option>
+          ))}
+        </select>
+        <span>UTF-8</span>
+        <span>{(draft?.content ?? doc?.content)?.includes("\r\n") ? "CRLF" : "LF"}</span>
         <span className="shortcut-hint">
           {modifier}+Enter · {position.selected ? "Run selection" : "Run line"}
         </span>
       </div>
       {opening && (
         <Dialog title="Open file" onClose={() => setOpening(false)}>
-          <label className="field-label" htmlFor="file-search">
+          <label className="sr-only" htmlFor="file-search">
             Find a project file
           </label>
           <input
@@ -659,8 +1005,26 @@ export function Editor() {
             value={fileQuery}
             placeholder="Search files…"
             onChange={(event) => setFileQuery(event.target.value)}
+            onKeyDown={(event) => {
+              const first = availableFiles.find((path) =>
+                path.toLowerCase().includes(fileQuery.toLowerCase()),
+              );
+              if (event.key === "Enter" && first) {
+                event.preventDefault();
+                chooseFile(first);
+                setOpening(false);
+              } else if (event.key === "ArrowDown") {
+                event.preventDefault();
+                event.currentTarget.parentElement
+                  ?.querySelector<HTMLButtonElement>(".open-file-list button")
+                  ?.focus();
+              }
+            }}
           />
           <div className="open-file-list">
+            {!availableFiles.some((path) =>
+              path.toLowerCase().includes(fileQuery.toLowerCase()),
+            ) && <p className="small-note">No files found</p>}
             {availableFiles
               .filter((path) => path.toLowerCase().includes(fileQuery.toLowerCase()))
               .map((path) => (
@@ -671,7 +1035,6 @@ export function Editor() {
                     setOpening(false);
                   }}
                 >
-                  <FileCode2 size={15} />
                   <span>{path.startsWith("untitled:") ? path.split("/").pop() : path}</span>
                   {(drafts[path] ||
                     snapshot.documents.some(
@@ -683,10 +1046,14 @@ export function Editor() {
         </Dialog>
       )}
       {savingAs && doc && (
-        <Dialog title="Save file" onClose={() => setSavingAs(false)}>
-          <p>
-            Choose a name in this project. Your untitled document is retained until you save it.
-          </p>
+        <Dialog
+          title="Save file"
+          onClose={() => {
+            setSavingAs(false);
+            setSavingAll(false);
+          }}
+        >
+          <p className="small-note">Folder: {snapshot.project}</p>
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -702,12 +1069,27 @@ export function Editor() {
                   });
                   await wb.open(created.path);
                   setTabs((current) => [
-                    ...new Set(current.map((path) => (path === doc.path ? created.path : path))),
+                    ...new Set(
+                      doc.untitled
+                        ? current.map((path) => (path === doc.path ? created.path : path))
+                        : [...current, created.path],
+                    ),
                   ]);
                   wb.setFile(created.path);
                   if (/\.r$/i.test(created.path)) wb.setLanguage("r");
                   else if (/\.py$/i.test(created.path)) wb.setLanguage("python");
-                  setSavingAs(false);
+                  const nextUntitled =
+                    savingAll &&
+                    snapshot.documents.find(
+                      (item) => item.untitled && !item.savedAs && item.path !== doc.path,
+                    );
+                  if (nextUntitled) {
+                    chooseFile(nextUntitled.path);
+                    setNewPath("");
+                  } else {
+                    setSavingAs(false);
+                    setSavingAll(false);
+                  }
                   wb.showPanel("editor");
                 } catch (error) {
                   setCreateError(error instanceof Error ? error.message : String(error));
@@ -732,7 +1114,13 @@ export function Editor() {
               </p>
             )}
             <div className="dialog-actions">
-              <button type="button" onClick={() => setSavingAs(false)}>
+              <button
+                type="button"
+                onClick={() => {
+                  setSavingAs(false);
+                  setSavingAll(false);
+                }}
+              >
                 Cancel
               </button>
               <button

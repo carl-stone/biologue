@@ -101,7 +101,6 @@ test("a review notification opens the correct conversation and the decision rema
   );
   await page.locator(".permission-decision summary").click();
   await expect(page.locator(".permission-decision pre")).toHaveText(request.code!);
-  await expect(page.locator(".permission-decision")).toContainText("This records your approval.");
   await page.screenshot({ path: "test-results/principles-decision-history.png" });
   expect(
     ui.requests.filter((req) => req.path === `/permissions/${request.id}` && req.method === "POST"),

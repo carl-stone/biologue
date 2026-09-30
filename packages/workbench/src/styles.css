@@ -1520,44 +1520,49 @@ kbd {
   overflow: auto;
   flex: 1;
   min-height: 0;
-  padding: 0 13px 10px;
 }
-.object {
-  padding: 9px 1px;
-  border-bottom: 1px solid var(--border);
+.object-table {
+  width: 100%;
+  table-layout: fixed;
 }
-.object > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+.object-table th:first-child {
+  width: 42%;
 }
-.object code {
-  font-size: 12px;
-  color: var(--text);
-  overflow-wrap: anywhere;
+.object-table th:nth-child(2) {
+  width: 23%;
 }
-.object .badge {
-  max-width: 45%;
+.object-table th,
+.object-table td {
+  padding: 6px 10px;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
-  display: inline-block;
+  white-space: nowrap;
 }
-.object p {
-  font:
-    11px/1.6 "IBM Plex Mono",
-    monospace;
+.object-table th {
+  font-size: 11px;
+  font-weight: 500;
   color: var(--muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 69px;
-  overflow: auto;
-  margin: 6px 0;
+}
+.object code {
+  font-size: 11px;
+  color: var(--text);
+}
+.object td {
+  font-size: 11px;
 }
 .object .text-button {
-  font-size: 11px;
-  padding: 1px 0;
-  min-height: 26px;
+  min-height: 20px;
+  padding: 0;
+  max-width: 100%;
+  justify-content: flex-start;
+}
+.object .text-button code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.object:hover {
+  background: var(--surface-hover);
 }
 .data-toolbar strong {
   font:
@@ -2748,5 +2753,278 @@ kbd {
   padding-bottom: 6px;
 }
 .slash-suggestions button {
+  font-size: 11px;
+}
+.table-sort {
+  font: inherit;
+  border: 0;
+  background: transparent;
+  min-height: 24px;
+  padding: 0;
+}
+.resource-list button {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 2px;
+}
+.attachment-picker > input {
+  margin: 12px 0 6px;
+}
+.permission-mode {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.conversation-name {
+  justify-content: flex-start;
+}
+.conversation-name[aria-current="true"] {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.command-results button {
+  justify-content: flex-start;
+}
+.editor-menubar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 29px;
+  padding: 0 5px;
+  border-bottom: 1px solid var(--border);
+  gap: 1px;
+}
+.editor-menu {
+  position: relative;
+  font-size: 12px;
+}
+.editor-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 9px;
+  border-radius: 3px;
+}
+.editor-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.editor-menu[open] > summary,
+.editor-menu > summary:hover {
+  background: var(--accent-soft);
+}
+.editor-menu [role="menu"] {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 260px;
+  max-width: 90vw;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  box-shadow: 0 5px 18px #0002;
+  z-index: 30;
+}
+.editor-menu [role="menu"] button {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  min-height: 28px;
+  padding: 4px;
+  gap: 5px;
+}
+.editor-menu [role="menu"] button:hover,
+.editor-menu [role="menu"] button:focus {
+  background: var(--accent-soft);
+}
+.editor-menu kbd {
+  margin-left: auto;
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  border: 0;
+  background: none;
+  padding-left: 12px;
+  color: var(--muted);
+}
+.editor-menu hr {
+  margin: 4px;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.menu-check {
+  width: 14px;
+  flex-shrink: 0;
+}
+.editor-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.editor-document-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.editor-breadcrumb {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-explorer {
+  width: 170px;
+  max-width: 35%;
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+}
+.explorer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  height: 29px;
+  font-weight: 600;
+}
+.file-explorer > input {
+  margin: 3px 7px 7px;
+  width: calc(100% - 14px);
+  min-height: 26px;
+  padding: 3px 6px;
+  font-size: 11px;
+}
+.explorer-tree {
+  overflow: auto;
+  flex: 1;
+  padding-bottom: 5px;
+}
+.explorer-tree button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  padding: 4px 8px;
+  min-height: 27px;
+  gap: 5px;
+}
+.explorer-tree button span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explorer-tree button.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.explorer-tree button:hover {
+  background: var(--surface-hover);
+}
+.explorer-folder > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  min-height: 27px;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+.explorer-folder > summary::-webkit-details-marker {
+  display: none;
+}
+.explorer-folder[open] > summary > svg:first-child {
+  transform: rotate(90deg);
+}
+.explorer-tree .small-note {
+  padding: 0 8px;
+}
+.editor-footer {
+  gap: 10px;
+}
+.editor-footer select {
+  width: auto;
+  padding: 0 2px;
+  font: inherit;
+  min-height: 20px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.slash-suggestions {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  max-height: 240px;
+  overflow-y: auto;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px;
+  margin-bottom: 5px;
+}
+.slash-suggestions button {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border: 0;
+  background: transparent;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.slash-suggestions button[aria-selected="true"] {
+  background: var(--accent-soft);
+}
+.slash-suggestions small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.data-toolbar .table-filter {
+  flex: 1;
+  min-width: 60px;
+  border: 0;
+  padding: 0;
+}
+.data-toolbar .table-meta {
+  flex-shrink: 0;
+}
+.data-toolbar > .spacer {
+  display: none;
+}
+.data-pane .table-scroll th,
+.data-pane .table-scroll td {
+  padding: 5px 8px;
+}
+@container (max-width: 480px) {
+  .data-toolbar .table-meta {
+    max-width: 80px;
+  }
+}
+
+.error-details {
+  margin-top: 10px;
+}
+.error-details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 180px;
+  overflow: auto;
   font-size: 11px;
 }

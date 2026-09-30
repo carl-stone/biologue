@@ -1,5 +1,14 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUpRight, Image, Play, Square, Table2, MoreHorizontal } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUpRight,
+  Image,
+  Play,
+  Square,
+  Table2,
+  MoreHorizontal,
+  Eraser,
+} from "lucide-react";
 import type { Execution, ExecutionSummary, Output, DisplayOutput, Page } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot, useResource, useOutputVersion } from "../state.tsx";
 import { stripAnsi } from "../outputs.ts";
@@ -80,14 +89,11 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
     version,
   );
   const outputs = page.data?.items ?? [];
-  const echo = item.actor === "human" && !item.document && item.purpose === "analysis";
-  const source = useResource<Execution>(echo ? `/executions/${item.id}` : null);
+  const source = useResource<Execution>(`/executions/${item.id}`);
   const pending = ["running", "queued"].includes(item.status);
   return (
     <article className={`execution ${targeted ? "targeted" : ""}`} id={`execution-${item.id}`}>
-      {((item.actor !== "human" && outputs.length > 0) ||
-        pending ||
-        item.status !== "succeeded") && (
+      {(item.actor !== "human" || pending || item.status !== "succeeded") && (
         <div className="execution-label">
           {item.actor !== "human" && (
             <span>
@@ -115,19 +121,17 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
           )}
         </div>
       )}
-      {echo && (
-        <pre className="console-code">
-          {(source.data?.code ?? item.codePreview ?? "").split("\n").map((line, index) => (
-            <span className="console-code-line" key={index}>
-              <span className="console-prompt" aria-hidden="true">
-                {index ? "" : item.language === "r" ? ">" : ">>>"}
-              </span>
-              {line}
-              {"\n"}
+      <pre className="console-code">
+        {(source.data?.code ?? item.codePreview ?? "").split("\n").map((line, index) => (
+          <span className="console-code-line" key={index}>
+            <span className="console-prompt" aria-hidden="true">
+              {index ? "" : item.language === "r" ? ">" : ">>>"}
             </span>
-          ))}
-        </pre>
-      )}
+            {line}
+            {"\n"}
+          </span>
+        ))}
+      </pre>
       {source.error && (
         <div className="inline-error" role="status">
           <p>{source.error}</p>
@@ -161,10 +165,11 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
 });
 
 export function Console() {
-  const { language, connected, executionTarget, loadExecutions } = useWorkbench(
+  const { language, connected, executionTarget, panelRequest, loadExecutions } = useWorkbench(
     "language",
     "connected",
     "executionTarget",
+    "panelRequest",
     "loadExecutions",
   );
   const snapshot = useSnapshot("executions", "executionCursor");
@@ -172,6 +177,7 @@ export function Console() {
   const [drafts, setDrafts] = useProjectDraft<Record<string, string>>("console", {});
   const code = drafts[language] || "";
   const [inspections, setInspections] = useState(false);
+  const [cleared, setCleared] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const historyDraft = useRef("");
   const languageRef = useRef(language);
@@ -183,7 +189,9 @@ export function Console() {
   const action = useAction();
   const all = snapshot!.executions.filter((item) => item.language === language);
   const executions = all.filter(
-    (item) => inspections || item.purpose === "analysis" || item.id === executionTarget,
+    (item) =>
+      !cleared.includes(item.id) &&
+      (inspections || item.purpose === "analysis" || item.id === executionTarget),
   );
   const pending = all.filter((item) => ["running", "queued"].includes(item.status));
   const latest = executions.at(-1);
@@ -212,11 +220,15 @@ export function Console() {
     return () => document.removeEventListener("pointerdown", outside);
   }, []);
   useEffect(() => {
-    if (executionTarget)
+    if (executionTarget) {
+      setCleared((items) =>
+        items.includes(executionTarget) ? items.filter((id) => id !== executionTarget) : items,
+      );
       document.getElementById(`execution-${executionTarget}`)?.scrollIntoView({ block: "nearest" });
-  }, [executionTarget, executions.some((item) => item.id === executionTarget)]);
+    }
+  }, [executionTarget, panelRequest]);
   const history = all
-    .filter((item) => item.actor === "human" && item.purpose === "analysis" && !item.document)
+    .filter((item) => item.actor === "human" && item.purpose === "analysis")
     .slice()
     .reverse();
   async function recall(direction: number) {
@@ -242,13 +254,39 @@ export function Console() {
     setHistoryIndex(-1);
     scroll.toLatest();
   }
+  function clearConsole() {
+    setCleared((current) => [
+      ...new Set([
+        ...current,
+        ...all
+          .filter((item) => !["running", "queued"].includes(item.status))
+          .map((item) => item.id),
+      ]),
+    ]);
+  }
   return (
-    <div className="pane console">
+    <div
+      className="pane console"
+      onKeyDown={(event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
+          event.preventDefault();
+          clearConsole();
+        }
+      }}
+    >
       <div className="pane-toolbar console-toolbar">
         <span className={`status-dot ${pending.length ? "waiting" : connected ? "online" : ""}`} />
-        <span>{languageName(language)}</span>
+        <span>{languageName(language)} console</span>
         {pending.length > 0 && <span className="small-note">Running code…</span>}
         <span className="spacer" />
+        <button
+          className="icon"
+          aria-label="Clear console"
+          title="Clear console (Ctrl/Cmd+L)"
+          onClick={clearConsole}
+        >
+          <Eraser size={15} />
+        </button>
         <details
           className="console-options"
           ref={options}
@@ -265,6 +303,11 @@ export function Console() {
             <MoreHorizontal size={16} />
           </summary>
           <div className="console-options-menu">
+            {all.some((item) => cleared.includes(item.id)) && (
+              <button className="text-button" onClick={() => setCleared([])}>
+                Show cleared output
+              </button>
+            )}
             <label className="check-label">
               <input
                 type="checkbox"

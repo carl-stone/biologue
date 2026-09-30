@@ -124,6 +124,7 @@ export function App() {
     "ready",
     "revealPermission",
     "conversation",
+    "showPanel",
   );
   const snapshot = useSnapshot("permissions", "runs", "layout", "executions", "project");
   const wb = { ...state, snapshot: state.ready ? snapshot : null };
@@ -140,10 +141,29 @@ export function App() {
   const [commands, setCommands] = useState(false);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        (event.key.toLowerCase() === "k" || (event.shiftKey && event.key.toLowerCase() === "p"))
+      ) {
         event.preventDefault();
         event.stopPropagation();
         setCommands((value) => !value);
+      } else if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        ["p", "n"].includes(event.key.toLowerCase()) &&
+        !document.querySelector("dialog[open]")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        state.showPanel("editor");
+        requestAnimationFrame(() =>
+          window.dispatchEvent(
+            new CustomEvent("biologue:editor-command", {
+              detail: event.key.toLowerCase() === "p" ? "open" : "new",
+            }),
+          ),
+        );
       }
     };
     window.addEventListener("keydown", keydown, true);
@@ -586,9 +606,33 @@ export function App() {
               <dd>
                 <kbd>{modifier}</kbd> <kbd>F</kbd>
               </dd>
+              <dt>Open file</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>P</kbd>
+              </dd>
+              <dt>New file</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>N</kbd>
+              </dd>
+              <dt>Save as</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>Shift</kbd> <kbd>S</kbd>
+              </dd>
+              <dt>Go to line</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>G</kbd>
+              </dd>
+              <dt>Toggle comment</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>/</kbd>
+              </dd>
               <dt>Commands</dt>
               <dd>
-                <kbd>{modifier}</kbd> <kbd>K</kbd>
+                <kbd>{modifier}</kbd> <kbd>Shift</kbd> <kbd>P</kbd>
+              </dd>
+              <dt>Clear console</dt>
+              <dd>
+                <kbd>{modifier}</kbd> <kbd>L</kbd>
               </dd>
               <dt>Save</dt>
               <dd>

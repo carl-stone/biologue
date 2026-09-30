@@ -97,7 +97,12 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
   await selectedEditor.press("ControlOrMeta+Enter");
   await expect(page.locator(".execution")).toHaveCount(count + 1);
   await expect(page.locator(".execution").last().locator(".output-text")).toHaveText("6\n");
-  await expect(page.locator(".execution").last().locator(".console-code, details")).toHaveCount(0);
+  await expect(page.locator(".execution").last().locator(".console-code")).toContainText(
+    selectedCode,
+  );
+  await expect(page.locator(".execution").last().locator(".console-code")).not.toContainText(
+    "not selected",
+  );
   const snapshot = await (await page.request.get("/api/snapshot")).json();
   const selected = snapshot.executions
     .filter((item: { purpose: string }) => item.purpose === "analysis")

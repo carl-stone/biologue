@@ -188,11 +188,11 @@ export class Documents {
     }
     return this.open(path);
   }
-  createUntitled(language: "r" | "python"): Document {
+  createUntitled(language: "r" | "python" | "text"): Document {
     const number = this.store.list<Document>("document").filter((doc) => doc.untitled).length + 1;
     return this.publish(
       {
-        path: `untitled:${randomUUID()}/Untitled-${number}.${language === "r" ? "R" : "py"}`,
+        path: `untitled:${randomUUID()}/Untitled-${number}.${language === "r" ? "R" : language === "text" ? "txt" : "py"}`,
         untitled: true,
         content: "",
         version: 1,
@@ -204,7 +204,6 @@ export class Documents {
   }
   saveAs(path: string, target: string, expectedVersion: number): Document {
     const doc = this.open(path);
-    if (!doc.untitled) throw new InvalidPath("Only untitled documents need a first file name.");
     if (doc.savedAs) throw new Conflict(`This document was already saved as ${doc.savedAs}.`);
     if (doc.version !== expectedVersion)
       throw new Conflict("The document changed. Try saving again.");
@@ -227,11 +226,11 @@ export class Documents {
       diskHash: digest(doc.content),
     };
     this.store.transaction(() => {
-      this.store.put("document", path, { ...doc, savedAs: target });
+      if (doc.untitled) this.store.put("document", path, { ...doc, savedAs: target });
       this.store.put("document", target, saved);
       this.store.put("document-revision", `${target}:1`, saved);
     });
-    this.events.emit({ type: "document", document: { ...doc, savedAs: target } });
+    if (doc.untitled) this.events.emit({ type: "document", document: { ...doc, savedAs: target } });
     this.events.emit({ type: "document", document: saved });
     this.observe(target);
     return saved;

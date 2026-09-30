@@ -136,6 +136,12 @@ export function Dialog({
   useEffect(() => {
     const dialog = ref.current!;
     dialog.showModal();
+    const field = dialog.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+      'input:not([type="hidden"]):not(:disabled), textarea:not(:disabled), select:not(:disabled)',
+    );
+    field?.focus();
+    if (field instanceof HTMLInputElement && ["text", "search"].includes(field.type))
+      field.select();
     return () => {
       dialog.close();
       returnFocus.current?.focus();

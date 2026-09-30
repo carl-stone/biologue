@@ -278,7 +278,7 @@ export async function fixture(
       result = document;
     } else if (request.path === "/documents/untitled") {
       const document = {
-        path: `untitled:test-${state.documents.length}/Untitled-${state.documents.length + 1}.${request.body.language === "r" ? "R" : "py"}`,
+        path: `untitled:test-${state.documents.length}/Untitled-${state.documents.length + 1}.${request.body.language === "r" ? "R" : request.body.language === "text" ? "txt" : "py"}`,
         content: "",
         version: 1,
         savedVersion: 0,
@@ -297,7 +297,7 @@ export async function fixture(
         savedVersion: 1,
         diskHash: "saved",
       };
-      old.savedAs = document.path;
+      if (old.untitled) old.savedAs = document.path;
       await emit({ type: "document", document: old });
       state.documents.push(document);
       state.files.push(document.path);

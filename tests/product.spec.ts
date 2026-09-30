@@ -54,9 +54,8 @@ test("discussion exposes recorded work, copies code, and gives a long correction
     .getByRole("button", { name: /Python output/ })
     .click();
   await expect(page.locator("#execution-work")).toHaveClass(/targeted/);
-  await expect(page.locator("#execution-work details, #execution-work .console-code")).toHaveCount(
-    0,
-  );
+  await expect(page.locator("#execution-work details")).toHaveCount(0);
+  await expect(page.locator("#execution-work .console-code")).toContainText(code.trim());
   expect(
     ui.requests.filter((request) => request.method === "POST" && request.path === "/executions"),
   ).toHaveLength(0);

@@ -67,6 +67,11 @@ export function ResearchContext() {
         )}
       </div>
       <div className="pane-toolbar">
+        {draft && (
+          <span className="small-note" role="status">
+            Unsaved changes
+          </span>
+        )}
         <span className="spacer" />
         <button
           className="primary"

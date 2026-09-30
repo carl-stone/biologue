@@ -184,3 +184,60 @@ test("untitled documents survive reconnects, execute with exact identity, and sa
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Save As copies a named working document without changing its source or execution identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "biologue-save-copy-"));
+  writeFileSync(join(root, "analysis.py"), "x = 1\n");
+  const f = await createApp({
+    project: root,
+    stateDir: join(root, ".carl"),
+    repository: process.cwd(),
+    kernel: { execute: async () => {}, interrupt: async () => {} },
+  });
+  const headers = { "x-carl-client": "workbench" };
+  try {
+    const source = f.documents.open("analysis.py");
+    const edited = f.documents.edit(source.path, "x = 2\n", source.version);
+    const response = await f.app.inject({
+      method: "POST",
+      url: "/api/documents/save-as",
+      headers,
+      payload: { path: source.path, target: "copy.py", expectedVersion: edited.version },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(readFileSync(join(root, "copy.py"), "utf8"), "x = 2\n");
+    assert.equal(readFileSync(join(root, "analysis.py"), "utf8"), "x = 1\n");
+    assert.deepEqual(f.documents.open(source.path), JSON.parse(JSON.stringify(edited)));
+    assert.doesNotThrow(() =>
+      f.documents.verifyReference(source.path, source.version, source.content),
+    );
+    assert.doesNotThrow(() =>
+      f.documents.verifyReference(source.path, edited.version, edited.content),
+    );
+    for (const [target, expectedVersion] of [
+      ["copy.py", edited.version],
+      ["stale.py", source.version],
+    ] as const) {
+      const rejected = await f.app.inject({
+        method: "POST",
+        url: "/api/documents/save-as",
+        headers,
+        payload: { path: source.path, target, expectedVersion },
+      });
+      assert.equal(rejected.statusCode, 409);
+    }
+    const text = await f.app.inject({
+      method: "POST",
+      url: "/api/documents/untitled",
+      headers,
+      payload: { language: "text" },
+    });
+    assert.equal(text.statusCode, 201);
+    assert.match(text.json().path, /\.txt$/);
+    const draft = f.documents.edit(text.json().path, "notes", text.json().version);
+    assert.equal(f.documents.saveAs(draft.path, "notes.txt", draft.version).content, "notes");
+  } finally {
+    await f.app.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

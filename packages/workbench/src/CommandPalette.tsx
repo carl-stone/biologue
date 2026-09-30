@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Conversation } from "@carl/protocol";
 import { api, useSnapshot, useWorkbench, type PanelId } from "./state.tsx";
 import { Dialog, useAction } from "./ui.tsx";
@@ -14,6 +14,9 @@ export function CommandPalette({
 }) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
+  useEffect(() => {
+    document.getElementById(`command-${index}`)?.scrollIntoView({ block: "nearest" });
+  }, [index, query]);
   const { files, runs, conversations } = useSnapshot("files", "runs", "conversations");
   const { showPanel, setFile, conversation, setConversation } = useWorkbench(
     "showPanel",
@@ -22,6 +25,12 @@ export function CommandPalette({
     "setConversation",
   );
   const action = useAction();
+  const editorCommand = (name: string) => {
+    showPanel("editor");
+    requestAnimationFrame(() =>
+      window.dispatchEvent(new CustomEvent("biologue:editor-command", { detail: name })),
+    );
+  };
   const commands: { label: string; run: () => unknown }[] = [
     {
       label: "New conversation",
@@ -31,6 +40,15 @@ export function CommandPalette({
         showPanel("chat");
       },
     },
+    ...Object.entries({
+      open: "Open file…",
+      new: "New file",
+      saveAs: "Save file as…",
+      saveAll: "Save all files",
+      find: "Find / replace in file",
+      goToLine: "Go to line…",
+      explorer: "Toggle file explorer",
+    }).map(([name, label]) => ({ label, run: () => editorCommand(name) })),
     { label: "Choose project folder", run: onProjects },
     { label: "Model, thinking and agent settings", run: () => showPanel("controls") },
     { label: "Keyboard shortcuts", run: onHelp },
@@ -108,6 +126,7 @@ export function CommandPalette({
         }}
       />
       <div id="command-results" className="command-results" role="listbox" aria-label="Commands">
+        {!matches.length && <p className="small-note">No matching commands or files</p>}
         {matches.map((item, i) => (
           <button
             id={`command-${i}`}

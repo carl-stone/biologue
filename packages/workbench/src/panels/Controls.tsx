@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { AgentModel, AgentResources, AgentSettings, PermissionMode } from "@carl/protocol";
 import { api, useSnapshot, useResource, useWorkbench } from "../state.tsx";
 import { useAction, useProjectDraft } from "../ui.tsx";
@@ -10,10 +10,19 @@ type Preferences = {
   steeringMode: "all" | "one-at-a-time";
   followUpMode: "all" | "one-at-a-time";
 };
-export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
+export function Controls({
+  onInsert,
+  initialSection,
+}: {
+  onInsert?: (text: string) => void;
+  initialSection?: string;
+}) {
   const { agent, runs, conversations } = useSnapshot("agent", "runs", "conversations");
   const { connected, conversation } = useWorkbench("connected", "conversation");
-  const [section, setSection] = useState("Model");
+  const [section, setSection] = useState(initialSection || "Model");
+  useEffect(() => {
+    if (initialSection) setSection(initialSection);
+  }, [initialSection]);
   const [filter, setFilter] = useState("");
   const [all, setAll] = useState(false);
   const [favorites, setFavorites] = useProjectDraft<string[]>("favorite-models", []);
@@ -32,9 +41,11 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
   const selected = catalog.data?.find(
     (model) => model.provider === current.provider && model.id === current.model,
   );
-  const thinking = selected?.thinkingLevels.includes(current.thinking ?? "medium")
-    ? (current.thinking ?? "medium")
-    : (selected?.thinkingLevels[0] ?? "off");
+  const thinking = selected
+    ? selected.thinkingLevels.includes(current.thinking ?? "medium")
+      ? (current.thinking ?? "medium")
+      : (selected.thinkingLevels[0] ?? "off")
+    : (current.thinking ?? "off");
   const choose = (
     model: AgentModel,
     level: string,
@@ -62,6 +73,27 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
             type="button"
             role="tab"
             aria-selected={section === tab}
+            tabIndex={section === tab ? 0 : -1}
+            onKeyDown={(event) => {
+              const tabs = ["Model", "Providers", "MCP", "Resources", "Behavior"];
+              const index = tabs.indexOf(tab);
+              const next =
+                event.key === "ArrowRight"
+                  ? (index + 1) % tabs.length
+                  : event.key === "ArrowLeft"
+                    ? (index + tabs.length - 1) % tabs.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? tabs.length - 1
+                        : -1;
+              if (next < 0) return;
+              event.preventDefault();
+              setSection(tabs[next]);
+              event.currentTarget.parentElement
+                ?.querySelectorAll<HTMLButtonElement>("button")
+                [next]?.focus();
+            }}
             onClick={() => setSection(tab)}
           >
             {tab}
@@ -96,7 +128,7 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
                 title={item.path}
                 onClick={() => onInsert?.(`/skill:${item.name} `)}
               >
-                {item.name}
+                /skill:{item.name}
                 <small>{item.description}</small>
               </button>
             ))}
@@ -112,10 +144,12 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
               {message}
             </p>
           ))}
-          <p className="small-note">
-            Pi loads trusted project skills and prompts. Installed: pi-ask-user · Biologue science.
-            MCP and code mode are built into Pi 0.99.1.
-          </p>
+          {resources.data &&
+            !resources.data.prompts.length &&
+            !resources.data.skills.length &&
+            !resources.data.instructions.length && (
+              <p className="small-note">No project resources found.</p>
+            )}
         </div>
       ) : section === "Behavior" ? (
         <div className="settings-section">
@@ -131,7 +165,7 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
                   <input
                     type="checkbox"
                     checked={preferences.data![key]}
-                    disabled={action.busy}
+                    disabled={action.busy || !connected}
                     onChange={(e) =>
                       void action.run(async () => {
                         await api("/agent/preferences", "PUT", {
@@ -155,6 +189,7 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
                   {label}
                   <select
                     value={preferences.data![key]}
+                    disabled={action.busy || !connected}
                     onChange={(e) =>
                       void action.run(async () => {
                         await api("/agent/preferences", "PUT", {
@@ -207,6 +242,11 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
                   {catalog.loading ? "Loading models…" : (current.model ?? "Choose model")}
                 </option>
               )}
+              {selected && !visible?.includes(selected) && (
+                <option value={`${selected.provider}/${selected.id}`} hidden>
+                  {selected.name || selected.id}
+                </option>
+              )}
               {[...new Set(visible?.map((item) => item.provider))].map((provider) => (
                 <optgroup
                   key={provider}
@@ -235,6 +275,9 @@ export function Controls({ onInsert }: { onInsert?: (text: string) => void }) {
               ))}
             </select>
           </label>
+          {catalog.data && !visible?.length && (
+            <p className="small-note">No models match this search.</p>
+          )}
           <div className="settings-inline">
             <label className="checkbox-label">
               <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />

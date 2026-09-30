@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  isValidElement,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -20,6 +27,7 @@ import type {
   Message,
   PermissionRequest,
   PermissionDecisionSummary,
+  AgentSettings,
 } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot, useResource } from "../state.tsx";
 import type { AgentResources } from "@carl/protocol";
@@ -39,10 +47,13 @@ import {
 
 function CodeBlock({ children }: { children: ReactNode }) {
   const code = useRef<HTMLPreElement>(null);
+  const language = isValidElement<{ className?: string }>(children)
+    ? children.props.className?.match(/(?:^|\s)language-(\S+)/)?.[1]
+    : undefined;
   return (
     <div className="chat-code-block">
       <div className="code-record-heading">
-        <span>Code</span>
+        <span>{language || "Code"}</span>
         <CopyButton text={() => code.current?.textContent ?? ""} />
       </div>
       <pre ref={code}>{children}</pre>
@@ -107,23 +118,52 @@ export function Chat() {
   const text = drafts[conversation] || "";
   const slash = /^\/\S*$/.test(text);
   const resources = useResource<AgentResources>(slash ? "/agent/resources" : null);
-  const suggestions = slash
-    ? [
-        { command: "/mcp", description: "MCP connection status" },
-        ...(resources.data?.prompts ?? []).map((item) => ({
-          command: `/${item.name}`,
-          description: item.description,
-        })),
-        ...(resources.data?.skills ?? []).map((item) => ({
-          command: `/skill:${item.name}`,
-          description: item.description,
-        })),
-      ]
-        .filter((item) => item.command.startsWith(text))
-        .slice(0, 8)
-    : [];
+  const [cursor, setCursor] = useState(0);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [dismissedSuggestion, setDismissedSuggestion] = useState<string | null>(null);
+  const mention = text.slice(0, cursor).match(/(?:^|\s)@([^\s@]*)$/);
+  useEffect(() => setSuggestionIndex(0), [text, cursor]);
+  const suggestions: { command: string; description: string; path?: string }[] =
+    dismissedSuggestion === text
+      ? []
+      : mention
+        ? snapshot.files
+            .filter((path) => path.toLowerCase().includes(mention[1].toLowerCase()))
+            .slice(0, 8)
+            .map((path) => ({ command: path, description: "Attach project file", path }))
+        : slash
+          ? [
+              { command: "/mcp", description: "MCP connection status" },
+              ...(resources.data?.prompts ?? []).map((item) => ({
+                command: `/${item.name}`,
+                description: item.description,
+              })),
+              ...(resources.data?.skills ?? []).map((item) => ({
+                command: `/skill:${item.name}`,
+                description: item.description,
+              })),
+            ]
+              .filter((item) => item.command.startsWith(text))
+              .slice(0, 8)
+          : [];
+  function chooseSuggestion(item: (typeof suggestions)[number]) {
+    if (item.path && mention) {
+      const start = cursor - mention[1].length - 1;
+      setText(text.slice(0, start) + text.slice(cursor));
+      setCursor(start);
+      void attachmentAction.run(async () => {
+        await wb.syncDocuments();
+        addAttachment(await api<Attachment>("/attachments", "POST", { path: item.path }));
+      });
+    } else {
+      setText(item.command + " ");
+      setCursor(item.command.length + 1);
+    }
+    input.current?.focus();
+  }
   const [renaming, setRenaming] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<string>();
   const [history, setHistory] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
@@ -137,7 +177,10 @@ export function Chat() {
   const upload = useRef<HTMLInputElement>(null);
   const attachmentAction = useAction();
   useEffect(() => {
-    if (wb.panelRequest?.id === "controls") setSettings(true);
+    if (wb.panelRequest?.id === "controls") {
+      setSettingsSection("Model");
+      setSettings(true);
+    }
   }, [wb.panelRequest]);
   const settingsPanel = useRef<HTMLDivElement>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
@@ -567,9 +610,30 @@ export function Chat() {
             )}
           {latest?.error && !active && (
             <div className="inline-error" role="status">
-              <strong>Biologue couldn’t finish responding.</strong>
-              <p>{latest.error}</p>
-              <span>Your conversation is retained. You can send a follow-up.</span>
+              <strong>
+                {/oauth|refresh.token|unauthorized|authentication|\b401\b/i.test(latest.error)
+                  ? "Sign-in expired"
+                  : "Response failed"}
+              </strong>
+              {/oauth|refresh.token|unauthorized|authentication|\b401\b/i.test(latest.error) ? (
+                <>
+                  <p>Reconnect your provider account to continue.</p>
+                  <button
+                    onClick={() => {
+                      setSettings(true);
+                      setSettingsSection("Providers");
+                    }}
+                  >
+                    Open provider settings
+                  </button>
+                  <details className="error-details">
+                    <summary>Error details</summary>
+                    <pre>{latest.error}</pre>
+                  </details>
+                </>
+              ) : (
+                <p>{latest.error}</p>
+              )}
             </div>
           )}
         </div>
@@ -639,18 +703,24 @@ export function Chat() {
         }}
       >
         {!!suggestions.length && (
-          <div className="slash-suggestions" aria-label="Prompt and skill suggestions">
-            {suggestions.map((item) => (
+          <div
+            className="slash-suggestions"
+            id="composer-suggestions"
+            role="listbox"
+            aria-label={mention ? "Project file suggestions" : "Prompt and skill suggestions"}
+          >
+            {suggestions.map((item, index) => (
               <button
                 type="button"
                 key={item.command}
+                id={`composer-suggestion-${index}`}
+                role="option"
+                aria-selected={suggestionIndex === index}
                 title={item.description}
-                onClick={() => {
-                  setText(item.command + " ");
-                  input.current?.focus();
-                }}
+                onClick={() => chooseSuggestion(item)}
               >
-                {item.command}
+                <span>{item.command}</span>
+                <small>{item.description}</small>
               </button>
             ))}
           </div>
@@ -682,7 +752,16 @@ export function Chat() {
           aria-label="Message Biologue"
           placeholder={active ? "Message Biologue…" : "Message Biologue…"}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            setText(event.target.value);
+            setCursor(event.target.selectionStart);
+            setDismissedSuggestion(null);
+          }}
+          onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
+          aria-controls={suggestions.length ? "composer-suggestions" : undefined}
+          aria-activedescendant={
+            suggestions.length ? `composer-suggestion-${suggestionIndex}` : undefined
+          }
           rows={3}
           onPaste={(event) => {
             if (event.clipboardData.files.length) {
@@ -691,6 +770,29 @@ export function Chat() {
             }
           }}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (suggestions.length) {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                setDismissedSuggestion(text);
+                return;
+              }
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                setSuggestionIndex(
+                  (index) =>
+                    (index + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) %
+                    suggestions.length,
+                );
+                return;
+              }
+              if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
+                event.preventDefault();
+                chooseSuggestion(suggestions[suggestionIndex] ?? suggestions[0]);
+                return;
+              }
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void sendAction.run(send);
@@ -715,7 +817,10 @@ export function Chat() {
             aria-label="Agent settings"
             title="Model and thinking level"
             aria-expanded={settings}
-            onClick={() => setSettings(!settings)}
+            onClick={() => {
+              setSettingsSection("Model");
+              setSettings(!settings);
+            }}
           >
             <Settings2 size={14} />
             <span>
@@ -723,6 +828,24 @@ export function Chat() {
               {enabled && agent.thinking ? ` · ${agent.thinking}` : ""}
             </span>
           </button>
+          {enabled && (
+            <button
+              type="button"
+              className="text-button permission-mode"
+              aria-label="Permission settings"
+              title="Permission mode"
+              onClick={() => {
+                setSettingsSection("Model");
+                setSettings(!settings);
+              }}
+            >
+              {
+                { ask: "Ask", plan: "Plan", edit: "Allow edits", auto: "Full access" }[
+                  (agent as AgentSettings).mode ?? "ask"
+                ]
+              }
+            </button>
+          )}
           {usage && (
             <button
               className="text-button context-usage"
@@ -786,7 +909,11 @@ export function Chat() {
         }}
       />
       {attachOpen && (
-        <Dialog title="Attach files" onClose={() => setAttachOpen(false)}>
+        <Dialog
+          title="Attach files"
+          className="attachment-picker"
+          onClose={() => setAttachOpen(false)}
+        >
           <button
             onClick={() => {
               setAttachOpen(false);
@@ -803,6 +930,9 @@ export function Chat() {
             onChange={(e) => setFileFilter(e.target.value)}
           />
           <div className="resource-list">
+            {!snapshot.files.some((path) =>
+              path.toLowerCase().includes(fileFilter.toLowerCase()),
+            ) && <p className="small-note">No matching project files</p>}
             {snapshot.files
               .filter((path) => path.toLowerCase().includes(fileFilter.toLowerCase()))
               .slice(0, 100)
@@ -843,6 +973,7 @@ export function Chat() {
             </button>
           </div>
           <Controls
+            initialSection={settingsSection}
             onInsert={(value) => {
               setText(value.startsWith("/mcp") ? value : value + text);
               setSettings(false);
