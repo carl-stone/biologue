@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import type { Message, AppEvent } from "@carl/protocol";
+import type { Message, AppEvent } from "@biologue/protocol";
 import { Store } from "../src/store.ts";
 import { Events } from "../src/events.ts";
 import { ContextService } from "../src/context.ts";
@@ -88,7 +88,7 @@ test("finalized entries update the display index without rescanning historical b
       role: "user",
       content: input.text,
       timestamp: Date.now(),
-      carl: { inputId: input.id },
+      biologue: { inputId: input.id },
     } as any);
     manager.appendMessage(fauxAssistantMessage("Correction retained."));
     f.sessions.publishMessages(id);
@@ -114,7 +114,7 @@ test("the display index rebuilds from Pi and pending receipts without changing t
       role: "user",
       content: receipt.text,
       timestamp: Date.now(),
-      carl: { inputId: receipt.id },
+      biologue: { inputId: receipt.id },
     } as any);
     manager.appendMessage(fauxAssistantMessage("Canonical response"));
     const pending = f.sessions.accept(id, "Unsent correction", "run");
@@ -147,7 +147,7 @@ test("branch changes invalidate the display and never resurrect consumed steerin
       role: "user",
       content: receipt.text,
       timestamp: Date.now(),
-      carl: { inputId: receipt.id },
+      biologue: { inputId: receipt.id },
     } as any);
     manager.appendMessage(fauxAssistantMessage("Earlier branch response"));
     f.sessions.page(id);
@@ -171,7 +171,7 @@ test("workspace snapshots never open transcripts; the message API selects and pa
   const root = mkdtempSync(join(tmpdir(), "biologue-chat-api-"));
   const f = await createApp({
     project: root,
-    stateDir: join(root, ".carl"),
+    stateDir: join(root, ".biologue"),
     repository: process.cwd(),
     kernel: { execute: async () => {}, interrupt: async () => {} },
   });

@@ -40,7 +40,7 @@ import {
   ChevronsRight,
   PanelLeft,
 } from "lucide-react";
-import type { Document, Execution, Language } from "@carl/protocol";
+import type { Document, Execution, Language } from "@biologue/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
 import {
   Empty,

@@ -4,7 +4,7 @@ import type {
   PermissionRequest,
   PermissionDecision,
   PermissionDecisionSummary,
-} from "@carl/protocol";
+} from "@biologue/protocol";
 import { api, useResource, useSnapshot, useWorkbench } from "../state.tsx";
 import { CopyButton, Dialog, Spinner, languageName, useAction, useProjectDraft } from "../ui.tsx";
 

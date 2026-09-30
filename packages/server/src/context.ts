@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Conversation, ResearchContext, Message } from "@carl/protocol";
+import type { Conversation, ResearchContext, Message } from "@biologue/protocol";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 import { Conflict } from "./documents.ts";

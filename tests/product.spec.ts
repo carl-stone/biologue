@@ -325,3 +325,55 @@ test("figure browsing holds its place and recovers failed images and historical 
     ui.requests.filter((request) => request.path === "/executions" && request.method === "POST"),
   ).toHaveLength(0);
 });
+
+test("project drafts and selections survive a storage namespace change", async ({ page }) => {
+  const ui = await fixture(page);
+  await page.addInitScript((project) => {
+    if (localStorage.getItem(`biologue-storage:${project}`)) return;
+    localStorage.setItem(`previous-active-file:${project}`, "analysis.R");
+    localStorage.setItem(`previous-active-conversation:${project}`, "conversation-2");
+    localStorage.setItem(
+      `previous-document:${project}:analysis.R`,
+      JSON.stringify({
+        content: "# Recovered unsynchronized draft\nx <- 42\n",
+        baseVersion: 1,
+        editId: "recovered-edit",
+      }),
+    );
+  }, initialSnapshot.project);
+  await page.goto("/");
+  const editor = page.getByRole("textbox", { name: "Code editor: analysis.R", exact: true });
+  await expect(editor).toContainText("Recovered unsynchronized draft");
+  await expect(page.getByRole("tab", { name: /analysis.R/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (project) => localStorage.getItem(`biologue-active-conversation:${project}`),
+        initialSnapshot.project,
+      ),
+    )
+    .toBe("conversation-2");
+  await expect
+    .poll(() =>
+      ui.requests.some(
+        (request) =>
+          request.method === "PUT" &&
+          request.body?.content?.includes("Recovered unsynchronized draft"),
+      ),
+    )
+    .toBe(true);
+  await editor.fill("# Newer edit\nx <- 43\n");
+  await expect
+    .poll(() =>
+      ui.requests.some(
+        (request) => request.method === "PUT" && request.body?.content?.includes("Newer edit"),
+      ),
+    )
+    .toBe(true);
+  await page.reload();
+  await expect(editor).toContainText("Newer edit");
+  await expect(editor).not.toContainText("Recovered unsynchronized draft");
+});

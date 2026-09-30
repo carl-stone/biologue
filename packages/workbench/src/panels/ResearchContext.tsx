@@ -1,5 +1,5 @@
 import { Download, Save } from "lucide-react";
-import type { ResearchContext as Context } from "@carl/protocol";
+import type { ResearchContext as Context } from "@biologue/protocol";
 import { api, useWorkbench, useSnapshot } from "../state.tsx";
 import { Spinner, downloadText, modifier, useAction, useProjectDraft } from "../ui.tsx";
 

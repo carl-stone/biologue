@@ -45,7 +45,7 @@ export function useAction() {
 export function useProjectDraft<T>(name: string, initial: T) {
   const { setError } = useWorkbench("setError");
   const snapshot = useSnapshot("project");
-  const key = `carl-${name}:${snapshot!.project}`;
+  const key = `biologue-${name}:${snapshot!.project}`;
   const [value, setValue] = useState<T>(() => {
     try {
       const stored = localStorage.getItem(key);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxProvider, InMemoryCredentialStore, type Context } from "@earendil-works/pi-ai";
 import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { AgentRun, AppEvent, Conversation, PermissionRequest } from "@carl/protocol";
+import type { AgentRun, AppEvent, Conversation, PermissionRequest } from "@biologue/protocol";
 import { Store } from "../../src/store.ts";
 import { Events } from "../../src/events.ts";
 import { Documents } from "../../src/documents.ts";
@@ -71,10 +71,10 @@ export async function fixture(
     cancellationTimeoutMs?: number;
   } = {},
 ) {
-  const root = options.root ?? mkdtempSync(join(tmpdir(), "carl-session-"));
+  const root = options.root ?? mkdtempSync(join(tmpdir(), "biologue-session-"));
   if (!existsSync(join(root, "analysis.py"))) writeFileSync(join(root, "analysis.py"), "x = 1");
-  const stateDir = join(root, ".carl");
-  const store = new Store(join(stateDir, "carl.sqlite"));
+  const stateDir = join(root, ".biologue");
+  const store = new Store(join(stateDir, "biologue.sqlite"));
   const events = new Events();
   const context = new ContextService(store, events);
   const documents = new Documents(root, store, events);

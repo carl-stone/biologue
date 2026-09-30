@@ -6,8 +6,8 @@ import { get } from "node:http";
 
 const root = process.cwd();
 const production = process.argv.includes("--production");
-if (process.env.CARL_SOCKET && !production) {
-  console.error("CARL_SOCKET requires npm run serve.");
+if (process.env.BIOLOGUE_SOCKET && !production) {
+  console.error("BIOLOGUE_SOCKET requires npm run serve.");
   process.exit(1);
 }
 if (
@@ -18,15 +18,15 @@ if (
   console.error("Run npm run build before npm run serve.");
   process.exit(1);
 }
-const project = resolve(process.env.CARL_PROJECT || "examples/sandbox");
+const project = resolve(process.env.BIOLOGUE_PROJECT || "examples/sandbox");
 const token = process.env.JUPYTER_TOKEN || randomBytes(32).toString("hex");
-const jupyterPort = process.env.CARL_JUPYTER_PORT || "8889";
-const uiPort = process.env.CARL_UI_PORT || "5173";
+const jupyterPort = process.env.BIOLOGUE_JUPYTER_PORT || "8889";
+const uiPort = process.env.BIOLOGUE_UI_PORT || "5173";
 const jupyterUrl = process.env.JUPYTER_URL || `http://127.0.0.1:${jupyterPort}/`;
 const env = {
   ...process.env,
-  CARL_ROOT: root,
-  CARL_PROJECT: project,
+  BIOLOGUE_ROOT: root,
+  BIOLOGUE_PROJECT: project,
   JUPYTER_TOKEN: token,
   JUPYTER_URL: jupyterUrl,
   JUPYTER_ROOT: process.env.JUPYTER_ROOT || (process.env.JUPYTER_URL ? project : "/"),
@@ -39,8 +39,8 @@ function applicationReady() {
     const request = get(
       {
         host: "127.0.0.1",
-        port: process.env.CARL_PORT || 4317,
-        socketPath: process.env.CARL_SOCKET,
+        port: process.env.BIOLOGUE_PORT || 4317,
+        socketPath: process.env.BIOLOGUE_SOCKET,
         path: "/api/health",
         timeout: 1000,
       },
@@ -165,5 +165,5 @@ if (!stopping && !production) {
 }
 if (!stopping && production)
   console.log(
-    `Biologue workspace: ${process.env.CARL_EXTERNAL_ORIGIN || process.env.CARL_SOCKET || `http://127.0.0.1:${process.env.CARL_PORT || 4317}`}`,
+    `Biologue workspace: ${process.env.BIOLOGUE_EXTERNAL_ORIGIN || process.env.BIOLOGUE_SOCKET || `http://127.0.0.1:${process.env.BIOLOGUE_PORT || 4317}`}`,
   );

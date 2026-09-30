@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AgentQuestion, Conversation, AgentUsage } from "@carl/protocol";
+import type { AgentQuestion, Conversation, AgentUsage } from "@biologue/protocol";
 import { api, base, useResource, useSnapshot, useWorkbench } from "../state.tsx";
 import { Dialog, Spinner, useAction } from "../ui.tsx";
 

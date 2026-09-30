@@ -12,7 +12,7 @@ async function fixture(t: TestContext, externalOrigin?: string) {
   const project = mkdtempSync(join(tmpdir(), "biologue-access-"));
   const f = await createApp({
     project,
-    stateDir: join(project, ".carl"),
+    stateDir: join(project, ".biologue"),
     repository: process.cwd(),
     externalOrigin,
     kernel: { execute: async () => {}, interrupt: async () => {} },
@@ -33,7 +33,7 @@ test("browser access remains local unless an external origin is explicitly confi
 
 test("a private proxy origin allows the workbench without trusting other hosts or browser origins", async (t) => {
   const app = await fixture(t, origin);
-  const headers = { host, origin, "x-carl-client": "workbench" };
+  const headers = { host, origin, "x-biologue-client": "workbench" };
   const allowed = await app.inject({ url: "/api/snapshot", headers });
   assert.equal(allowed.statusCode, 200);
   assert.equal(allowed.headers["access-control-allow-origin"], origin);

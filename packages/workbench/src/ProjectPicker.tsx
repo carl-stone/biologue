@@ -12,7 +12,7 @@ type Folders = {
 async function projects<T>(path = "", method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(`${origin}/api/projects${path}`, {
     method,
-    headers: { "Content-Type": "application/json", "X-Carl-Client": "workbench" },
+    headers: { "Content-Type": "application/json", "X-Biologue-Client": "workbench" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const value = await response.json();

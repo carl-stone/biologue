@@ -1,7 +1,7 @@
 node_modules/
 .venv/
-.carl/
-**/.carl/
+.biologue/
+**/.biologue/
 **/dist/
 src-tauri/target/
 src-tauri/gen/

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AgentProvider, AuthFlow } from "@carl/protocol";
+import type { AgentProvider, AuthFlow } from "@biologue/protocol";
 import { api, useResource, useWorkbench } from "../state.tsx";
 import { useAction, Spinner } from "../ui.tsx";
 

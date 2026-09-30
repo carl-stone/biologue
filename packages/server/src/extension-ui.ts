@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionUIContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
-import type { AgentQuestion, AgentRun } from "@carl/protocol";
+import type { AgentQuestion, AgentRun } from "@biologue/protocol";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 import { Conflict } from "./documents.ts";

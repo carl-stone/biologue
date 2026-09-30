@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ContextIssue, Execution, ExecutionContextCheck, Language } from "@carl/protocol";
+import type { ContextIssue, Execution, ExecutionContextCheck, Language } from "@biologue/protocol";
 import type { CodeEffects } from "./code-effects.ts";
 import type { Store } from "./store.ts";
 import type { ExecutionRepository } from "./execution-repository.ts";

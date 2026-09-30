@@ -10,7 +10,7 @@ import {
   getSystemMessageText,
   type Context,
 } from "@earendil-works/pi-ai";
-import type { Execution, Message } from "@carl/protocol";
+import type { Execution, Message } from "@biologue/protocol";
 import { collaboratorPrompt, deferred, fixture } from "./helpers/pi-fixture.ts";
 import { scientificRetention } from "../src/pi.ts";
 import { ConversationSessions } from "../src/conversation-sessions.ts";
@@ -173,7 +173,7 @@ test(
 );
 
 test(
-  "Pi retries transient failures and Carl waits for the recovered response",
+  "Pi retries transient failures and Biologue waits for the recovered response",
   timeout,
   async () => {
     const f = await fixture({
@@ -401,7 +401,7 @@ test(
           sent.push(code);
           output({
             kind: "stream",
-            text: code.includes("def _carl_inspect")
+            text: code.includes("def _biologue_inspect")
               ? JSON.stringify([{ name: "A", type: "list", preview: "[1, 2]" }])
               : "actual output",
           });

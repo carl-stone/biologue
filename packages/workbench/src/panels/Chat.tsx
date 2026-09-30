@@ -28,9 +28,9 @@ import type {
   PermissionRequest,
   PermissionDecisionSummary,
   AgentSettings,
-} from "@carl/protocol";
+} from "@biologue/protocol";
 import { api, useWorkbench, useSnapshot, useResource } from "../state.tsx";
-import type { AgentResources } from "@carl/protocol";
+import type { AgentResources } from "@biologue/protocol";
 import { RunActivity } from "./RunActivity.tsx";
 import { PermissionCard } from "./PermissionCard.tsx";
 import { Controls } from "./Controls.tsx";

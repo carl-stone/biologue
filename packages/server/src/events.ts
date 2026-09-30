@@ -1,4 +1,4 @@
-import type { AppEvent } from "@carl/protocol";
+import type { AppEvent } from "@biologue/protocol";
 
 /** Notifications must never control execution or persistence lifetimes. */
 export class Events {

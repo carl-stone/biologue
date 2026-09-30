@@ -8,7 +8,7 @@ import {
 import WebSocket from "ws";
 import { relative } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Language, SessionInfo } from "@carl/protocol";
+import type { Language, SessionInfo } from "@biologue/protocol";
 import { adapters } from "./adapters.ts";
 import { digest } from "./documents.ts";
 import type { KernelBackend, KernelOutput } from "./execution.ts";
@@ -82,7 +82,7 @@ export class JupyterKernels implements KernelBackend {
     const manager = this.sessionManager;
     await manager.refreshRunning();
     const directory = relative(this.root, this.project);
-    const path = `${directory ? directory + "/" : ""}carl-${digest(this.project).slice(0, 12)}-${language}.ipynb`;
+    const path = `${directory ? directory + "/" : ""}biologue-${digest(this.project).slice(0, 12)}-${language}.ipynb`;
     const existing = [...manager.running()].find(
       (session) => session.path === path && session.kernel?.name === adapters[language].kernelName,
     );
@@ -90,7 +90,7 @@ export class JupyterKernels implements KernelBackend {
       ? manager.connectTo({ model: existing })
       : await manager.startNew({
           path,
-          name: `Carl ${language}`,
+          name: `Biologue ${language}`,
           type: "notebook",
           kernel: { name: adapters[language].kernelName },
         });

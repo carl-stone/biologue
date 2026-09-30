@@ -7,7 +7,7 @@ import { createApp } from "../src/app.ts";
 import { scriptedModel } from "./helpers/pi-fixture.ts";
 import { PiAdapter } from "../src/pi.ts";
 
-const headers = { "x-carl-client": "workbench" };
+const headers = { "x-biologue-client": "workbench" };
 test("folder switching isolates buffers, conversations and API routes, and survives reopening", async () => {
   const root = mkdtempSync(join(tmpdir(), "biologue-projects-"));
   for (const name of ["one", "two"]) {
@@ -16,7 +16,7 @@ test("folder switching isolates buffers, conversations and API routes, and survi
   }
   const options = {
     project: join(root, "one"),
-    stateDir: join(root, "one/.carl"),
+    stateDir: join(root, "one/.biologue"),
     projects: true,
     jupyterRoot: root,
     repository: process.cwd(),
@@ -92,7 +92,7 @@ test("environment refreshes once after code, coalesces requests, and never creat
   const root = mkdtempSync(join(tmpdir(), "biologue-environment-"));
   const f = await createApp({
     project: root,
-    stateDir: join(root, ".carl"),
+    stateDir: join(root, ".biologue"),
     repository: process.cwd(),
     kernel: {
       execute: async () => {

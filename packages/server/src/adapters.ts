@@ -1,4 +1,4 @@
-import type { EnvironmentQuery, Language } from "@carl/protocol";
+import type { EnvironmentQuery, Language } from "@biologue/protocol";
 
 export interface LanguageAdapter {
   language: Language;
@@ -9,8 +9,8 @@ export interface LanguageAdapter {
 export const adapters: Record<Language, LanguageAdapter> = {
   python: {
     language: "python",
-    kernelName: process.env.CARL_PYTHON_KERNEL || "python3",
-    tableCode: (name) => `def _carl_table():
+    kernelName: process.env.BIOLOGUE_PYTHON_KERNEL || "python3",
+    tableCode: (name) => `def _biologue_table():
     import json
     from IPython.display import display
     value = globals()[${JSON.stringify(name)}]
@@ -18,9 +18,9 @@ export const adapters: Record<Language, LanguageAdapter> = {
         raise TypeError('Table preview currently supports pandas DataFrames.')
     preview = json.loads(value.head(100).to_json(orient='split', date_format='iso'))
     display({'application/json': {'columns': preview['columns'], 'rows': preview['data'], 'truncated': len(value) > 100}}, raw=True)
-_carl_table()
-del _carl_table`,
-    inspectionCode: ({ names, offset = 0 } = {}) => `def _carl_inspect():
+_biologue_table()
+del _biologue_table`,
+    inspectionCode: ({ names, offset = 0 } = {}) => `def _biologue_inspect():
     import builtins as b, json, itertools
     def preview(value, depth=0):
         kind = b.type(value)
@@ -57,12 +57,12 @@ del _carl_table`,
         rows.append({'name': name, 'type': label, 'preview': preview(value)[:240]})
     next_offset = offset + b.len(selected)
     b.print(json.dumps({'rows': rows, 'next': next_offset if next_offset < b.len(candidates) else None}, ensure_ascii=False))
-_carl_inspect()
-del _carl_inspect`,
+_biologue_inspect()
+del _biologue_inspect`,
   },
   r: {
     language: "r",
-    kernelName: process.env.CARL_R_KERNEL || "ark",
+    kernelName: process.env.BIOLOGUE_R_KERNEL || "ark",
     tableCode: (name) => `local({
   if (!requireNamespace("jsonlite", quietly = TRUE)) stop("Table preview requires the R package jsonlite.")
   value <- get(${JSON.stringify(name)}, envir = .GlobalEnv)
@@ -103,7 +103,7 @@ del _carl_inspect`,
 };
 
 /** Decode language output once at the server boundary, never in a React panel. */
-export function decodeTable(value: unknown): import("@carl/protocol").TableResult | undefined {
+export function decodeTable(value: unknown): import("@biologue/protocol").TableResult | undefined {
   if (typeof value === "string") {
     try {
       value = JSON.parse(value);
@@ -131,8 +131,8 @@ export function decodeTable(value: unknown): import("@carl/protocol").TableResul
 }
 export function decodeInspection(
   kind: "table" | "environment" | undefined,
-  outputs: import("@carl/protocol").Output[],
-): import("@carl/protocol").InspectionResult | undefined {
+  outputs: import("@biologue/protocol").Output[],
+): import("@biologue/protocol").InspectionResult | undefined {
   const text = outputs
     .filter((output) => output.kind === "stream")
     .map((output) => output.text ?? "")

@@ -33,7 +33,7 @@ export function projectRoutes(app: FastifyInstance, options: AppOptions, store: 
     if (!loading) {
       loading = (async () => {
         const project = await folder(known.get(id)!);
-        const stateDir = join(project, ".carl");
+        const stateDir = join(project, ".biologue");
         const { createApp } = await import("./app.ts");
         const child = await createApp({
           ...options,

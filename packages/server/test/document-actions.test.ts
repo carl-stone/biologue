@@ -10,11 +10,11 @@ test("creating a document cannot overwrite work or escape the project", async ()
   const outside = mkdtempSync(join(tmpdir(), "biologue-outside-"));
   const f = await createApp({
     project: root,
-    stateDir: join(root, ".carl"),
+    stateDir: join(root, ".biologue"),
     repository: process.cwd(),
     kernel: { execute: async () => {}, interrupt: async () => {} },
   });
-  const headers = { "x-carl-client": "workbench" };
+  const headers = { "x-biologue-client": "workbench" };
   try {
     const created = await f.app.inject({
       method: "POST",
@@ -35,7 +35,7 @@ test("creating a document cannot overwrite work or escape the project", async ()
     assert.equal(duplicate.statusCode, 409);
     assert.equal(f.documents.open("new.py").content, "unsaved = 1");
     symlinkSync(outside, join(root, "external"));
-    for (const path of ["../escape.py", "external/escape.py", ".carl/internal.py"]) {
+    for (const path of ["../escape.py", "external/escape.py", ".biologue/internal.py"]) {
       const response = await f.app.inject({
         method: "POST",
         url: "/api/documents",
@@ -59,7 +59,7 @@ test("selected execution verifies exact revision offsets and records only the se
   const calls: string[] = [];
   const f = await createApp({
     project: root,
-    stateDir: join(root, ".carl"),
+    stateDir: join(root, ".biologue"),
     repository: process.cwd(),
     kernel: {
       execute: async (_language, code) => {
@@ -68,7 +68,7 @@ test("selected execution verifies exact revision offsets and records only the se
       interrupt: async () => {},
     },
   });
-  const headers = { "x-carl-client": "workbench" };
+  const headers = { "x-biologue-client": "workbench" };
   try {
     const source = '# 🧬 synthetic\nx = 2\nprint(x)\nraise Exception("not selected")\n';
     writeFileSync(join(root, "analysis.py"), source);
@@ -119,11 +119,11 @@ test("untitled documents survive reconnects, execute with exact identity, and sa
   const root = mkdtempSync(join(tmpdir(), "biologue-untitled-"));
   const f = await createApp({
     project: root,
-    stateDir: join(root, ".carl"),
+    stateDir: join(root, ".biologue"),
     repository: process.cwd(),
     kernel: { execute: async () => {}, interrupt: async () => {} },
   });
-  const headers = { "x-carl-client": "workbench" };
+  const headers = { "x-biologue-client": "workbench" };
   try {
     const response = await f.app.inject({
       method: "POST",
@@ -190,11 +190,11 @@ test("Save As copies a named working document without changing its source or exe
   writeFileSync(join(root, "analysis.py"), "x = 1\n");
   const f = await createApp({
     project: root,
-    stateDir: join(root, ".carl"),
+    stateDir: join(root, ".biologue"),
     repository: process.cwd(),
     kernel: { execute: async () => {}, interrupt: async () => {} },
   });
-  const headers = { "x-carl-client": "workbench" };
+  const headers = { "x-biologue-client": "workbench" };
   try {
     const source = f.documents.open("analysis.py");
     const edited = f.documents.edit(source.path, "x = 2\n", source.version);

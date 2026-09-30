@@ -6,11 +6,11 @@ export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
   plugins: [react()],
   server: {
-    port: Number(process.env.CARL_UI_PORT || 5173),
+    port: Number(process.env.BIOLOGUE_UI_PORT || 5173),
     strictPort: true,
     proxy: {
-      "/api": `http://127.0.0.1:${process.env.CARL_PORT || 4317}`,
-      "/projects": `http://127.0.0.1:${process.env.CARL_PORT || 4317}`,
+      "/api": `http://127.0.0.1:${process.env.BIOLOGUE_PORT || 4317}`,
+      "/projects": `http://127.0.0.1:${process.env.BIOLOGUE_PORT || 4317}`,
     },
   },
   build: {

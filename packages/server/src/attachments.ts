@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Attachment } from "@carl/protocol";
+import type { Attachment } from "@biologue/protocol";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Store } from "./store.ts";
 import type { Documents } from "./documents.ts";

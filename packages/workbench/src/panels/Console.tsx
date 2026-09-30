@@ -9,7 +9,7 @@ import {
   MoreHorizontal,
   Eraser,
 } from "lucide-react";
-import type { Execution, ExecutionSummary, Output, DisplayOutput, Page } from "@carl/protocol";
+import type { Execution, ExecutionSummary, Output, DisplayOutput, Page } from "@biologue/protocol";
 import { api, useWorkbench, useSnapshot, useResource, useOutputVersion } from "../state.tsx";
 import { stripAnsi } from "../outputs.ts";
 import { Spinner, languageName, useAction, useFollowOutput, useProjectDraft } from "../ui.tsx";

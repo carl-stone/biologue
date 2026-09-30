@@ -8,11 +8,6 @@ Node, Pi, and Jupyter. **Biologue is the working title**, combining biology and
 dialogue. The scientific behavior is a design hypothesis that still needs
 evaluation with scientists.
 
-The project was previously called Carl. For compatibility, the repository path,
-`@carl/*` package names, `CARL_*` settings, and `.carl` state directory retain their
-original names. Existing conversations, drafts, layouts, and Pi sign-in settings
-continue to use the same storage.
-
 To open the workbench from another computer over Tailscale, see
 [private browser access](docs/remote-access.md). Computation and project state
 remain on the server.
@@ -36,15 +31,15 @@ In the supplied `/root/workspace` environment, edit files and use Git on the hos
 and run all install, build, test, and application commands in `codex-universal`:
 
 ```bash
-docker exec -i -w /workspace/carl-harness codex-universal bash -lc \
+docker exec -i -w /workspace/biologue codex-universal bash -lc \
   'source /root/.nvm/nvm.sh && nvm use 22 && npm ci && uv sync && npm run dev'
 ```
 
-Use `CARL_PROJECT=/absolute/path` to open another existing project. The default is
+Use `BIOLOGUE_PROJECT=/absolute/path` to open another existing project. The default is
 `examples/sandbox`. Pi conversation files, SQLite state, and captured artifacts live in that project's
-`.carl` directory; `CARL_STATE_DIR` can override it.
+`.biologue` directory; `BIOLOGUE_STATE_DIR` can override it.
 
-To enable chat, set `CARL_PROVIDER` (for example, `anthropic` or `openrouter`), `CARL_MODEL`
+To enable chat, set `BIOLOGUE_PROVIDER` (for example, `anthropic` or `openrouter`), `BIOLOGUE_MODEL`
 (a model ID from the installed Pi provider catalog), and the corresponding
 `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` in the application server's environment
 before starting it. Keys stay on the server. These environment settings do not

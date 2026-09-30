@@ -12,7 +12,7 @@ import {
   type FSWatcher,
 } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
-import type { Document } from "@carl/protocol";
+import type { Document } from "@biologue/protocol";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 
@@ -264,7 +264,7 @@ export class Documents {
     const full = this.resolve(doc.path);
     if ((this.readDisk(doc.path)?.hash ?? null) !== expectedDiskHash)
       throw new Conflict("The file changed on disk again. Review it before saving.");
-    const temporary = `${full}.carl-${randomUUID()}.tmp`;
+    const temporary = `${full}.biologue-${randomUUID()}.tmp`;
     try {
       writeFileSync(temporary, doc.content, {
         flag: "wx",

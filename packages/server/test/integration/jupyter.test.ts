@@ -16,7 +16,13 @@ import { analyzeCode } from "../../src/code-effects.ts";
 import { PiAdapter } from "../../src/pi.ts";
 import { scriptedModel } from "../helpers/pi-fixture.ts";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { AgentRun, Conversation, EnvironmentQuery, Execution, Language } from "@carl/protocol";
+import type {
+  AgentRun,
+  Conversation,
+  EnvironmentQuery,
+  Execution,
+  Language,
+} from "@biologue/protocol";
 
 async function unusedPort() {
   const server = createServer();
@@ -31,7 +37,7 @@ test(
   "real Python session is shared, records plots/errors, supports interruption and reconnect",
   { timeout: 90000 },
   async () => {
-    const root = mkdtempSync(join(tmpdir(), "carl-jupyter-"));
+    const root = mkdtempSync(join(tmpdir(), "biologue-jupyter-"));
     const port = await unusedPort();
     const token = randomBytes(20).toString("hex");
     const url = `http://127.0.0.1:${port}/`;
@@ -73,17 +79,21 @@ test(
       }
       assert.equal(ready, true, "Jupyter should become ready");
       const model = await scriptedModel();
-      const pi = new PiAdapter({ project: root, stateDir: join(root, ".carl"), ...model.options });
+      const pi = new PiAdapter({
+        project: root,
+        stateDir: join(root, ".biologue"),
+        ...model.options,
+      });
       pi.conversationTitle = async () => "";
       instance = await createApp({
         project: root,
-        stateDir: join(root, ".carl"),
+        stateDir: join(root, ".biologue"),
         repository: process.cwd(),
         kernel,
         pi,
       });
       const { app, execution } = instance;
-      const headers = { "x-carl-client": "workbench" };
+      const headers = { "x-biologue-client": "workbench" };
       const execute = async (language: Language, code: string) => {
         const record = await execution.wait(
           execution.submit({ language, actor: "human", code }).id,
@@ -270,7 +280,7 @@ for _i in range(105):
       assert.ok(
         secondPage.rows.every((row) => !firstPage.rows.some((prior) => prior.name === row.name)),
       );
-      if (process.env.CARL_TEST_R === "1") {
+      if (process.env.BIOLOGUE_TEST_R === "1") {
         const rHuman = execution.submit({
           language: "r",
           actor: "human",
@@ -452,7 +462,7 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
       mkdirSync(otherProject);
       const other = await createApp({
         project: otherProject,
-        stateDir: join(otherProject, ".carl"),
+        stateDir: join(otherProject, ".biologue"),
         repository: process.cwd(),
         jupyterRoot: root,
         jupyterUrl: url,
@@ -491,7 +501,7 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
           instance.store,
           instance.events,
           reconnect,
-          new OutputService(instance.store, instance.events, join(root, ".carl/artifacts")),
+          new OutputService(instance.store, instance.events, join(root, ".biologue/artifacts")),
         );
         const check = reconnectedService.submit({
           language: "python",

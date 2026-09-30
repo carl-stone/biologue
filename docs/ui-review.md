@@ -69,7 +69,7 @@ window and screen readers were not tested.
 
 ## Reproduce
 
-Run commands in `codex-universal`, from `/workspace/carl-harness`, after
+Run commands in `codex-universal`, from `/workspace/biologue`, after
 `source /root/.nvm/nvm.sh && nvm use 22`.
 
 Start the isolated review server in one terminal:

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Message, Page } from "@carl/protocol";
+import type { Message, Page } from "@biologue/protocol";
 import { ConversationHistory } from "../../workbench/src/conversation-history.ts";
 
 function deferred<T>() {

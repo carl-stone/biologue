@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { AgentRun, Message, ResearchContext, Conversation, Attachment } from "@carl/protocol";
+import type {
+  AgentRun,
+  Message,
+  ResearchContext,
+  Conversation,
+  Attachment,
+} from "@biologue/protocol";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { ExtensionDialogs } from "./extension-ui.ts";
 import type { Store } from "./store.ts";
@@ -12,7 +18,7 @@ import type { ContextService } from "./context.ts";
 import type { ExecutionService } from "./execution.ts";
 import type { Permissions } from "./permissions.ts";
 import type { PiAdapter } from "./pi.ts";
-import { ConversationSessions, type CarlMessage } from "./conversation-sessions.ts";
+import { ConversationSessions, type BiologueMessage } from "./conversation-sessions.ts";
 import { workspaceTools } from "./workspace-tools.ts";
 
 type ActiveRun = {
@@ -79,7 +85,7 @@ export class Supervisor {
           }
         : undefined);
     if (!settings)
-      throw new Error("Configure CARL_PROVIDER and CARL_MODEL to enable the collaborator.");
+      throw new Error("Configure BIOLOGUE_PROVIDER and BIOLOGUE_MODEL to enable the collaborator.");
     if ([...this.active.values()].some((item) => item.run.conversationId === conversationId))
       throw new Conflict("A collaborator run is already active in this conversation.");
     this.execution.context.begin(conversationId);
@@ -195,13 +201,13 @@ export class Supervisor {
               : undefined;
           return {
             ...message,
-            carl: {
-              ...(message as CarlMessage).carl,
+            biologue: {
+              ...(message as BiologueMessage).biologue,
               ...(accepted ? { inputId: accepted.id } : {}),
               runId: run.id,
               contextVersion: research.version,
             },
-          } as CarlMessage;
+          } as BiologueMessage;
         },
         onContext: (messages) => {
           this.execution.context.observeContext(run.conversationId, messages);
@@ -220,7 +226,7 @@ export class Supervisor {
               ?.getAllTools()
               .map((tool) => ({ name: tool.name, parameters: tool.parameters })),
             inputIds: messages.flatMap((message) => {
-              const inputId = (message as CarlMessage).carl?.inputId;
+              const inputId = (message as BiologueMessage).biologue?.inputId;
               return inputId ? [inputId] : [];
             }),
           });

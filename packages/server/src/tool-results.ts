@@ -1,4 +1,4 @@
-import type { ContextIssue, Execution, Output } from "@carl/protocol";
+import type { ContextIssue, Execution, Output } from "@biologue/protocol";
 import type { OutputService } from "./outputs.ts";
 import type { ObservationReceipt } from "./stale-context.ts";
 

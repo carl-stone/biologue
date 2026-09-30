@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowUpRight, Image, Table2 } from "lucide-react";
-import type { ExecutionSummary, DisplayOutput, Page } from "@carl/protocol";
+import type { ExecutionSummary, DisplayOutput, Page } from "@biologue/protocol";
 import { useWorkbench, useSnapshot, useResource, useOutputVersion } from "../state.tsx";
 import { languageName } from "../ui.tsx";
 

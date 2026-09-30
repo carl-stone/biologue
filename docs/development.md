@@ -1,8 +1,5 @@
 # Development
 
-Biologue is the working title. Internal identifiers and configuration retain the
-original Carl naming for compatibility; use the `CARL_*` settings documented below.
-
 Use Node 22.19+ (`.nvmrc` selects Node 22), the locked Python environment from
 `uv sync`, and Rust 1.88 for the Tauri shell. `npm ci`, `uv.lock`, and `Cargo.lock`
 pin the dependencies used by their respective runtimes.
@@ -10,7 +7,7 @@ pin the dependencies used by their respective runtimes.
 For this workspace, prefix commands with:
 
 ```bash
-docker exec -i -w /workspace/carl-harness codex-universal bash -lc '<command>'
+docker exec -i -w /workspace/biologue codex-universal bash -lc '<command>'
 ```
 
 Select Node 22 inside that shell with `source /root/.nvm/nvm.sh && nvm use 22`.
@@ -23,7 +20,7 @@ inside the container.
 
 For private access from another computer, see [Tailscale setup](remote-access.md).
 `npm run serve` starts the built workbench and managed Jupyter runtime. Its optional
-`CARL_EXTERNAL_ORIGIN` admits one HTTPS browser origin, and `CARL_SOCKET` selects a
+`BIOLOGUE_EXTERNAL_ORIGIN` admits one HTTPS browser origin, and `BIOLOGUE_SOCKET` selects a
 Unix socket instead of the default loopback TCP listener.
 
 ## Verification
@@ -45,7 +42,7 @@ permission enforcement without sending data to an external model.
 
 The integration test starts a temporary authenticated Jupyter server and a real
 ipykernel. It checks live state shared between human and agent execution, plots,
-errors, interruption, and reconnection. Set `CARL_TEST_R=1` to also exercise an
+errors, interruption, and reconnection. Set `BIOLOGUE_TEST_R=1` to also exercise an
 installed Ark kernel. The browser test creates a temporary project and uses its
 own application, Jupyter, and Vite ports. It leaves screenshots in `test-results`.
 
@@ -64,8 +61,8 @@ R must already be installed. Install a compatible binary from the official
 Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org")'
 ```
 
-The default R kernel name is `ark`; override it with `CARL_R_KERNEL` when needed.
-The Python default is `python3`, configurable with `CARL_PYTHON_KERNEL`.
+The default R kernel name is `ark`; override it with `BIOLOGUE_R_KERNEL` when needed.
+The Python default is `python3`, configurable with `BIOLOGUE_PYTHON_KERNEL`.
 The R adapter uses ordinary Jupyter execution and `jsonlite` for inspection and
 table previews. Positron-specific comms and language services are not implemented.
 Select **R session** in the workbench to use it. Missing kernels produce an
@@ -73,17 +70,17 @@ execution error; they never fall back silently to another language.
 
 ## Services and configuration
 
-| Setting                       | Default                    | Purpose                                             |
-| ----------------------------- | -------------------------- | --------------------------------------------------- |
-| `CARL_PROJECT`                | `examples/sandbox`         | Existing project directory                          |
-| `CARL_STATE_DIR`              | `<project>/.carl`          | Pi sessions, SQLite state, and captured outputs     |
-| `CARL_ROOT`                   | Launch working directory   | Repository resources and built frontend             |
-| `CARL_PORT`                   | `4317`                     | Node API and built workbench                        |
-| `CARL_UI_PORT`                | `5173`                     | Vite development frontend                           |
-| `CARL_JUPYTER_PORT`           | `8889`                     | Managed local Jupyter server                        |
-| `JUPYTER_URL`                 | Managed runtime            | Connect to an existing local Jupyter server instead |
-| `JUPYTER_TOKEN`               | Random for managed runtime | Jupyter authentication; never sent to the browser   |
-| `CARL_PROVIDER`, `CARL_MODEL` | Unset                      | Explicit Pi provider/model selection                |
+| Setting                               | Default                    | Purpose                                             |
+| ------------------------------------- | -------------------------- | --------------------------------------------------- |
+| `BIOLOGUE_PROJECT`                    | `examples/sandbox`         | Existing project directory                          |
+| `BIOLOGUE_STATE_DIR`                  | `<project>/.biologue`      | Pi sessions, SQLite state, and captured outputs     |
+| `BIOLOGUE_ROOT`                       | Launch working directory   | Repository resources and built frontend             |
+| `BIOLOGUE_PORT`                       | `4317`                     | Node API and built workbench                        |
+| `BIOLOGUE_UI_PORT`                    | `5173`                     | Vite development frontend                           |
+| `BIOLOGUE_JUPYTER_PORT`               | `8889`                     | Managed local Jupyter server                        |
+| `JUPYTER_URL`                         | Managed runtime            | Connect to an existing local Jupyter server instead |
+| `JUPYTER_TOKEN`                       | Random for managed runtime | Jupyter authentication; never sent to the browser   |
+| `BIOLOGUE_PROVIDER`, `BIOLOGUE_MODEL` | Unset                      | Explicit Pi provider/model selection                |
 
 For an existing Jupyter server, supply its matching `JUPYTER_TOKEN` and configure
 its root directory to the project directory. This slice assumes a local Jupyter
@@ -162,7 +159,7 @@ by code, randomness, and external service responses are not automatically captur
 
 Biologue pins `pi-coding-agent`, `pi-agent-core`, and `pi-ai` to 0.99.1. Agent-core is
 used for message types; session construction and lifecycle use the higher-level
-SDK. The composer settings select a model, supported thinking level and permission mode per conversation. Project defaults also use `CARL_PROVIDER` and `CARL_MODEL`, or Pi settings'
+SDK. The composer settings select a model, supported thinking level and permission mode per conversation. Project defaults also use `BIOLOGUE_PROVIDER` and `BIOLOGUE_MODEL`, or Pi settings'
 `defaultProvider` and `defaultModel`. Explicit adapter options take precedence over
 saved Pi settings, which take precedence over environment variables. Pi's ModelRuntime handles
 provider credentials/catalogs, using the configured state directory's
@@ -171,7 +168,7 @@ Pi settings live in `pi/settings.json` under that state directory, with project
 `.pi/settings.json` supported by the SDK. Cache warming is forced off in Biologue.
 
 Use `npm run login:codex` to sign Biologue into ChatGPT through Pi's device-code
-flow. It uses `CARL_PROJECT` and `CARL_STATE_DIR` to select the same credential
+flow. It uses `BIOLOGUE_PROJECT` and `BIOLOGUE_STATE_DIR` to select the same credential
 store as the server; it does not change the configured model. Complete the login
 on OpenAI's page instead of pasting credentials into chat. The SDK owns login,
 credential locking, persistence, and token refresh. Give Biologue its own login

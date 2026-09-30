@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, contentText } from "@earendil-works/pi-ai";
-import type { AgentQuestion, AgentSettings } from "@carl/protocol";
+import type { AgentQuestion, AgentSettings } from "@biologue/protocol";
 import { fixture, deferred } from "./helpers/pi-fixture.ts";
 import { Attachments } from "../src/attachments.ts";
 import { ProviderAuth } from "../src/provider-auth.ts";

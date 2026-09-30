@@ -1,4 +1,4 @@
-import type { Message, Page } from "@carl/protocol";
+import type { Message, Page } from "@biologue/protocol";
 
 export interface ConversationHistoryState {
   conversationId: string;

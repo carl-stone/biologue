@@ -15,7 +15,7 @@ Build once, then start the built workbench and managed Jupyter runtime:
 
 ```bash
 npm run build
-CARL_EXTERNAL_ORIGIN=https://machine.your-tailnet.ts.net npm run serve
+BIOLOGUE_EXTERNAL_ORIGIN=https://machine.your-tailnet.ts.net npm run serve
 ```
 
 Replace the example origin with the machine's Tailscale HTTPS address. From another
@@ -30,7 +30,7 @@ shutdown, but serves the built frontend without Vite or hot reload. It starts
 authenticated Jupyter internally unless `JUPYTER_URL` is supplied. Restarting the
 launcher restarts its managed kernels: history persists, but live objects do not.
 
-`CARL_EXTERNAL_ORIGIN` accepts one exact HTTPS origin, without a trailing slash or
+`BIOLOGUE_EXTERNAL_ORIGIN` accepts one exact HTTPS origin, without a trailing slash or
 path. The default remains local-only. Foreign browser origins, other remote Host
 values, and mutations missing the workbench header remain rejected. This setting
 does not provide authentication; access must remain behind the private proxy.
@@ -39,17 +39,17 @@ Jupyter and model credentials are never sent to the browser.
 ## Supplied Docker workspace
 
 Application commands run in `codex-universal`, while Tailscale runs on the host.
-`CARL_SOCKET` makes the application listen on a Unix socket in the shared workspace
+`BIOLOGUE_SOCKET` makes the application listen on a Unix socket in the shared workspace
 instead of a TCP port. Its parent directory must exist; the socket is restricted
 to its owner. Give Tailscale the host-side path:
 
 ```bash
-tailscale serve --bg unix:/root/workspace/carl-harness/.carl/serve/http.sock
+tailscale serve --bg unix:/root/workspace/biologue/.biologue/serve/http.sock
 ```
 
 The configured deployment runs as `biologue.service`, enabled at host startup.
 It uses `examples/sandbox` and its saved Pi configuration. Machine-specific
-settings, launcher scripts, and the process ID live in ignored `.carl/serve/`;
+settings, launcher scripts, and the process ID live in ignored `.biologue/serve/`;
 the unit is `/etc/systemd/system/biologue.service`.
 
 Host administration:

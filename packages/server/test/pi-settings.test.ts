@@ -7,15 +7,15 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { PiAdapter } from "../src/pi.ts";
 
 test("saved Pi model selection persists over environment defaults; explicit options still win", async () => {
-  const project = mkdtempSync(join(tmpdir(), "carl-pi-settings-"));
-  const stateDir = join(project, ".carl");
+  const project = mkdtempSync(join(tmpdir(), "biologue-pi-settings-"));
+  const stateDir = join(project, ".biologue");
   const agentDir = join(stateDir, "pi");
-  const previousProvider = process.env.CARL_PROVIDER;
-  const previousModel = process.env.CARL_MODEL;
+  const previousProvider = process.env.BIOLOGUE_PROVIDER;
+  const previousModel = process.env.BIOLOGUE_MODEL;
   let settings: SettingsManager | undefined;
   try {
-    delete process.env.CARL_PROVIDER;
-    delete process.env.CARL_MODEL;
+    delete process.env.BIOLOGUE_PROVIDER;
+    delete process.env.BIOLOGUE_MODEL;
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(
       join(agentDir, "settings.json"),
@@ -29,8 +29,8 @@ test("saved Pi model selection persists over environment defaults; explicit opti
       model: "gpt-6-astra",
       thinking: "medium",
     });
-    process.env.CARL_PROVIDER = "env-provider";
-    process.env.CARL_MODEL = "env-model";
+    process.env.BIOLOGUE_PROVIDER = "env-provider";
+    process.env.BIOLOGUE_MODEL = "env-model";
     assert.deepEqual(new PiAdapter(options).status(), {
       enabled: true,
       provider: "openai-codex",
@@ -46,10 +46,10 @@ test("saved Pi model selection persists over environment defaults; explicit opti
       { enabled: true, provider: "explicit-provider", model: "explicit-model", thinking: "medium" },
     );
   } finally {
-    if (previousProvider === undefined) delete process.env.CARL_PROVIDER;
-    else process.env.CARL_PROVIDER = previousProvider;
-    if (previousModel === undefined) delete process.env.CARL_MODEL;
-    else process.env.CARL_MODEL = previousModel;
+    if (previousProvider === undefined) delete process.env.BIOLOGUE_PROVIDER;
+    else process.env.BIOLOGUE_PROVIDER = previousProvider;
+    if (previousModel === undefined) delete process.env.BIOLOGUE_MODEL;
+    else process.env.BIOLOGUE_MODEL = previousModel;
     await settings?.flush();
     rmSync(project, { recursive: true, force: true });
   }

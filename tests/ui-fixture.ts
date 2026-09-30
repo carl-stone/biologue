@@ -44,8 +44,8 @@ export const initialSnapshot: Snapshot = {
 
 declare global {
   interface Window {
-    carlTestEmit: (event: AppEvent | { type: "snapshot"; snapshot: Snapshot }) => void;
-    carlTestConnect: (connected: boolean) => void;
+    biologueTestEmit: (event: AppEvent | { type: "snapshot"; snapshot: Snapshot }) => void;
+    biologueTestConnect: (connected: boolean) => void;
   }
 }
 type Request = { path: string; method: string; body: any; query: URLSearchParams };
@@ -94,11 +94,11 @@ export async function fixture(
       }
     }
     window.EventSource = FakeEventSource as unknown as typeof EventSource;
-    window.carlTestEmit = (event) =>
+    window.biologueTestEmit = (event) =>
       sources.forEach((source) =>
         source.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) })),
       );
-    window.carlTestConnect = (connected) =>
+    window.biologueTestConnect = (connected) =>
       sources.forEach((source) => {
         source.readyState = connected ? 1 : 0;
         if (connected) {
@@ -148,7 +148,7 @@ export async function fixture(
         event.execution,
       ];
     try {
-      await page.evaluate((value) => window.carlTestEmit(value), event);
+      await page.evaluate((value) => window.biologueTestEmit(value), event);
     } catch (error) {
       // A server update can finish while the client reloads. Its state above is
       // durable in the fixture; the new page receives it in its next snapshot.
@@ -346,6 +346,6 @@ export async function fixture(
       handler = next;
     },
     connect: (connected: boolean) =>
-      page.evaluate((value) => window.carlTestConnect(value), connected),
+      page.evaluate((value) => window.biologueTestConnect(value), connected),
   };
 }

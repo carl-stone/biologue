@@ -1,8 +1,8 @@
 import { resolve, join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-const project = resolve(process.env.CARL_PROJECT || "examples/sandbox");
-const agentDir = join(resolve(process.env.CARL_STATE_DIR || join(project, ".carl")), "pi");
+const project = resolve(process.env.BIOLOGUE_PROJECT || "examples/sandbox");
+const agentDir = join(resolve(process.env.BIOLOGUE_STATE_DIR || join(project, ".biologue")), "pi");
 const controller = new AbortController();
 const timeout = setTimeout(() => controller.abort(), 15 * 60_000);
 process.once("SIGINT", () => controller.abort());

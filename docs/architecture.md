@@ -353,7 +353,7 @@ Idle cache warming is disabled, so it does not initiate background paid requests
 
 ## Persistence, delivery, and compatibility
 
-The state directory contains `pi/sessions/` for Pi JSONL files, `carl.sqlite` for
+The state directory contains `pi/sessions/` for Pi JSONL files, `biologue.sqlite` for
 project/conversation metadata, notes, documents, executions, permissions, and
 run records, and `artifacts/` for captured output. Pi settings and optional
 model/auth configuration live under `pi/`; project `.pi/settings.json` is also

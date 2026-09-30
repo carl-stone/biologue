@@ -9,12 +9,12 @@ test("permission feedback reaches the agent and decision history survives reload
   const project = mkdtempSync(join(tmpdir(), "biologue-decisions-"));
   const options = {
     project,
-    stateDir: join(project, ".carl"),
+    stateDir: join(project, ".biologue"),
     repository: process.cwd(),
     kernel: { execute: async () => {}, interrupt: async () => {} },
   };
   let f = await createApp(options);
-  const headers = { "x-carl-client": "workbench" };
+  const headers = { "x-biologue-client": "workbench" };
   const input = {
     runId: "run",
     conversationId: "conversation",

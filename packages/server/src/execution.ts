@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Actor, Execution, ExecutionSummary, Language } from "@carl/protocol";
+import type { Actor, Execution, ExecutionSummary, Language } from "@biologue/protocol";
 import type { Events } from "./events.ts";
 import type { Store } from "./store.ts";
 import { digest } from "./documents.ts";

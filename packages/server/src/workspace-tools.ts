@@ -4,7 +4,7 @@ import { relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { z } from "zod";
 import type { Skill, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { AgentRun, Execution } from "@carl/protocol";
+import type { AgentRun, Execution } from "@biologue/protocol";
 import type { Documents } from "./documents.ts";
 import type { ExecutionService } from "./execution.ts";
 import type { Permissions } from "./permissions.ts";

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { AgentModel, AgentResources, AgentSettings, PermissionMode } from "@carl/protocol";
+import type { AgentModel, AgentResources, AgentSettings, PermissionMode } from "@biologue/protocol";
 import { api, useSnapshot, useResource, useWorkbench } from "../state.tsx";
 import { useAction, useProjectDraft } from "../ui.tsx";
 import { ProviderSettings, McpSettings } from "./ProviderSettings.tsx";

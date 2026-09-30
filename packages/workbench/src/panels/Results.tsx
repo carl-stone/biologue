@@ -19,7 +19,7 @@ import type {
   Page,
   InspectionResult,
   TableResult,
-} from "@carl/protocol";
+} from "@biologue/protocol";
 import { api, base, useWorkbench, useSnapshot, useResource, useOutputVersion } from "../state.tsx";
 import {
   Badge,

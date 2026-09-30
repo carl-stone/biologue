@@ -1,4 +1,4 @@
-import type { Execution, ExecutionSummary, Page } from "@carl/protocol";
+import type { Execution, ExecutionSummary, Page } from "@biologue/protocol";
 import type { Store } from "./store.ts";
 
 export function summarize({ code, ...record }: Execution): ExecutionSummary {
@@ -103,7 +103,9 @@ export class ExecutionRepository {
   }
   /** One legacy execution at a time; migrate payloads before removing the old record. */
   migrate(
-    migrateOutputs: (record: Execution & { outputs: import("@carl/protocol").Output[] }) => void,
+    migrateOutputs: (
+      record: Execution & { outputs: import("@biologue/protocol").Output[] },
+    ) => void,
   ) {
     while (true) {
       const row = this.store.db

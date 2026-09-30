@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentProvider, AuthFlow } from "@carl/protocol";
+import type { AgentProvider, AuthFlow } from "@biologue/protocol";
 import type { PiAdapter } from "./pi.ts";
 import { Conflict } from "./documents.ts";
 

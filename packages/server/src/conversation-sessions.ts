@@ -4,14 +4,14 @@ import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { Conversation, Message, Page, Attachment } from "@carl/protocol";
+import type { Conversation, Message, Page, Attachment } from "@biologue/protocol";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 
 /** Application metadata lives outside model-visible content, via Pi's message_end hook. */
-export type CarlMessage = AgentMessage & {
-  carl?: { inputId?: string; chatId?: string; runId?: string; contextVersion?: number };
+export type BiologueMessage = AgentMessage & {
+  biologue?: { inputId?: string; chatId?: string; runId?: string; contextVersion?: number };
 };
 type SessionReference = { file: string; sdkVersion: string; persisted: boolean };
 
@@ -97,23 +97,23 @@ export class ConversationSessions {
       const text = messageText(message);
       const match = remaining.findIndex((item) => item.role === message.role && item.text === text);
       const display = match >= 0 ? remaining.splice(match, 1)[0] : undefined;
-      const attributed: CarlMessage = {
+      const attributed: BiologueMessage = {
         ...message,
-        ...(display ? { carl: { chatId: display.id, runId: display.runId } } : {}),
+        ...(display ? { biologue: { chatId: display.id, runId: display.runId } } : {}),
       };
       manager.appendMessage(attributed as PiMessage);
     }
     // Preserve display-only messages too, including corrections lost by the old steering queue.
     for (const message of remaining) {
       manager.appendCustomMessageEntry(
-        "carl.legacy-chat",
+        "biologue.legacy-chat",
         `Recovered ${message.role} message:\n${message.text}`,
         false,
         { message },
       );
     }
     if (transcript.length || oldMessages.length)
-      manager.appendCustomEntry("carl.legacy-import", { version: 1, conversationId });
+      manager.appendCustomEntry("biologue.legacy-import", { version: 1, conversationId });
   }
 
   accept(
@@ -218,11 +218,11 @@ export class ConversationSessions {
     const manager = this.get(conversationId);
     for (const input of this.pending(conversationId)) {
       if (input.id === exceptInputId) continue;
-      const message: CarlMessage = {
+      const message: BiologueMessage = {
         role: "user",
         content: [{ type: "text", text: this.content(input).text }, ...this.content(input).images],
         timestamp: Date.parse(input.createdAt),
-        carl: { inputId: input.id, runId: input.runId },
+        biologue: { inputId: input.id, runId: input.runId },
       };
       manager.appendMessage(message as PiMessage);
     }
@@ -261,27 +261,27 @@ export class ConversationSessions {
     manager: SessionManager,
     entry: SessionEntry,
   ): Message | undefined {
-    if (entry.type === "custom_message" && entry.customType === "carl.legacy-chat") {
+    if (entry.type === "custom_message" && entry.customType === "biologue.legacy-chat") {
       const legacy = entry.details as { message: Message };
       return { ...legacy.message, delivery: "delivered" };
     }
     if (entry.type !== "message") return;
-    const message = entry.message as CarlMessage;
+    const message = entry.message as BiologueMessage;
     if (message.role !== "user" && message.role !== "assistant") return;
-    const input = message.carl?.inputId
-      ? this.store.get<Message>("input-receipt", message.carl.inputId)
+    const input = message.biologue?.inputId
+      ? this.store.get<Message>("input-receipt", message.biologue.inputId)
       : undefined;
-    const legacy = message.carl?.chatId
-      ? this.store.get<Message>("message", message.carl.chatId)
+    const legacy = message.biologue?.chatId
+      ? this.store.get<Message>("message", message.biologue.chatId)
       : undefined;
     const text = input?.text ?? messageText(message);
     if (!text) return;
     return {
-      id: input?.id ?? message.carl?.chatId ?? `${manager.getSessionId()}:${entry.id}`,
+      id: input?.id ?? message.biologue?.chatId ?? `${manager.getSessionId()}:${entry.id}`,
       conversationId,
       role: message.role,
       text,
-      runId: input?.runId ?? message.carl?.runId,
+      runId: input?.runId ?? message.biologue?.runId,
       createdAt: input?.createdAt ?? legacy?.createdAt ?? entry.timestamp,
       delivery: "delivered",
       entryId: entry.id,
@@ -316,7 +316,7 @@ export class ConversationSessions {
 
   private delivered(conversationId: string, entry: SessionEntry) {
     if (entry.type !== "message") return;
-    const inputId = (entry.message as CarlMessage).carl?.inputId;
+    const inputId = (entry.message as BiologueMessage).biologue?.inputId;
     if (inputId)
       this.store.db
         .prepare(`INSERT OR IGNORE INTO chat_delivered VALUES (?, ?)`)

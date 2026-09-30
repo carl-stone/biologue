@@ -26,7 +26,7 @@ import type {
   AgentSettings,
   AgentResources,
   AgentModel,
-} from "@carl/protocol";
+} from "@biologue/protocol";
 
 export { scientificRetention } from "../../pi-science/index.ts";
 import { createScientificExtension } from "../../pi-science/index.ts";
@@ -65,8 +65,8 @@ export class PiAdapter {
     this.settings =
       options.settingsManager ?? SettingsManager.create(options.project, this.agentDir);
     this.provider =
-      options.provider ?? this.settings.getDefaultProvider() ?? process.env.CARL_PROVIDER;
-    this.modelId = options.modelId ?? this.settings.getDefaultModel() ?? process.env.CARL_MODEL;
+      options.provider ?? this.settings.getDefaultProvider() ?? process.env.BIOLOGUE_PROVIDER;
+    this.modelId = options.modelId ?? this.settings.getDefaultModel() ?? process.env.BIOLOGUE_MODEL;
     // Idle cache warming makes paid requests; Biologue starts model work only on a user request.
     // The SDK reads this particular option from global settings, not overrides.
     this.settings.setCacheWarmingMode("off");
@@ -242,7 +242,7 @@ export class PiAdapter {
     const modelId = input.settings?.model ?? this.modelId;
     if (!provider || !modelId)
       throw new Error(
-        "Configure CARL_PROVIDER and CARL_MODEL, or defaultProvider and defaultModel in Pi settings, to enable the collaborator.",
+        "Configure BIOLOGUE_PROVIDER and BIOLOGUE_MODEL, or defaultProvider and defaultModel in Pi settings, to enable the collaborator.",
       );
     await this.settings.flush();
     const runtime = await this.modelRuntime();
@@ -279,7 +279,7 @@ export class PiAdapter {
         },
         ...(input.extensions ?? []),
         {
-          name: "carl-science",
+          name: "biologue-science",
           factory: createScientificExtension({
             ...input,
             stream: (...args) => session.agent.streamFunction(...args),

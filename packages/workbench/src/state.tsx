@@ -18,7 +18,7 @@ import type {
   Page,
   Message,
   PermissionRequest,
-} from "@carl/protocol";
+} from "@biologue/protocol";
 import { ConversationHistory, type ConversationHistoryState } from "./conversation-history.ts";
 import { DocumentSync, type PendingEdit } from "./document-sync.ts";
 
@@ -31,7 +31,7 @@ export async function api<T>(path: string, method = "GET", body?: unknown): Prom
   try {
     response = await fetch(`${base}/api${path}`, {
       method,
-      headers: { "Content-Type": "application/json", "X-Carl-Client": "workbench" },
+      headers: { "Content-Type": "application/json", "X-Biologue-Client": "workbench" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -237,7 +237,7 @@ class WorkbenchStore {
         this.update({ file });
         if (this.project) {
           try {
-            localStorage.setItem(`carl-active-file:${this.project}`, file);
+            localStorage.setItem(`biologue-active-file:${this.project}`, file);
           } catch {
             /* Document recovery storage reports persistence failures separately. */
           }
@@ -246,7 +246,7 @@ class WorkbenchStore {
       setConversation: (conversation) => {
         this.update({ conversation });
         try {
-          localStorage.setItem(`carl-active-conversation:${this.project}`, conversation);
+          localStorage.setItem(`biologue-active-conversation:${this.project}`, conversation);
         } catch {
           /* Keep the current selection in memory. */
         }
@@ -389,7 +389,7 @@ class WorkbenchStore {
       },
       persist: (path, edit) => {
         if (!this.project) return;
-        const key = `carl-document:${this.project}:${path}`;
+        const key = `biologue-document:${this.project}:${path}`;
         try {
           if (edit) localStorage.setItem(key, JSON.stringify(edit));
           else localStorage.removeItem(key);
@@ -426,9 +426,30 @@ class WorkbenchStore {
     let preferredConversation = this.state.conversation;
     if (this.project !== snapshot.project) {
       try {
-        preferred = localStorage.getItem(`carl-active-file:${snapshot.project}`) ?? preferred;
+        const migrated = `biologue-storage:${snapshot.project}`;
+        if (!localStorage.getItem(migrated)) {
+          // Preserve drafts and selections from earlier application namespaces.
+          for (const key of Object.keys(localStorage)) {
+            const match = key.match(
+              /^[\w-]+?-(active-file|active-conversation|document|drafts):(.*)$/,
+            );
+            if (!match || key.startsWith("biologue-")) continue;
+            const [, kind, path] = match;
+            if (
+              kind === "document"
+                ? !path.startsWith(`${snapshot.project}:`)
+                : path !== snapshot.project
+            )
+              continue;
+            const target = `biologue-${kind}:${path}`;
+            if (localStorage.getItem(target) === null)
+              localStorage.setItem(target, localStorage.getItem(key)!);
+          }
+          localStorage.setItem(migrated, "1");
+        }
+        preferred = localStorage.getItem(`biologue-active-file:${snapshot.project}`) ?? preferred;
         preferredConversation =
-          localStorage.getItem(`carl-active-conversation:${snapshot.project}`) ??
+          localStorage.getItem(`biologue-active-conversation:${snapshot.project}`) ??
           preferredConversation;
       } catch {
         /* Use the default file. */
@@ -451,9 +472,9 @@ class WorkbenchStore {
     if (this.project !== snapshot.project) {
       this.project = snapshot.project;
       try {
-        const legacy = JSON.parse(localStorage.getItem(`carl-drafts:${this.project}`) || "{}");
+        const legacy = JSON.parse(localStorage.getItem(`biologue-drafts:${this.project}`) || "{}");
         const restored: Record<string, PendingEdit> = {};
-        const prefix = `carl-document:${this.project}:`;
+        const prefix = `biologue-document:${this.project}:`;
         for (const key of Object.keys(localStorage))
           if (key.startsWith(prefix))
             legacy[key.slice(prefix.length)] = JSON.parse(localStorage.getItem(key)!);
@@ -465,7 +486,7 @@ class WorkbenchStore {
           }
         }
         this.documents.restore(restored);
-        localStorage.removeItem(`carl-drafts:${this.project}`);
+        localStorage.removeItem(`biologue-drafts:${this.project}`);
       } catch {
         this.error(
           new Error("Could not restore local edits. Saved working documents are still available."),

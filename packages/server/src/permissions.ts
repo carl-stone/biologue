@@ -4,7 +4,7 @@ import type {
   PermissionDecision,
   PermissionDecisionSummary,
   AgentRun,
-} from "@carl/protocol";
+} from "@biologue/protocol";
 import type { Events } from "./events.ts";
 import type { Store } from "./store.ts";
 

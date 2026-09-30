@@ -22,7 +22,7 @@ import {
   useOutputVersion,
   type PanelId,
 } from "./state.tsx";
-import type { DisplayOutput, Page } from "@carl/protocol";
+import type { DisplayOutput, Page } from "@biologue/protocol";
 import { Dialog, Spinner, modifier } from "./ui.tsx";
 import { ProjectPicker } from "./ProjectPicker.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";

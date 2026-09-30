@@ -1,5 +1,5 @@
 [package]
-name = "carl"
+name = "biologue"
 version = "0.1.0"
 description = "A scientific workspace"
 edition = "2021"

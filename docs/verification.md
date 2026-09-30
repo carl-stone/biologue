@@ -6,7 +6,7 @@ Verified in `codex-universal` on September 29, 2026, using Node 22.22.2 and Pi 0
 | ----------------------------------------------------- | ------------------------------------------- |
 | TypeScript check and production frontend/server build | Passed                                      |
 | Core service and AgentSession tests                   | 82 passed                                   |
-| Live Jupyter integration with `CARL_TEST_R=1`         | Passed with Python and Ark/R                |
+| Live Jupyter integration with `BIOLOGUE_TEST_R=1`     | Passed with Python and Ark/R                |
 | Chromium workbench and UI regressions                 | 21 scenarios passed, including axe checks   |
 | Tauri `cargo check`                                   | Passed September 26; Rust code unchanged    |
 | npm dependency audit                                  | No vulnerabilities reported at installation |

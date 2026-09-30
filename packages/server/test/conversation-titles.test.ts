@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Store } from "../src/store.ts";
 import { Events } from "../src/events.ts";
 import { ContextService } from "../src/context.ts";
-import type { Conversation, Message } from "@carl/protocol";
+import type { Conversation, Message } from "@biologue/protocol";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 test("automatic titles update periodically, deduplicate requests, and respect manual renames", async () => {

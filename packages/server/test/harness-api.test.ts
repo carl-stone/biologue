@@ -7,10 +7,10 @@ import { createApp } from "../src/app.ts";
 import { PiAdapter } from "../src/pi.ts";
 import { scriptedModel } from "./helpers/pi-fixture.ts";
 
-const headers = { "x-carl-client": "workbench" };
+const headers = { "x-biologue-client": "workbench" };
 test("harness API persists conversation settings, rejects unavailable models and redacts MCP credentials", async () => {
   const project = mkdtempSync(join(tmpdir(), "biologue-harness-"));
-  const stateDir = join(project, ".carl");
+  const stateDir = join(project, ".biologue");
   const model = await scriptedModel();
   const pi = new PiAdapter({ project, stateDir, ...model.options });
   const f = await createApp({

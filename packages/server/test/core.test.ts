@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Document, Execution, Language, Output } from "@carl/protocol";
+import type { Document, Execution, Language, Output } from "@biologue/protocol";
 import { Store } from "../src/store.ts";
 import { Events } from "../src/events.ts";
 import { Documents, digest } from "../src/documents.ts";
@@ -14,7 +14,7 @@ import { Permissions } from "../src/permissions.ts";
 import { setTimeout as delay } from "node:timers/promises";
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "carl-core-"));
+  const root = mkdtempSync(join(tmpdir(), "biologue-core-"));
   const store = new Store(join(root, "state.sqlite"));
   const events = new Events();
   return {
@@ -161,7 +161,7 @@ test("unfinished work is marked abandoned after restart and never replayed", () 
 
 test("document revisions preserve exact buffers and reject stale edits, disk changes, and external paths", () => {
   const f = fixture();
-  const outside = mkdtempSync(join(tmpdir(), "carl-outside-"));
+  const outside = mkdtempSync(join(tmpdir(), "biologue-outside-"));
   try {
     writeFileSync(join(f.root, "analysis.py"), "x = 1\n");
     writeFileSync(join(outside, "private.py"), "private");
@@ -333,7 +333,7 @@ test("document synchronization retries are idempotent and preserve exact revisio
 test("output capture sends bounded events without rewriting execution history or embedding payloads", async () => {
   const f = fixture();
   try {
-    const events: import("@carl/protocol").AppEvent[] = [];
+    const events: import("@biologue/protocol").AppEvent[] = [];
     f.events.subscribe((event) => events.push(event));
     const kernel: KernelBackend = {
       interrupt: async () => {},

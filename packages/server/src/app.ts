@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ServerResponse } from "node:http";
 import { z } from "zod";
-import type { Snapshot, Execution, Document, Conversation, AgentRun } from "@carl/protocol";
+import type { Snapshot, Execution, Document, Conversation, AgentRun } from "@biologue/protocol";
 import { OutputService } from "./outputs.ts";
 import { Store } from "./store.ts";
 import { Events } from "./events.ts";
@@ -47,7 +47,7 @@ export async function createApp(options: AppOptions) {
     throw new Error("externalOrigin must be an HTTPS origin without a path.");
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 6_000_000 });
   const events = new Events();
-  const store = new Store(resolve(options.stateDir, "carl.sqlite"));
+  const store = new Store(resolve(options.stateDir, "biologue.sqlite"));
   const documents = new Documents(options.project, store, events, true);
   const context = new ContextService(store, events);
   const kernel =
@@ -88,8 +88,8 @@ export async function createApp(options: AppOptions) {
     "https://tauri.localhost",
   ]);
   for (const host of ["127.0.0.1", "localhost"]) {
-    allowedOrigins.add(`http://${host}:${process.env.CARL_PORT || 4317}`);
-    allowedOrigins.add(`http://${host}:${process.env.CARL_UI_PORT || 5173}`);
+    allowedOrigins.add(`http://${host}:${process.env.BIOLOGUE_PORT || 4317}`);
+    allowedOrigins.add(`http://${host}:${process.env.BIOLOGUE_UI_PORT || 5173}`);
   }
   if (externalOrigin) allowedOrigins.add(externalOrigin.origin);
 
@@ -106,13 +106,13 @@ export async function createApp(options: AppOptions) {
     if (origin) reply.header("Access-Control-Allow-Origin", origin).header("Vary", "Origin");
     if (request.method === "OPTIONS")
       return reply
-        .header("Access-Control-Allow-Headers", "Content-Type, X-Carl-Client")
+        .header("Access-Control-Allow-Headers", "Content-Type, X-Biologue-Client")
         .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
         .code(204)
         .send();
     if (
       !["GET", "HEAD"].includes(request.method) &&
-      request.headers["x-carl-client"] !== "workbench"
+      request.headers["x-biologue-client"] !== "workbench"
     )
       return reply.code(403).send({ error: "Missing workbench request header." });
   });

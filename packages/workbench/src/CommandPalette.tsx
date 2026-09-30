@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Conversation } from "@carl/protocol";
+import type { Conversation } from "@biologue/protocol";
 import { api, useSnapshot, useWorkbench, type PanelId } from "./state.tsx";
 import { Dialog, useAction } from "./ui.tsx";
 

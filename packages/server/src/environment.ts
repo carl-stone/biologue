@@ -1,4 +1,4 @@
-import type { Language, Execution } from "@carl/protocol";
+import type { Language, Execution } from "@biologue/protocol";
 import type { Events } from "./events.ts";
 import type { ExecutionService } from "./execution.ts";
 import { adapters } from "./adapters.ts";

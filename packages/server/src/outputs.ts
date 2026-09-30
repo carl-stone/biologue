@@ -17,7 +17,7 @@ import type {
   Output,
   OutputReference,
   Page,
-} from "@carl/protocol";
+} from "@biologue/protocol";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 import { decodeInspection, decodeTable } from "./adapters.ts";

@@ -78,7 +78,7 @@ export function createScientificExtension(input: ScienceIntegration): ExtensionF
             ...result,
             details: {
               ...(result.details && typeof result.details === "object" ? result.details : {}),
-              carl: { researchContextVersion: input.research.version },
+              biologue: { researchContextVersion: input.research.version },
             },
           },
         };

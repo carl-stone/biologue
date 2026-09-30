@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Document } from "@carl/protocol";
+import type { Document } from "@biologue/protocol";
 import { DocumentSync, type PendingEdit } from "../../workbench/src/document-sync.ts";
 
 const original: Document = {

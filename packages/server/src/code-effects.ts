@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { Parser, Language as Grammar, type Node } from "web-tree-sitter";
-import type { Language } from "@carl/protocol";
+import type { Language } from "@biologue/protocol";
 
 /** Syntactic evidence, never a proof of purity or of a branch having executed. */
 export interface CodeEffects {

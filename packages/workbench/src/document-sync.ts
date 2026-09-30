@@ -1,4 +1,4 @@
-import type { Document } from "@carl/protocol";
+import type { Document } from "@biologue/protocol";
 
 export interface PendingEdit {
   content: string;

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Execution, Language } from "@carl/protocol";
+import type { Execution, Language } from "@biologue/protocol";
 import { analyzeCode } from "../src/code-effects.ts";
 import { ExecutionService, type KernelBackend } from "../src/execution.ts";
 import { OutputService } from "../src/outputs.ts";

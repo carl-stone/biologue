@@ -1,5 +1,5 @@
 {
-  "name": "@carl/workbench",
+  "name": "@biologue/workbench",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@carl/protocol": "*",
+    "@biologue/protocol": "*",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/language": "^6.11.3",
