@@ -84,7 +84,7 @@ test("a changed document cannot be approved from an outdated inline or expanded 
 });
 
 test("console retrieval failures can be retried without running code again", async ({ page }) => {
-  const ui = await fixture(page, { executions: [execution] });
+  const ui = await fixture(page, { executions: [{ ...execution, document: undefined }] });
   let listFailed = true,
     sourceFailed = true,
     fullFailed = true;
@@ -140,7 +140,6 @@ test("console retrieval failures can be retried without running code again", asy
   fullFailed = false;
   await page.getByRole("button", { name: "Retry full output", exact: true }).click();
   await expect(page.locator(".output-text")).toHaveText("The complete stored output.");
-  await page.locator(".execution > details > summary").click();
   await expect(page.getByRole("button", { name: "Retry loading code", exact: true })).toBeVisible();
   sourceFailed = false;
   await page.getByRole("button", { name: "Retry loading code", exact: true }).click();
@@ -150,20 +149,15 @@ test("console retrieval failures can be retried without running code again", asy
   ).toHaveLength(0);
 });
 
-test("earlier output stays beside its recorded code, with source revisions only in details", async ({
-  page,
-}) => {
+test("editor executions retain output without echoing source or metadata", async ({ page }) => {
   await fixture(page, { executions: [execution] });
   await page.goto("/");
   await expect(page.locator(".editor-footer")).not.toContainText(/Revision|Finished|View output/);
   await page
     .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
     .fill("print('new code')");
-  await expect(page.locator(".older-code")).toHaveText("Earlier code");
-  await expect(page.locator(".console-code")).toContainText("print('hello')");
-  await page.locator(".execution > details > summary").click();
-  await page.locator(".provenance > summary").click();
-  await expect(page.locator(".provenance")).toContainText("revision 1");
+  await expect(page.locator(".older-code, .console-code, .execution details")).toHaveCount(0);
+  await expect(page.locator("#execution-recorded-run")).toHaveCount(1);
 });
 
 test("panel shortcuts move typing focus and retain drafts across narrow layouts", async ({

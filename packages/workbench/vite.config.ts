@@ -8,7 +8,10 @@ export default defineConfig({
   server: {
     port: Number(process.env.CARL_UI_PORT || 5173),
     strictPort: true,
-    proxy: { "/api": `http://127.0.0.1:${process.env.CARL_PORT || 4317}` },
+    proxy: {
+      "/api": `http://127.0.0.1:${process.env.CARL_PORT || 4317}`,
+      "/projects": `http://127.0.0.1:${process.env.CARL_PORT || 4317}`,
+    },
   },
   build: {
     outDir: "dist",

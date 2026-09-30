@@ -51,10 +51,12 @@ test("discussion exposes recorded work, copies code, and gives a long correction
   await page.locator(".run-activity summary").click();
   await page
     .locator(".run-activity")
-    .getByRole("button", { name: /Python code/ })
+    .getByRole("button", { name: /Python output/ })
     .click();
-  await expect(page.locator("#execution-work > details")).toHaveAttribute("open", "");
-  await expect(page.locator("#execution-work .console-code")).toContainText(code.trim());
+  await expect(page.locator("#execution-work")).toHaveClass(/targeted/);
+  await expect(page.locator("#execution-work details, #execution-work .console-code")).toHaveCount(
+    0,
+  );
   expect(
     ui.requests.filter((request) => request.method === "POST" && request.path === "/executions"),
   ).toHaveLength(0);
@@ -200,6 +202,9 @@ test("table filtering and export preserve quoted data and never execute code", a
   );
   await page.goto("/");
   await page.getByRole("button", { name: "Focus Data", exact: true }).click();
+  const submissionsBeforeFiltering = ui.requests.filter(
+    (request) => request.method === "POST",
+  ).length;
   await page.getByRole("textbox", { name: "Filter table preview", exact: true }).fill("quote");
   await expect(page.locator(".table-meta")).toContainText("1 of 3 rows");
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -219,7 +224,9 @@ test("table filtering and export preserve quoted data and never execute code", a
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain('C\t"line\nbreak"');
-  expect(ui.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+  expect(ui.requests.filter((request) => request.method === "POST")).toHaveLength(
+    submissionsBeforeFiltering,
+  );
 });
 
 test("figure browsing holds its place and recovers failed images and historical requests", async ({

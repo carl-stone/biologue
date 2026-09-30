@@ -190,10 +190,17 @@ export interface Snapshot {
   permissions: PermissionRequest[];
   permissionHistory?: PermissionDecisionSummary[];
   sessions: SessionInfo[];
-  agent: { enabled: boolean; provider?: string; model?: string };
+  agent: { enabled: boolean; provider?: string; model?: string; thinking?: string };
   layout?: unknown;
 }
+export interface AgentModel {
+  provider: string;
+  id: string;
+  name: string;
+  thinkingLevels: string[];
+}
 export type AppEvent =
+  | { type: "agent-settings"; agent: Snapshot["agent"] }
   | { type: "execution"; execution: ExecutionSummary }
   | { type: "outputs"; executionId: string; language: Language }
   | { type: "document"; document: Document }

@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -22,6 +23,7 @@ Current project notes remain the scientist's account; summaries must not overrid
 export interface PiOptions {
   project: string;
   stateDir: string;
+  authDir?: string;
   provider?: string;
   modelId?: string;
   modelRuntime?: ModelRuntime;
@@ -39,8 +41,8 @@ export interface CreateScientificSession {
 
 /** AgentSession owns the loop, history projection, retries, queues and compaction. */
 export class PiAdapter {
-  readonly provider?: string;
-  readonly modelId?: string;
+  provider?: string;
+  modelId?: string;
   private runtime?: Promise<ModelRuntime>;
   private agentDir: string;
   private settings: SettingsManager;
@@ -49,8 +51,8 @@ export class PiAdapter {
     this.settings =
       options.settingsManager ?? SettingsManager.create(options.project, this.agentDir);
     this.provider =
-      options.provider ?? process.env.CARL_PROVIDER ?? this.settings.getDefaultProvider();
-    this.modelId = options.modelId ?? process.env.CARL_MODEL ?? this.settings.getDefaultModel();
+      options.provider ?? this.settings.getDefaultProvider() ?? process.env.CARL_PROVIDER;
+    this.modelId = options.modelId ?? this.settings.getDefaultModel() ?? process.env.CARL_MODEL;
     // Idle cache warming makes paid requests; Biologue starts model work only on a user request.
     // The SDK reads this particular option from global settings, not overrides.
     this.settings.setCacheWarmingMode("off");
@@ -61,13 +63,46 @@ export class PiAdapter {
       enabled: !!(this.provider && this.modelId),
       provider: this.provider,
       model: this.modelId,
+      thinking: this.settings.getDefaultThinkingLevel() ?? "medium",
     };
   }
   private modelRuntime(): Promise<ModelRuntime> {
     return (this.runtime ??= ModelRuntime.create({
-      authPath: join(this.agentDir, "auth.json"),
+      authPath: join(this.options.authDir ?? this.agentDir, "auth.json"),
       modelsPath: join(this.agentDir, "models.json"),
     }));
+  }
+  async models() {
+    const runtime = await this.modelRuntime();
+    await runtime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(10_000) });
+    const available = await runtime.getAvailable(undefined, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    return available.map((model) => ({
+      provider: model.provider,
+      id: model.id,
+      name: model.name,
+      thinkingLevels: getSupportedThinkingLevels(model),
+    }));
+  }
+  async configure(provider: string, modelId: string, thinking: ThinkingLevel) {
+    const runtime = await this.modelRuntime();
+    const available = await runtime.getAvailable(provider);
+    const model = available.find((item) => item.id === modelId);
+    if (!model)
+      throw Object.assign(new Error("This model is not available with your credentials."), {
+        statusCode: 400,
+      });
+    if (!getSupportedThinkingLevels(model).includes(thinking))
+      throw Object.assign(new Error("This thinking level is not supported by this model."), {
+        statusCode: 400,
+      });
+    this.settings.setDefaultModelAndProvider(provider, modelId);
+    this.settings.setDefaultThinkingLevel(thinking);
+    await this.settings.flush();
+    this.provider = provider;
+    this.modelId = modelId;
+    return this.status();
   }
   async conversationTitle(messages: Message[]): Promise<string> {
     const runtime = await this.modelRuntime();
@@ -207,6 +242,7 @@ export class PiAdapter {
       cwd: this.options.project,
       agentDir: this.agentDir,
       model,
+      thinkingLevel: this.settings.getDefaultThinkingLevel() ?? "medium",
       modelRuntime: runtime,
       settingsManager: this.settings,
       sessionManager: input.manager,

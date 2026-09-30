@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { PiAdapter } from "../src/pi.ts";
 
-test("saved Pi model selection enables Carl and explicit configuration still wins", async () => {
+test("saved Pi model selection persists over environment defaults; explicit options still win", async () => {
   const project = mkdtempSync(join(tmpdir(), "carl-pi-settings-"));
   const stateDir = join(project, ".carl");
   const agentDir = join(stateDir, "pi");
@@ -27,13 +27,15 @@ test("saved Pi model selection enables Carl and explicit configuration still win
       enabled: true,
       provider: "openai-codex",
       model: "gpt-6-astra",
+      thinking: "medium",
     });
     process.env.CARL_PROVIDER = "env-provider";
     process.env.CARL_MODEL = "env-model";
     assert.deepEqual(new PiAdapter(options).status(), {
       enabled: true,
-      provider: "env-provider",
-      model: "env-model",
+      provider: "openai-codex",
+      model: "gpt-6-astra",
+      thinking: "medium",
     });
     assert.deepEqual(
       new PiAdapter({
@@ -41,7 +43,7 @@ test("saved Pi model selection enables Carl and explicit configuration still win
         provider: "explicit-provider",
         modelId: "explicit-model",
       }).status(),
-      { enabled: true, provider: "explicit-provider", model: "explicit-model" },
+      { enabled: true, provider: "explicit-provider", model: "explicit-model", thinking: "medium" },
     );
   } finally {
     if (previousProvider === undefined) delete process.env.CARL_PROVIDER;

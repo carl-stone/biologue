@@ -174,7 +174,26 @@ export async function fixture(
     let result: unknown = { ok: true };
     if (request.path === "/snapshot")
       result = { ...state, documents: state.documents.filter((doc) => !doc.savedAs) };
-    else if (request.path.startsWith("/permissions/") && request.method === "GET")
+    else if (request.path === "/agent/models")
+      result = [
+        {
+          id: "gpt-6-luna",
+          name: "gpt-6-luna",
+          provider: "openai-codex",
+          thinkingLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          id: "gpt-6-astra",
+          name: "gpt-6-astra",
+          provider: "openai-codex",
+          thinkingLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ];
+    else if (request.path === "/agent/settings") {
+      state.agent = { enabled: true, ...request.body };
+      result = state.agent;
+      await emit({ type: "agent-settings", agent: state.agent });
+    } else if (request.path.startsWith("/permissions/") && request.method === "GET")
       result = permissionRecords.get(request.path.split("/")[2]);
     else if (/^\/conversations\/[^/]+\/messages$/.test(request.path)) {
       const id = request.path.split("/")[2];

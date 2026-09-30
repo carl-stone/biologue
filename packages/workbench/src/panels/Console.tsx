@@ -1,25 +1,9 @@
 import { memo, useEffect, useRef, useState } from "react";
-import {
-  ArrowDown,
-  ArrowUpRight,
-  ChevronRight,
-  Image,
-  Play,
-  Square,
-  Table2,
-  MoreHorizontal,
-} from "lucide-react";
+import { ArrowDown, ArrowUpRight, Image, Play, Square, Table2, MoreHorizontal } from "lucide-react";
 import type { Execution, ExecutionSummary, Output, DisplayOutput, Page } from "@carl/protocol";
 import { api, useWorkbench, useSnapshot, useResource, useOutputVersion } from "../state.tsx";
 import { stripAnsi } from "../outputs.ts";
-import {
-  CopyButton,
-  Spinner,
-  languageName,
-  useAction,
-  useFollowOutput,
-  useProjectDraft,
-} from "../ui.tsx";
+import { Spinner, languageName, useAction, useFollowOutput, useProjectDraft } from "../ui.tsx";
 
 const statuses: Record<Execution["status"], string> = {
   queued: "Queued",
@@ -86,19 +70,9 @@ function OutputView({ output, execution }: { output: DisplayOutput; execution: E
 }
 
 const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSummary }) {
-  const { connected, executionTarget, expandExecution } = useWorkbench(
-    "connected",
-    "executionTarget",
-    "expandExecution",
-  );
-  const { documents } = useSnapshot("documents");
-  const currentDocument = documents.find((doc) => doc.path === item.document?.path);
+  const { connected, executionTarget } = useWorkbench("connected", "executionTarget");
   const action = useAction();
   const targeted = executionTarget === item.id;
-  const [expanded, setExpanded] = useState(targeted && expandExecution);
-  useEffect(() => {
-    if (targeted && expandExecution) setExpanded(true);
-  }, [targeted, expandExecution]);
   const version = useOutputVersion(item.id);
   const [before, setBefore] = useState<string>();
   const page = useResource<Page<DisplayOutput>>(
@@ -106,15 +80,14 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
     version,
   );
   const outputs = page.data?.items ?? [];
-  const source = useResource<Execution>(`/executions/${item.id}`);
+  const echo = item.actor === "human" && !item.document && item.purpose === "analysis";
+  const source = useResource<Execution>(echo ? `/executions/${item.id}` : null);
   const pending = ["running", "queued"].includes(item.status);
-  const duration =
-    item.startedAt && item.finishedAt
-      ? (new Date(item.finishedAt).getTime() - new Date(item.startedAt).getTime()) / 1000
-      : null;
   return (
     <article className={`execution ${targeted ? "targeted" : ""}`} id={`execution-${item.id}`}>
-      {(item.actor !== "human" || pending || item.status !== "succeeded") && (
+      {((item.actor !== "human" && outputs.length > 0) ||
+        pending ||
+        item.status !== "succeeded") && (
         <div className="execution-label">
           {item.actor !== "human" && (
             <span>
@@ -142,70 +115,25 @@ const ExecutionItem = memo(function ExecutionItem({ item }: { item: ExecutionSum
           )}
         </div>
       )}
-      <pre className="console-code">
-        {(source.data?.code ?? item.codePreview ?? "").split("\n").map((line, index) => (
-          <span className="console-code-line" key={index}>
-            <span className="console-prompt" aria-hidden="true">
-              {index ? "" : item.language === "r" ? ">" : ">>>"}
+      {echo && (
+        <pre className="console-code">
+          {(source.data?.code ?? item.codePreview ?? "").split("\n").map((line, index) => (
+            <span className="console-code-line" key={index}>
+              <span className="console-prompt" aria-hidden="true">
+                {index ? "" : item.language === "r" ? ">" : ">>>"}
+              </span>
+              {line}
+              {"\n"}
             </span>
-            {line}
-            {"\n"}
-          </span>
-        ))}
-      </pre>
+          ))}
+        </pre>
+      )}
       {source.error && (
         <div className="inline-error" role="status">
           <p>{source.error}</p>
           <button onClick={source.retry}>Retry loading code</button>
         </div>
       )}
-      <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-        <summary>
-          <ChevronRight size={13} />
-          <span>{item.document ? item.document.path.split("/").pop() : "Code details"}</span>
-          {item.document &&
-            currentDocument &&
-            currentDocument.version !== item.document.version && (
-              <span className="older-code">Earlier code</span>
-            )}
-        </summary>
-        <div className="code-record-heading">
-          <span>Recorded code</span>
-          {source.data && <CopyButton text={source.data.code} />}
-        </div>
-        <details className="provenance">
-          <summary>Execution details</summary>
-          <dl>
-            <dt>Submitted</dt>
-            <dd>{new Date(item.createdAt).toLocaleString()}</dd>
-            {duration !== null && (
-              <>
-                <dt>Duration</dt>
-                <dd>{duration.toFixed(1)}s</dd>
-              </>
-            )}
-            {item.document && (
-              <>
-                <dt>Source</dt>
-                <dd>
-                  {item.document.path} · revision {item.document.version}
-                  {item.document.selection ? " · selection" : ""}
-                </dd>
-              </>
-            )}
-            <dt>Execution</dt>
-            <dd>{item.id}</dd>
-            <dt>SHA-256</dt>
-            <dd>{item.codeHash}</dd>
-            {item.kernelId && (
-              <>
-                <dt>Kernel</dt>
-                <dd>{item.kernelId}</dd>
-              </>
-            )}
-          </dl>
-        </details>
-      </details>
       {page.error && (
         <div className="inline-error" role="status">
           <p>{page.error}</p>
@@ -318,7 +246,7 @@ export function Console() {
     <div className="pane console">
       <div className="pane-toolbar console-toolbar">
         <span className={`status-dot ${pending.length ? "waiting" : connected ? "online" : ""}`} />
-        <span>{languageName(language)} console</span>
+        <span>{languageName(language)}</span>
         {pending.length > 0 && <span className="small-note">Running code…</span>}
         <span className="spacer" />
         <details
@@ -345,9 +273,6 @@ export function Console() {
               />
               Include object checks
             </label>
-            <p>
-              Show the code Biologue and the Environment panel use to inspect variables and tables.
-            </p>
           </div>
         </details>
       </div>

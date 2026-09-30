@@ -2,7 +2,7 @@ import { OutputService } from "../../src/outputs.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -447,6 +447,43 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
       await new Promise((done) => setTimeout(done, 500));
       await execution.cancel(long.id);
       assert.equal((await execution.wait(long.id)).status, "interrupted");
+      // A selected folder gets its own kernel and working directory under the Jupyter root.
+      const otherProject = join(root, "other-project");
+      mkdirSync(otherProject);
+      const other = await createApp({
+        project: otherProject,
+        stateDir: join(otherProject, ".carl"),
+        repository: process.cwd(),
+        jupyterRoot: root,
+        jupyterUrl: url,
+        jupyterToken: token,
+      });
+      try {
+        const marker = await execute("python", "project_marker = 'original'");
+        assert.equal(marker.status, "succeeded");
+        const otherRecord = await other.execution.wait(
+          other.execution.submit({
+            language: "python",
+            actor: "human",
+            code: "import os\nprint(os.getcwd())\nprint('project_marker' in globals())\nproject_marker = 'other'",
+          }).id,
+        );
+        assert.equal(otherRecord.status, "succeeded", otherRecord.error);
+        const otherText = other.outputs
+          .visible({ executionId: otherRecord.id })
+          .items.map((item) => item.preview)
+          .join("");
+        assert.ok(otherText.includes(otherProject), otherText);
+        assert.ok(otherText.includes("False"), otherText);
+        const retained = await execute("python", "print(project_marker)");
+        assert.ok(
+          instance.outputs
+            .visible({ executionId: retained.id })
+            .items.some((item) => item.preview.includes("original")),
+        );
+      } finally {
+        await other.app.close();
+      }
       kernel.dispose();
       const reconnect = new JupyterKernels(root, url, token);
       try {

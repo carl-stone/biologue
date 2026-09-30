@@ -4,7 +4,6 @@ import { themeLight, type SerializedDockview } from "dockview";
 import {
   Check,
   CircleHelp,
-  FlaskConical,
   FolderOpen,
   LayoutTemplate,
   Maximize2,
@@ -24,6 +23,7 @@ import {
 } from "./state.tsx";
 import type { DisplayOutput, Page } from "@carl/protocol";
 import { Dialog, Spinner, modifier } from "./ui.tsx";
+import { ProjectPicker } from "./ProjectPicker.tsx";
 import { Chat } from "./panels/Chat.tsx";
 import { Editor } from "./panels/Editor.tsx";
 import { Console } from "./panels/Console.tsx";
@@ -134,12 +134,19 @@ export function App() {
   const [maximized, setMaximized] = useState(false);
   const [isArranging, setIsArranging] = useState(false);
   const [help, setHelp] = useState(false);
+  const [projects, setProjects] = useState(false);
   const [layoutMode, setLayoutMode] = useState(mode.current);
   const plotVersion = useOutputVersion(wb.language);
   const plotPage = useResource<Page<DisplayOutput>>(
     wb.ready ? `/outputs?language=${wb.language}&kind=plots&limit=1` : null,
     plotVersion,
   );
+  useEffect(() => {
+    if (!wb.ready || !wb.connected) return;
+    void api("/environment", "POST", { language: wb.language }).catch((error) =>
+      wb.setError(error.message),
+    );
+  }, [wb.ready, wb.connected, wb.language]);
   const revealedPlots = useRef(new Set<string>());
   const migrateEmptyPlots = useRef(true);
   const [layoutReady, setLayoutReady] = useState(0);
@@ -152,8 +159,14 @@ export function App() {
   );
   const reviewCount = reviewRequests.length;
   function updateHeader(group: WorkspaceApi["groups"][number]) {
-    const hidden = !arranging.current || mode.current === "narrow";
-    if (group.header.hidden === hidden) return;
+    const hidden = mode.current === "narrow" || (!arranging.current && group.panels.length === 1);
+    const height = group.panels.length === 1 ? "14px" : "32px";
+    if (
+      group.header.hidden === hidden &&
+      group.element.style.getPropertyValue("--dv-tabs-and-actions-container-height") === height
+    )
+      return;
+    group.element.style.setProperty("--dv-tabs-and-actions-container-height", height);
     group.header.hidden = hidden;
     group.relayout();
   }
@@ -355,10 +368,15 @@ export function App() {
       </a>
       <header className="app-header">
         <div className="brand">biologue</div>
-        <div className="project-name" title={wb.snapshot?.project}>
+        <button
+          className="project-name text-button"
+          title={wb.snapshot?.project}
+          aria-label="Open project folder"
+          onClick={() => setProjects(true)}
+        >
           <FolderOpen size={14} aria-hidden="true" />
           <span>{wb.snapshot?.project.split("/").pop() || "Opening workspace"}</span>
-        </div>
+        </button>
         <div className="header-actions">
           {reviewCount > 0 && (
             <button className="review-badge" onClick={() => wb.revealPermission(reviewRequests[0])}>
@@ -387,10 +405,7 @@ export function App() {
       {!wb.connected && wb.snapshot && (
         <div className="connection-banner" role="status">
           <WifiOff size={16} />
-          <span>
-            Connection lost. Reconnecting… You can keep editing; sending messages, running code, and
-            saving will be available when connected.
-          </span>
+          <span>Reconnecting… Edits are saved on this device.</span>
         </div>
       )}
       <div className="workbench-body">
@@ -412,15 +427,7 @@ export function App() {
             </div>
           ) : (
             <div className="workspace-loading">
-              <FlaskConical size={34} strokeWidth={1.3} />
-              <h1>Opening your workspace</h1>
-              <p>
-                <Spinner />
-                Connecting to the application server…
-              </p>
-              <span className="small-note">
-                If this takes a moment, check that Biologue is running.
-              </span>
+              <Spinner /> Opening workspace…
             </div>
           )}
         </main>
@@ -526,48 +533,41 @@ export function App() {
           </>
         )}
       </div>
+      {projects && <ProjectPicker onClose={() => setProjects(false)} />}
       {help && (
-        <Dialog title="Make yourself at home" onClose={() => setHelp(false)}>
-          <p>
-            Choose Arrange in the bottom bar to reveal tabs, then drag them to move or group panels.
-            Choose Done arranging or press Escape to hide the tabs. The layout remembers your
-            arrangement at each window size.
-          </p>
+        <Dialog title="Keyboard shortcuts" onClose={() => setHelp(false)}>
+          <p>Arrange: drag panels to move or group them. Escape to finish.</p>
           <div className="help-section">
-            <h3>Keep your work in view</h3>
-            <p>
-              Use the bottom navigation to show a panel and move keyboard focus into it. Expand
-              panel gives it the full workspace; Escape brings the workspace back.
-            </p>
-          </div>
-          <div className="help-section">
-            <h3>Keyboard shortcuts</h3>
             <dl className="shortcut-list">
-              <dt>Run selection or current editor line / console input</dt>
+              <dt>Run selection / line</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>Enter</kbd>
               </dd>
-              <dt>Run the current editor line</dt>
+              <dt>Run line</dt>
               <dd>
                 <kbd>Shift</kbd> <kbd>Enter</kbd>
               </dd>
-              <dt>Run the entire file</dt>
+              <dt>Run file</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>Shift</kbd> <kbd>Enter</kbd>
               </dd>
-              <dt>Find / replace in the editor</dt>
+              <dt>Find / replace</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>F</kbd>
               </dd>
-              <dt>Save file / research context</dt>
+              <dt>Save</dt>
               <dd>
                 <kbd>{modifier}</kbd> <kbd>S</kbd>
               </dd>
-              <dt>Send a message or context</dt>
+              <dt>Send message / run console input</dt>
               <dd>
-                <kbd>{modifier}</kbd> <kbd>Enter</kbd>
+                <kbd>Enter</kbd>
               </dd>
-              <dt>Focus a panel in navigation order</dt>
+              <dt>New line in message / console</dt>
+              <dd>
+                <kbd>Shift</kbd> <kbd>Enter</kbd>
+              </dd>
+              <dt>Focus panel</dt>
               <dd>
                 <kbd>Alt</kbd> <kbd>1–7</kbd>
               </dd>
@@ -581,18 +581,9 @@ export function App() {
               </dd>
             </dl>
           </div>
-          <div className="help-section">
-            <h3>Edit, run, save</h3>
-            <p>
-              Edits sync automatically with Biologue and are retained on this device while offline.
-              <strong> Save</strong> writes the working document to your project file.
-              <strong> Run</strong> waits for synchronization and records the exact code and
-              revision, including the selected range when running part of a file.
-            </p>
-          </div>
           <div className="dialog-actions">
             <button className="primary" onClick={() => setHelp(false)}>
-              Back to the workspace
+              Close
             </button>
           </div>
         </Dialog>

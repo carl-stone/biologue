@@ -341,7 +341,6 @@ export function Editor() {
                     }
                   }}
                 >
-                  <FileCode2 size={13} />
                   <span>{path.split("/").pop()}</span>
                   {unsaved && <span className="unsaved-dot" aria-label="Unsaved changes" />}
                   <span
@@ -396,13 +395,7 @@ export function Editor() {
         </button>
         {doc && (draft || conflict || !dirty) && (
           <span className="save-feedback" role="status">
-            {conflict
-              ? "Review edits"
-              : draft
-                ? connected
-                  ? "Syncing…"
-                  : "Offline edits"
-                : "Saved"}
+            {conflict ? "Review edits" : draft ? (connected ? "Syncing…" : "Offline edits") : ""}
           </span>
         )}
         <button

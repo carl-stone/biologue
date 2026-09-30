@@ -1,3 +1,4 @@
+import { projectRoutes } from "./projects.ts";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
@@ -16,10 +17,13 @@ import { Permissions } from "./permissions.ts";
 import { PiAdapter } from "./pi.ts";
 import { Supervisor } from "./supervisor.ts";
 import { ConversationSessions } from "./conversation-sessions.ts";
+import { EnvironmentService } from "./environment.ts";
 import { adapters } from "./adapters.ts";
 
 export interface AppOptions {
   project: string;
+  projects?: boolean;
+  jupyterRoot?: string;
   stateDir: string;
   repository: string;
   jupyterUrl?: string;
@@ -50,9 +54,11 @@ export async function createApp(options: AppOptions) {
       documents.root,
       options.jupyterUrl ?? "http://127.0.0.1:8889/",
       options.jupyterToken ?? "",
+      options.jupyterRoot,
     );
   const outputs = new OutputService(store, events, resolve(options.stateDir, "artifacts"));
   const execution = new ExecutionService(store, events, kernel, outputs);
+  const environment = new EnvironmentService(execution, events);
   const permissions = new Permissions(store, events);
   const sessions = new ConversationSessions(documents.root, options.stateDir, store, events);
   const pi = options.pi ?? new PiAdapter({ project: documents.root, stateDir: options.stateDir });
@@ -106,6 +112,7 @@ export async function createApp(options: AppOptions) {
     )
       return reply.code(403).send({ error: "Missing workbench request header." });
   });
+  if (options.projects) projectRoutes(app, options, store);
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send({ error: z.prettifyError(error) });
     const failure = error as Error & { statusCode?: number; code?: string };
@@ -292,6 +299,10 @@ export async function createApp(options: AppOptions) {
     await execution.cancel(z.object({ id: z.string().uuid() }).parse(request.params).id);
     return { ok: true };
   });
+  app.post("/api/environment", async (request) => {
+    const body = z.object({ language }).parse(request.body);
+    return environment.refresh(body.language);
+  });
   app.post("/api/inspect", async (request, reply) => {
     const body = z
       .object({
@@ -350,7 +361,37 @@ export async function createApp(options: AppOptions) {
       z.object({ title: z.string().trim().min(1).max(120) }).parse(request.body).title,
     ),
   );
+  let modelConfiguring = false;
+  app.get("/api/agent/models", async () => pi.models());
+  app.put("/api/agent/settings", async (request, reply) => {
+    if (
+      modelConfiguring ||
+      store
+        .list<AgentRun>("run")
+        .some((run) => ["running", "awaiting_permission", "queued"].includes(run.status))
+    )
+      return reply
+        .code(409)
+        .send({ error: "Stop the current response before changing its model." });
+    const body = z
+      .object({
+        provider: z.string(),
+        model: z.string(),
+        thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+      })
+      .parse(request.body);
+    modelConfiguring = true;
+    try {
+      const agent = await pi.configure(body.provider, body.model, body.thinking);
+      events.emit({ type: "agent-settings", agent });
+      return agent;
+    } finally {
+      modelConfiguring = false;
+    }
+  });
   app.post("/api/agent/runs", async (request, reply) => {
+    if (modelConfiguring)
+      return reply.code(409).send({ error: "Model settings are updating. Try sending again." });
     const body = z
       .object({ conversationId: z.string().uuid(), text: z.string().trim().min(1).max(50_000) })
       .parse(request.body);
@@ -398,6 +439,7 @@ export async function createApp(options: AppOptions) {
     for (const stream of streams) stream.end();
   });
   app.addHook("onClose", async () => {
+    environment.close();
     documents.close();
     context.close();
     try {

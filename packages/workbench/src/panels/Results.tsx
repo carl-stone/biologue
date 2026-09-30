@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
-  Boxes,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -45,7 +44,7 @@ function SourceDetails({ execution }: { execution: ExecutionSummary }) {
         · {timeLabel(execution.createdAt)}
       </span>
       <button className="text-button" onClick={() => revealExecution(execution)}>
-        View source <ArrowUpRight size={13} />
+        View output <ArrowUpRight size={13} />
       </button>
     </div>
   );
@@ -253,14 +252,6 @@ export function Environment() {
         !item.inspectionOptions?.names &&
         ["running", "queued"].includes(item.status),
     );
-  const stale =
-    latest &&
-    records.some(
-      (item) =>
-        item.purpose === "analysis" &&
-        item.createdAt > latest!.createdAt &&
-        !["cancelled", "queued"].includes(item.status),
-    );
   const lastInspection = records
     .filter((item) => item.inspection === "environment" && !item.inspectionOptions?.names)
     .at(-1);
@@ -271,20 +262,28 @@ export function Environment() {
   return (
     <div className="pane environment">
       <div className="pane-toolbar">
-        <span className="section-label">
-          {languageName(language)} objects
-          {result.data?.kind === "environment" && (
-            <span className="count-badge">{rows.length}</span>
+        <div className="search-field">
+          <Search size={14} />
+          <input
+            aria-label="Filter objects"
+            placeholder="Filter objects"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {query && (
+            <button className="icon" aria-label="Clear object filter" onClick={() => setQuery("")}>
+              <X size={13} />
+            </button>
           )}
-        </span>
-        <span className="spacer" />
+        </div>
         <button
-          className="text-button"
+          className="icon"
+          aria-label="Refresh objects"
+          title="Refresh objects"
           disabled={pending || !connected}
           onClick={() => void inspect()}
         >
           <RefreshCw size={14} className={pending ? "spin" : ""} />
-          {pending ? "Inspecting…" : "Inspect"}
         </button>
       </div>
       {(offset > 0 || next !== undefined) && (
@@ -323,31 +322,6 @@ export function Environment() {
             <p>{lastInspection.error || "See the execution record in Console for details."}</p>
           </div>
         )}
-      {latest && (
-        <div className={`inspection-state ${stale ? "stale" : ""}`} role="status">
-          {pending
-            ? "Refreshing snapshot…"
-            : stale
-              ? "Session changed. Inspect to refresh these objects."
-              : `Snapshot at ${timeLabel(latest.createdAt)}`}
-        </div>
-      )}
-      {rows.length > 0 && (
-        <div className="search-field">
-          <Search size={14} />
-          <input
-            aria-label="Filter objects"
-            placeholder="Filter this page by name or type…"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          {query && (
-            <button className="icon" aria-label="Clear object filter" onClick={() => setQuery("")}>
-              <X size={13} />
-            </button>
-          )}
-        </div>
-      )}
       {latest && result.loading && !result.data ? (
         <Empty icon={<Spinner />}>
           <strong>Loading objects…</strong>
@@ -396,26 +370,7 @@ export function Environment() {
           ))}
         </div>
       ) : (
-        <Empty icon={pending ? <Spinner /> : <Boxes size={29} strokeWidth={1.4} />}>
-          <strong>
-            {pending
-              ? "Looking inside the session…"
-              : latest
-                ? "No objects yet"
-                : "Look inside your session"}
-          </strong>
-          <p>
-            {latest
-              ? "Run code to create objects, then inspect again."
-              : "See the live objects available to you and Biologue. Inspection uses your shared session."}
-          </p>
-          {!pending && (
-            <button disabled={!connected} onClick={() => void inspect()}>
-              <RefreshCw size={14} />
-              Inspect {languageName(language)} session
-            </button>
-          )}
-        </Empty>
+        <Empty>{pending ? "Refreshing…" : "No objects"}</Empty>
       )}
     </div>
   );
@@ -460,8 +415,28 @@ export function Data() {
     "setTableFilter",
   );
   const snapshot = useSnapshot("executions");
+  const environmentRecord = [...snapshot.executions]
+    .reverse()
+    .find(
+      (item) =>
+        item.language === language &&
+        item.inspection === "environment" &&
+        !item.inspectionOptions?.names &&
+        item.status === "succeeded",
+    );
+  const objects = useResource<InspectionResult>(
+    environmentRecord ? `/executions/${environmentRecord.id}/result` : null,
+  );
+  const tables =
+    objects.data?.kind === "environment"
+      ? objects.data.rows.filter((row) =>
+          row.type.split("/").some((type) => ["DataFrame", "data.frame"].includes(type)),
+        )
+      : [];
+  const [objectName, setObjectName] = useState("");
   const action = useAction();
   const requested = tablePreview?.language === language ? tablePreview : null;
+  useEffect(() => setObjectName(requested?.name ?? ""), [language, requested?.name]);
   const target =
     artifactTarget?.panel === "data" && artifactTarget.language === language
       ? artifactTarget
@@ -494,6 +469,18 @@ export function Data() {
   const table: TableResult | undefined = result.data?.kind === "table" ? result.data : undefined;
   const pending = requested && (!record || ["queued", "running"].includes(record.status));
   const title = requested?.name || "Data preview";
+  const refreshed = useRef("");
+  useEffect(() => {
+    if (!requested || target || !environmentRecord || !record || pending || !connected) return;
+    if (
+      environmentRecord.createdAt <= record.createdAt ||
+      refreshed.current === environmentRecord.id
+    )
+      return;
+    refreshed.current = environmentRecord.id;
+    void action.run(() => previewTable(requested.name, false));
+  }, [environmentRecord?.id, record?.id, pending, connected, requested?.name, target?.outputId]);
+
   const filterSource = `${language}:${target?.outputId ?? record?.id ?? ""}`;
   const filter = tableFilter?.source === filterSource ? tableFilter.value : "";
   const setFilter = (value: string) => setTableFilter({ source: filterSource, value });
@@ -505,6 +492,44 @@ export function Data() {
       ) ?? [];
   return (
     <div className="pane data-pane">
+      <form
+        className="pane-toolbar data-picker"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (objectName.trim()) void action.run(() => previewTable(objectName.trim()));
+        }}
+      >
+        <input
+          aria-label="Table object"
+          placeholder="Table name"
+          list="table-objects"
+          value={objectName}
+          onChange={(event) => setObjectName(event.target.value)}
+        />
+        <datalist id="table-objects">
+          {tables.map((row) => (
+            <option key={row.name} value={row.name} />
+          ))}
+        </datalist>
+        <button disabled={!objectName.trim() || action.busy || !connected}>Open</button>
+      </form>
+      {!requested && !target && !record && tables.length > 0 && (
+        <div className="table-choices">
+          {tables.map((row) => (
+            <button
+              className="text-button"
+              key={row.name}
+              onClick={() => {
+                setObjectName(row.name);
+                void action.run(() => previewTable(row.name));
+              }}
+            >
+              {row.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {pending ? (
         <Empty icon={<Spinner />}>
           <strong>Opening {title}…</strong>
@@ -652,13 +677,7 @@ export function Data() {
           </div>
         </Empty>
       ) : (
-        <Empty icon={<Table2 size={29} strokeWidth={1.4} />}>
-          <strong>Take a closer look</strong>
-          <p>Inspect your session, then choose a data frame to preview its rows.</p>
-          <button onClick={() => showPanel("environment")}>
-            Open environment <ArrowUpRight size={14} />
-          </button>
-        </Empty>
+        <Empty>No table selected</Empty>
       )}
     </div>
   );

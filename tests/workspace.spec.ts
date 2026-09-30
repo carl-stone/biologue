@@ -7,9 +7,7 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
   await expect(page.getByRole("combobox", { name: "Conversation", exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "What are you trying to understand?" }),
-  ).toBeVisible();
+  await expect(page.locator(".conversation-empty")).toHaveCount(0);
   await expect(page.locator(".cm-content")).toContainText("Synthetic measurements");
   await page.screenshot({ path: "test-results/workspace-empty.png", fullPage: true });
   await page.getByRole("button", { name: "Run all", exact: true }).click();
@@ -19,7 +17,6 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
     .fill("print(len(measurements))");
   await page.getByRole("button", { name: "Run console code" }).click();
   await expect(page.locator(".execution").last().locator(".output-text")).toHaveText("6\n");
-  await page.getByRole("button", { name: "Inspect", exact: true }).click();
   await expect(page.locator(".object code", { hasText: "measurements" })).toBeVisible({
     timeout: 15000,
   });
@@ -31,12 +28,24 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("sample\tsignal\nA\t2.4");
+  const consoleInput = page.getByRole("textbox", { name: "Console code", exact: true });
+  await consoleInput.fill("measurements.loc[0, 'signal'] = 9.9");
+  await consoleInput.press("Enter");
+  await expect(page.getByRole("cell", { name: "9.9", exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  await expect(consoleInput).toBeFocused();
+  await consoleInput.fill("measurements.loc[0, 'signal'] = 2.4");
+  await consoleInput.press("Enter");
+  await expect(page.getByRole("cell", { name: "2.4", exact: true })).toBeVisible({
+    timeout: 15000,
+  });
   await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Research context", exact: true })
     .fill("These measurements are synthetic. No biological interpretation has been established.");
   await page.getByRole("button", { name: "Save context", exact: true }).click();
-  await expect(page.getByText("Version 1 · authored by you")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save context", exact: true })).toBeDisabled();
   await page.locator(".cm-content").click();
   await page.keyboard.press("ControlOrMeta+End");
   await page.keyboard.insertText("\n# A retained unsaved buffer\n");
@@ -88,12 +97,34 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
   await selectedEditor.press("ControlOrMeta+Enter");
   await expect(page.locator(".execution")).toHaveCount(count + 1);
   await expect(page.locator(".execution").last().locator(".output-text")).toHaveText("6\n");
-  await page.locator(".execution").last().locator(":scope > details > summary").click();
-  await expect(page.locator(".execution").last().locator(".console-code")).toContainText(
-    selectedCode,
-  );
-  await page.locator(".execution").last().locator(".provenance > summary").click();
-  await expect(page.locator(".execution").last()).toContainText("selection_test.py · revision");
-  await expect(page.locator(".execution").last()).toContainText("selection");
+  await expect(page.locator(".execution").last().locator(".console-code, details")).toHaveCount(0);
+  const snapshot = await (await page.request.get("/api/snapshot")).json();
+  const selected = snapshot.executions
+    .filter((item: { purpose: string }) => item.purpose === "analysis")
+    .at(-1);
+  const recorded = await (await page.request.get(`/api/executions/${selected.id}`)).json();
+  expect(recorded.code).toBe(selectedCode);
+  expect(recorded.document.path).toBe("selection_test.py");
+  expect(recorded.document.selection).toBeTruthy();
   expect(errors).toEqual([]);
+});
+
+test("R objects refresh automatically and Data opens them directly", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Session language", exact: true }).selectOption("r");
+  await page.getByRole("button", { name: "Focus Console", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "Console code", exact: true });
+  await input.fill("refresh_test <- data.frame(value = c(7, 9))");
+  await input.press("Enter");
+  await page.getByRole("button", { name: "Focus Environment", exact: true }).click();
+  await expect(page.locator(".object code", { hasText: "refresh_test" })).toBeVisible({
+    timeout: 30000,
+  });
+  await page.getByRole("button", { name: "Focus Data", exact: true }).click();
+  await page.getByRole("combobox", { name: "Table object", exact: true }).fill("refresh_test");
+  await page.locator(".data-picker").getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("columnheader", { name: "value", exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  await expect(page.getByRole("cell", { name: "7", exact: true })).toBeVisible();
 });

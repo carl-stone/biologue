@@ -159,7 +159,9 @@ test("environment pages stay distinct from targeted agent inspections and unknow
   );
 });
 
-test("tabs appear only while arranging and regrouped panels survive reload", async ({ page }) => {
+test("single-panel grips appear while arranging; actual tabs and regrouped panels survive reload", async ({
+  page,
+}) => {
   const ui = await fixture(page);
   ui.handle(async (request) => {
     if (request.path === "/layout" && request.method === "PUT") {
@@ -169,7 +171,7 @@ test("tabs appear only while arranging and regrouped panels survive reload", asy
   });
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Run all", exact: true })).toBeVisible();
-  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await expect(page.locator(".dv-single-tab .dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Research context", exact: true })
@@ -178,7 +180,7 @@ test("tabs appear only while arranging and regrouped panels survive reload", asy
   await expect(page.locator(".dv-tab:visible")).toHaveCount(7);
   await page
     .getByRole("tab", { name: "Research context", exact: true })
-    .dragTo(page.getByRole("tab", { name: "Editor", exact: true }));
+    .dragTo(page.locator(".editor-pane"));
   const editorGroup = page.locator(".dv-groupview").filter({
     has: page.getByRole("tab", { name: "Editor", exact: true }),
   });
@@ -191,7 +193,7 @@ test("tabs appear only while arranging and regrouped panels survive reload", asy
   // Reload while the saved layout has visible headers. Arrangement mode is temporary.
   await page.reload();
   await expect(page.getByRole("button", { name: "Arrange panels", exact: true })).toBeEnabled();
-  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await expect(page.locator(".dv-single-tab .dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Focus Research context", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Research context", exact: true })).toHaveValue(
     "Keep this draft",
@@ -203,18 +205,18 @@ test("tabs appear only while arranging and regrouped panels survive reload", asy
   await page.getByRole("button", { name: "Reset panel layout", exact: true }).click();
   await expect(page.locator(".dv-tab:visible")).toHaveCount(7);
   await page.getByRole("button", { name: "Done arranging panels", exact: true }).click();
-  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await expect(page.locator(".dv-single-tab .dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Reset panel layout", exact: true }).click();
-  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await expect(page.locator(".dv-single-tab .dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
   await page.keyboard.press("Escape");
-  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await expect(page.locator(".dv-single-tab .dv-tab:visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Arrange panels", exact: true }).click();
   await page.setViewportSize({ width: 640, height: 760 });
   await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 960 });
   await expect(page.getByRole("button", { name: "Arrange panels", exact: true })).toBeVisible();
-  await expect(page.locator(".dv-tab:visible")).toHaveCount(0);
+  await expect(page.locator(".dv-single-tab .dv-tab:visible")).toHaveCount(0);
 });
 
 test("compact layouts, focus, and keyboard navigation retain local work", async ({ page }) => {
@@ -283,7 +285,7 @@ test("file execution follows the script language and offline drafts remain edita
     document: { path: "analysis.py", version: 1 },
   });
   await ui.connect(false);
-  await expect(page.getByText(/Connection lost\. Reconnecting/)).toBeVisible();
+  await expect(page.locator(".connection-banner")).toBeVisible();
   await expect(page.getByRole("button", { name: "Run all", exact: true })).toBeDisabled();
   await page
     .getByRole("textbox", { name: "Code editor: analysis.py", exact: true })
@@ -378,10 +380,17 @@ test("saving context preserves changes typed while the request is in flight", as
     .toBe(1);
   await notes.fill("Observation one\nObservation two");
   release();
-  await expect(page.getByText("Version 1 · authored by you")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save context", exact: true })).toBeEnabled();
   await expect(notes).toHaveValue("Observation one\nObservation two");
   await expect(page.getByRole("button", { name: "Save context", exact: true })).toBeEnabled();
-  await expect(page.getByText("Local draft · not yet shared with Biologue")).toBeVisible();
+  await page.getByRole("button", { name: "Save context", exact: true }).click();
+  await expect
+    .poll(() => ui.requests.filter((request) => request.path === "/context").length)
+    .toBe(2);
+  expect(ui.requests.filter((request) => request.path === "/context")[1].body).toEqual({
+    text: "Observation one\nObservation two",
+    expectedVersion: 1,
+  });
 });
 
 test("conversation drafts are separate, sends are guarded, and new investigations are named", async ({
@@ -600,7 +609,7 @@ test("an older figure opens its own artifact and exact source", async ({ page })
   await expect(page.locator(".figure-count")).toHaveText("Figure 2 of 2");
   await page.locator(".execution").first().getByRole("button", { name: "View figure" }).click();
   await expect(page.locator(".figure-count")).toHaveText("Figure 1 of 2");
-  await page.locator(".plots").getByRole("button", { name: "View source" }).click();
+  await page.locator(".plots").getByRole("button", { name: "View output" }).click();
   await expect(page.locator("#execution-figure-1 .console-code")).toContainText(
     "print('source 1')",
   );
@@ -767,7 +776,8 @@ test("disk conflicts expose the reviewed disk version and can be resolved in the
   await expect(page.getByRole("button", { name: "Save file", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Use disk version", exact: true }).click();
   await expect(page.locator(".cm-content")).toHaveText("external edit");
-  await expect(page.locator(".save-feedback")).toBeVisible();
+  await expect(page.locator(".save-file .unsaved-dot")).toHaveCount(0);
+  await expect(page.locator(".save-feedback")).not.toBeVisible();
 });
 
 test("chat pages only the selected conversation and keeps the reading position when loading earlier messages", async ({
@@ -806,7 +816,7 @@ test("chat pages only the selected conversation and keeps the reading position w
     .getByRole("combobox", { name: "Conversation", exact: true })
     .selectOption("conversation-2");
   await expect(page.locator(".message")).toHaveCount(0);
-  await expect(page.getByText("A place to think together")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message Biologue", exact: true })).toBeVisible();
   await ui.emit({
     type: "message",
     message: { ...messages[0], id: "history-live", text: "A newer observation.", sequence: 125 },

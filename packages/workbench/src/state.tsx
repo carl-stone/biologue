@@ -22,7 +22,10 @@ import type {
 import { ConversationHistory, type ConversationHistoryState } from "./conversation-history.ts";
 import { DocumentSync, type PendingEdit } from "./document-sync.ts";
 
-export const base = "__TAURI_INTERNALS__" in window ? "http://127.0.0.1:4317" : "";
+export const origin = "__TAURI_INTERNALS__" in window ? "http://127.0.0.1:4317" : "";
+const projectKey = new URLSearchParams(window.location.search).get("project");
+export const base =
+  origin + (projectKey && /^[a-f0-9]{24}$/.test(projectKey) ? `/projects/${projectKey}` : "");
 export async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   let response: Response;
   try {
@@ -52,6 +55,8 @@ function upsert<T extends { id: string }>(items: T[], value: T) {
 }
 export function applyEvent(state: Snapshot, event: AppEvent): Snapshot {
   switch (event.type) {
+    case "agent-settings":
+      return { ...state, agent: event.agent };
     case "execution":
       return { ...state, executions: upsert(state.executions, event.execution) };
     case "document":
@@ -152,7 +157,7 @@ interface WorkbenchState {
     panel: "plots" | "data",
   ) => void;
   tablePreview: TablePreview | null;
-  previewTable: (name: string) => Promise<void>;
+  previewTable: (name: string, focus?: boolean) => Promise<void>;
 }
 
 class WorkbenchStore {
@@ -322,15 +327,23 @@ class WorkbenchStore {
           ...(panel === "data" ? { tablePreview: null } : {}),
           panelRequest: { id: panel, maximize: false },
         }),
-      previewTable: async (name) => {
+      previewTable: async (name, focus = true) => {
+        const previous = this.state.tablePreview;
         const language = this.state.language;
         const execution = await api<Execution>("/table", "POST", { language, name });
         if (!this.state.snapshot!.executions.some((item) => item.id === execution.id))
           this.event({ type: "execution", execution });
+        if (
+          !focus &&
+          (this.state.tablePreview !== previous ||
+            this.state.language !== language ||
+            this.state.artifactTarget)
+        )
+          return;
         this.update({
           tablePreview: { name, executionId: execution.id, language },
           artifactTarget: null,
-          panelRequest: { id: "data", maximize: false },
+          ...(focus ? { panelRequest: { id: "data" as const, maximize: false } } : {}),
         });
       },
     };

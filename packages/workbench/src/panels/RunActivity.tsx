@@ -36,7 +36,7 @@ function ActivityExecution({ execution, open }: { execution: ExecutionSummary; o
         title={execution.codePreview}
         onClick={() => revealExecution(execution)}
       >
-        <span>{execution.document?.path || `${languageName(execution.language)} code`}</span>
+        <span>{execution.document?.path || `${languageName(execution.language)} output`}</span>
         <span className="small-note">{status}</span>
         <ArrowUpRight size={12} />
       </button>

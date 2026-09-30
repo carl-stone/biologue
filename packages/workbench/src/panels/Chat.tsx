@@ -1,16 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpRight,
-  NotebookPen,
-  Plus,
-  Square,
-  Pencil,
-  Settings2,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpRight, Plus, Square, Pencil, Settings2 } from "lucide-react";
 import type {
   Conversation,
   Message,
@@ -25,7 +16,6 @@ import {
   Dialog,
   CopyButton,
   Spinner,
-  modifier,
   timeLabel,
   useAction,
   useFollowOutput,
@@ -322,11 +312,6 @@ export function Chat() {
           <Plus size={14} /> New
         </button>
       </div>
-      <button className="context-link" onClick={() => wb.showPanel("context")}>
-        <NotebookPen size={14} />
-        {snapshot!.researchContext.version ? "Research context" : "Add your research context"}
-        <ArrowUpRight size={13} />
-      </button>
       <div className="chat-transcript">
         <div className="chat-messages" ref={scroll.scroll} onScroll={scroll.onScroll}>
           {wb.chat.error && (
@@ -347,28 +332,6 @@ export function Chat() {
             </button>
           )}
           {wb.chat.loading && !wb.chat.loaded && <div role="status">Loading conversation…</div>}
-          {wb.chat.loaded && !messages.length && !requests.length && (
-            <div className="conversation-empty">
-              <span className="eyebrow">A place to think together</span>
-              <h1>What are you trying to understand?</h1>
-              <p>
-                A result you don’t trust. A pattern you can’t explain. Start with the question that
-                matters to you.
-              </p>
-              {!snapshot.researchContext.version && (
-                <div className="conversation-hint">
-                  <span>Bring the context</span>
-                  <p>
-                    What you observed, what you suspect, and what someone outside your lab would
-                    miss.
-                  </p>
-                  <button className="text-button" onClick={() => wb.showPanel("context")}>
-                    Make a research note <ArrowUpRight size={14} />
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
           {timeline.map((item) => {
             if (item.request)
               return (
@@ -479,14 +442,12 @@ export function Chat() {
         <textarea
           ref={input}
           aria-label="Message Biologue"
-          placeholder={
-            active ? "Add a correction or more context…" : "Think it through with Biologue…"
-          }
+          placeholder={active ? "Message Biologue…" : "Message Biologue…"}
           value={text}
           onChange={(event) => setText(event.target.value)}
           rows={3}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void sendAction.run(send);
             }
@@ -498,19 +459,20 @@ export function Chat() {
             className="text-button model-settings"
             ref={settingsButton}
             aria-label="Agent settings"
-            title="Model and workspace access"
+            title="Model and thinking level"
             aria-expanded={settings}
             onClick={() => setSettings(!settings)}
           >
             <Settings2 size={14} />
-            <span>{snapshot.agent.enabled ? snapshot.agent.model : "Model setup"}</span>
+            <span>
+              {snapshot.agent.enabled ? snapshot.agent.model : "Choose model"}
+              {snapshot.agent.enabled && snapshot.agent.thinking
+                ? ` · ${snapshot.agent.thinking}`
+                : ""}
+            </span>
           </button>
           <span className="composer-hint">
-            {reviewing
-              ? "Sent after your decision"
-              : active
-                ? "Send a follow-up"
-                : `${modifier}+Enter`}
+            {reviewing ? "Sent after your decision" : active ? "Send a follow-up" : "Enter ↵"}
           </span>
           <button
             className="send"
@@ -554,7 +516,6 @@ export function Chat() {
       )}
       {renaming && (
         <Dialog title="Rename conversation" onClose={() => setRenaming(false)}>
-          <p>A name you choose stays fixed. Automatic names update as the conversation develops.</p>
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -572,7 +533,7 @@ export function Chat() {
               id="conversation-title"
               autoFocus
               maxLength={120}
-              placeholder="e.g. Understanding the unexpected signal"
+              placeholder="Conversation name"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
             />

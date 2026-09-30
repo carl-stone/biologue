@@ -29,6 +29,7 @@ const env = {
   CARL_PROJECT: project,
   JUPYTER_TOKEN: token,
   JUPYTER_URL: jupyterUrl,
+  JUPYTER_ROOT: process.env.JUPYTER_ROOT || (process.env.JUPYTER_URL ? project : "/"),
 };
 const children = [];
 let application;
@@ -108,7 +109,7 @@ if (!process.env.JUPYTER_URL) {
     `--ServerApp.port=${jupyterPort}`,
     "--ServerApp.port_retries=0",
     "--ServerApp.allow_root=True",
-    `--ServerApp.root_dir=${project}`,
+    `--ServerApp.root_dir=${env.JUPYTER_ROOT}`,
     "--ServerApp.log_level=ERROR",
   ]);
   let ready = false;
