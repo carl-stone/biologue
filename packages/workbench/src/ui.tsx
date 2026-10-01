@@ -73,8 +73,8 @@ export function useFollowOutput(change: string | number, resetKey: string, hasCo
   const [away, setAway] = useState(false);
   function toLatest() {
     if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+    if (!follow.current) setAway(false);
     follow.current = true;
-    setAway(false);
   }
   useEffect(() => {
     if (hasContent) toLatest();
@@ -86,8 +86,11 @@ export function useFollowOutput(change: string | number, resetKey: string, hasCo
   const onScroll = () => {
     const element = scroll.current;
     if (!element) return;
-    follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
-    setAway(!follow.current);
+    const next = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
+    if (follow.current !== next) {
+      follow.current = next;
+      setAway(!next);
+    }
   };
   return { scroll, onScroll, away, toLatest };
 }

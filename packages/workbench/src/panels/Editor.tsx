@@ -1104,6 +1104,7 @@ export function Editor() {
               id="new-file-path"
               autoFocus
               value={newPath}
+              disabled={createAction.busy}
               maxLength={1000}
               placeholder="e.g. compare_conditions.py"
               onChange={(event) => setNewPath(event.target.value)}

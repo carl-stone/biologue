@@ -35,7 +35,7 @@ export interface ExecutionSummary {
   actor: Actor;
   codePreview: string;
   codeHash: string;
-  purpose: "analysis" | "inspection";
+  purpose: "analysis" | "inspection" | "setup";
   document?: { path: string; version: number; selection?: { from: number; to: number } };
   runId?: string;
   toolCallId?: string;

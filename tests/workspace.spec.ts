@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import type { ExecutionSummary } from "../packages/protocol/src/index.ts";
 
 test("a scientist can run code, reuse objects, inspect data, and retain context and drafts", async ({
   page,
@@ -132,4 +133,35 @@ test("R objects refresh automatically and Data opens them directly", async ({ pa
     timeout: 15000,
   });
   await expect(page.getByRole("cell", { name: "7", exact: true })).toBeVisible();
+});
+
+test("interrupting R stops later statements and keeps the session usable", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Session language", exact: true }).selectOption("r");
+  await page.getByRole("button", { name: "Focus Console", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "Console code", exact: true });
+  const code =
+    "interrupt_preserved_marker <- 17; cat('INTERRUPT_READY\\n'); Sys.sleep(30); interrupt_late_marker <- TRUE";
+  await input.fill(code);
+  await page.getByRole("button", { name: "Run console code", exact: true }).click();
+  await expect(page.locator(".execution").last().locator(".output-text")).toContainText(
+    "INTERRUPT_READY",
+    { timeout: 30000 },
+  );
+  const snapshot = await (await page.request.get("/api/snapshot")).json();
+  const slow = snapshot.executions.find(
+    (record: ExecutionSummary) => record.language === "r" && record.status === "running",
+  );
+  expect(slow?.purpose).toBe("analysis");
+  await page.getByRole("button", { name: "Interrupt", exact: true }).click();
+  await expect
+    .poll(async () => (await (await page.request.get(`/api/executions/${slow.id}`)).json()).status)
+    .toBe("interrupted");
+  const recorded = await (await page.request.get(`/api/executions/${slow.id}`)).json();
+  expect(recorded.code).toBe(code);
+  await input.fill(
+    "cat(exists('interrupt_late_marker', inherits=FALSE), interrupt_preserved_marker, '\\n')",
+  );
+  await page.getByRole("button", { name: "Run console code", exact: true }).click();
+  await expect(page.locator(".execution").last().locator(".output-text")).toHaveText("FALSE 17 \n");
 });

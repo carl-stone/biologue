@@ -227,17 +227,17 @@ export function workspaceTools(
       name: "execute_code",
       label: "Execute in shared session",
       description:
-        "Run code in the shared session with approval. On 'Not run', inspect or revise, or acknowledge the warning with a reason.",
+        "Run code or a working document in the shared session with approval. For a complete buffer, provide its document path/version and omit code; the workspace captures its exact contents, including unsaved edits. On 'Not run', inspect or revise, or acknowledge the warning with a reason.",
       parameters: Type.Object({
         language,
-        code: Type.String(),
+        code: Type.Optional(Type.String()),
         reason: Type.String({ description: "Purpose for approval." }),
         document: Type.Optional(
           Type.Object(
             { path: Type.String(), version: Type.Integer({ minimum: 1 }) },
             {
               description:
-                "Required for complete document buffers; use the current path and version.",
+                "Use the current path and version returned by read. Omit code to run that complete working buffer without copying its text or reading the disk file.",
             },
           ),
         ),
@@ -261,7 +261,7 @@ export function workspaceTools(
         const args = z
           .object({
             language: z.enum(["python", "r"]),
-            code: z.string().min(1).max(200_000),
+            code: z.string().min(1).max(200_000).optional(),
             reason: z.string().max(5000),
             document: z.object({ path: z.string(), version: z.number().int().min(1) }).optional(),
             acknowledgment: z
@@ -271,11 +271,24 @@ export function workspaceTools(
               })
               .optional(),
           })
+          .refine((value) => value.code !== undefined || value.document !== undefined, {
+            message: "Provide code or a document reference.",
+          })
           .parse(raw);
         if (args.document) {
           args.document.path = projectPath(args.document.path);
-          documents.verifyReference(args.document.path, args.document.version, args.code);
+          if (args.code === undefined) {
+            const doc = documents.open(args.document.path);
+            if (doc.version !== args.document.version)
+              throw new Error(
+                "Document changed. Re-read its current revision before proposing execution.",
+              );
+            args.code = doc.content;
+          }
         }
+        const code = z.string().min(1).max(200_000).parse(args.code);
+        if (args.document)
+          documents.verifyReference(args.document.path, args.document.version, code);
         await permissions.request(
           {
             runId: run.id,
@@ -284,7 +297,7 @@ export function workspaceTools(
             conversationId: run.conversationId,
             document: args.document,
             description: args.reason,
-            code: args.code,
+            code,
             language: args.language,
           },
           signal,
@@ -292,7 +305,7 @@ export function workspaceTools(
         signal?.throwIfAborted();
         const record = execution.submit({
           language: args.language,
-          code: args.code,
+          code,
           document: args.document,
           actor: "agent",
           runId: run.id,
@@ -302,7 +315,7 @@ export function workspaceTools(
           beforeDispatch: args.document
             ? () => {
                 const { path, version } = args.document!;
-                documents.verifyReference(path, version, args.code);
+                documents.verifyReference(path, version, code);
                 if (documents.open(path).version !== version)
                   throw new Error(
                     "Document changed before execution. Re-read and review it before retrying.",

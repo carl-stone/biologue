@@ -394,6 +394,56 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
         assert.ok(!rPage.rows.some((row) => row.name === "unselected"));
         await execute("r", "rm(unselected, envir=.GlobalEnv)");
         assert.ok((await inspect("r", { offset: 100 })).rows.length > 0);
+        await execute(
+          "r",
+          `options(interrupt = function() {
+  .GlobalEnv$r_prior_interrupts <- get0("r_prior_interrupts", envir=.GlobalEnv, ifnotfound=0L) + 1L
+})`,
+        );
+        for (const [index, separator] of ["; ", "\n"].entries()) {
+          const marker = `r_cancel_late_marker_${index}`;
+          const code = ["cat('INTERRUPT_READY\\n')", "Sys.sleep(30)", `${marker} <- TRUE`].join(
+            separator,
+          );
+          const rSlow = execution.submit({ language: "r", actor: "human", code });
+          for (let attempt = 0; attempt < 100; attempt++) {
+            if (
+              execution.outputs.raw(rSlow.id).some((item) => item.text?.includes("INTERRUPT_READY"))
+            )
+              break;
+            await new Promise((done) => setTimeout(done, 50));
+          }
+          assert.ok(
+            execution.outputs.raw(rSlow.id).some((item) => item.text?.includes("INTERRUPT_READY")),
+            "R must enter the computation before interruption",
+          );
+          await new Promise((done) => setTimeout(done, 100));
+          await execution.cancel(rSlow.id);
+          const stopped = await execution.wait(rSlow.id);
+          assert.equal(stopped.status, "interrupted", stopped.error);
+          assert.equal(stopped.code, code);
+          const check = await execute("r", `cat(exists('${marker}', inherits=FALSE), '\\n')`);
+          assert.match(
+            execution.outputs
+              .raw(check.id)
+              .map((item) => item.text ?? "")
+              .join(""),
+            /FALSE/,
+          );
+        }
+        const priorHandler = await execute("r", "cat(r_prior_interrupts, '\\n')");
+        assert.equal(execution.outputs.raw(priorHandler.id)[0].text, "2 \n");
+        const rSession = kernel.sessions().find((session) => session.language === "r")!;
+        const restartR = await fetch(`${url}api/kernels/${rSession.kernelId}/restart`, {
+          method: "POST",
+          headers: { Authorization: `token ${token}` },
+        });
+        assert.ok(restartR.ok);
+        const readyR = await execute(
+          "r",
+          "cat(isTRUE(attr(getOption('interrupt'), 'biologue.interrupt')), '\\n')",
+        );
+        assert.equal(execution.outputs.raw(readyR.id)[0].text, "TRUE \n");
       }
       const plot = execution.submit({
         language: "python",

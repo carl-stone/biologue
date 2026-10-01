@@ -2,6 +2,77 @@ import { test, expect } from "@playwright/test";
 import { fixture, initialSnapshot } from "./ui-fixture.ts";
 import type { Execution } from "../packages/protocol/src/index.ts";
 
+test("completion after a cancellation request exposes the warning beside the captured output", async ({
+  page,
+}) => {
+  const record: Execution = {
+    id: "completed-after-cancel",
+    actor: "human",
+    language: "r",
+    purpose: "analysis",
+    status: "succeeded",
+    code: "Sys.sleep(30); later_statement <- TRUE",
+    codeHash: "synthetic",
+    codePreview: "Sys.sleep(30)",
+    createdAt: new Date().toISOString(),
+    error:
+      "Cancellation was requested, but the code reported normal completion. Later statements may have run; review the results and live objects.",
+  };
+  await fixture(page, { executions: [record] });
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Session language", exact: true }).selectOption("r");
+  await page.getByRole("button", { name: "Focus Console", exact: true }).click();
+  await expect(page.locator(".execution .output-error")).toHaveText(record.error!);
+  await expect(page.locator(".execution .console-code")).toContainText("later_statement <- TRUE");
+  await expect(page.locator(".execution .execution-status")).toHaveCount(0);
+});
+
+test("rapid agent updates retain the response without rendering errors", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const run = {
+    id: "streaming-run",
+    conversationId: "conversation-1",
+    status: "running" as const,
+    contextVersion: 0,
+    startedAt: new Date().toISOString(),
+  };
+  const ui = await fixture(page, { runs: [run], agent: { enabled: true, model: "test" } });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Stop response", exact: true })).toBeVisible();
+  let text = "";
+  for (let index = 0; index < 120; index++) {
+    const delta = `word${index}: These donor measurements remain paired.\n\n`;
+    text += delta;
+    await ui.emit({ type: "agent-delta", runId: run.id, delta });
+    if (index === 60) {
+      await page.locator(".chat-messages").evaluate((element) => {
+        element.scrollTop = 0;
+        element.dispatchEvent(new Event("scroll"));
+      });
+      await expect(page.locator(".chat .jump-latest")).toBeVisible();
+    }
+  }
+  await expect(page.locator(".chat-messages > .message")).toContainText("word119");
+  expect(await page.locator(".chat-messages").evaluate((element) => element.scrollTop)).toBe(0);
+  await page.locator(".chat .jump-latest").click();
+  await expect(page.locator(".chat .jump-latest")).toHaveCount(0);
+  await ui.emit({
+    type: "message",
+    message: {
+      id: "streamed-response",
+      conversationId: run.conversationId,
+      role: "assistant",
+      runId: run.id,
+      text,
+      createdAt: run.startedAt,
+    },
+  });
+  await ui.emit({ type: "agent-run", run: { ...run, status: "completed" } });
+  await expect(page.locator(".chat-messages > .message")).toContainText("word119");
+  expect(errors).toEqual([]);
+});
+
 // Synthetic browser states. Real execution and source identity are covered by workspace.spec.ts.
 test("new conversations need no name, can be renamed, and keep agent settings beside the composer", async ({
   page,

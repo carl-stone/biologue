@@ -180,6 +180,17 @@ test("Save all prompts for each untitled file and saves their distinct contents"
   page,
 }) => {
   const ui = await fixture(page);
+  let finishOpen!: () => void;
+  const openingFirst = new Promise<void>((resolve) => (finishOpen = resolve));
+  ui.handle(async (request) => {
+    if (
+      request.path === "/documents" &&
+      request.method === "GET" &&
+      request.query.get("path") === "one.txt"
+    )
+      await openingFirst;
+    return undefined;
+  });
   for (const [name, content] of [
     ["One", "first note"],
     ["Two", "second note"],
@@ -201,6 +212,12 @@ test("Save all prompts for each untitled file and saves their distinct contents"
     await dialog.getByLabel("File name", { exact: true }).fill(name);
     await dialog.getByRole("button", { name: "Save file", exact: true }).click();
     await expect.poll(() => ui.state.documents.some((doc) => doc.path === name)).toBe(true);
+    if (name === "one.txt") {
+      // The next filename must wait for the first save/open transition; otherwise
+      // that transition can erase what the scientist has just typed.
+      await expect(dialog.getByLabel("File name", { exact: true })).toBeDisabled();
+      finishOpen();
+    }
   }
   await expect(dialog).toHaveCount(0);
   expect(ui.state.documents.find((doc) => doc.path === "one.txt")?.content).toBe("first note");

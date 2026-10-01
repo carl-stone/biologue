@@ -43,6 +43,9 @@ export class JupyterKernels implements KernelBackend {
       status: session.kernel!.status,
     }));
   }
+  setupCode(language: Language) {
+    return adapters[language].setupCode;
+  }
   private async ensure(language: Language): Promise<Session.ISessionConnection> {
     const connected = this.connections.get(language);
     if (connected && !connected.isDisposed && connected.kernel?.status !== "dead") return connected;

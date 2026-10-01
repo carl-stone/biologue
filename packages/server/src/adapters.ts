@@ -3,6 +3,7 @@ import type { EnvironmentQuery, Language } from "@biologue/protocol";
 export interface LanguageAdapter {
   language: Language;
   kernelName: string;
+  setupCode?: string;
   inspectionCode: (query?: EnvironmentQuery) => string;
   tableCode: (name: string) => string;
 }
@@ -63,6 +64,19 @@ del _biologue_inspect`,
   r: {
     language: "r",
     kernelName: process.env.BIOLOGUE_R_KERNEL || "ark",
+    // Ark 0.1.252 resumes pending top-level expressions after an unhandled
+    // interrupt. Report it through R's error handler so Ark discards them.
+    // Keep the hook idempotent and preserve any scientist-installed handler.
+    setupCode: `base::local({
+  previous <- base::getOption("interrupt")
+  if (!base::isTRUE(base::attr(previous, "biologue.interrupt"))) {
+    handler <- function() {
+      if (base::is.function(previous)) previous()
+      base::stop("Execution interrupted.", call. = FALSE)
+    }
+    base::options(interrupt = base::structure(handler, biologue.interrupt = TRUE))
+  }
+})`,
     tableCode: (name) => `local({
   if (!requireNamespace("jsonlite", quietly = TRUE)) stop("Table preview requires the R package jsonlite.")
   value <- get(${JSON.stringify(name)}, envir = .GlobalEnv)

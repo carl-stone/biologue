@@ -22,11 +22,12 @@ function fixture() {
     hold: ReturnType<typeof deferred<void>> | undefined;
   let entered = deferred();
   const kernel: KernelBackend = {
-    async execute(language, code, output, started) {
+    async execute(language, code, output, started, signal) {
       started({ sessionId: language, kernelId: language, kernelGeneration: generation });
       calls.push(code);
       entered.resolve();
       if (hold) await hold.promise;
+      if (signal.aborted) throw new Error("Interrupted");
       if (code.includes("raise RuntimeError")) throw new Error("Failed after a possible mutation");
       output({ kind: "stream", text: "observed output" });
     },

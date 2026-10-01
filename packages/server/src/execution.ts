@@ -10,6 +10,8 @@ import { StaleContext, type ContextAcknowledgment } from "./stale-context.ts";
 export type { KernelOutput } from "./outputs.ts";
 
 export interface KernelBackend {
+  /** Session configuration is queued and recorded by ExecutionService, never run here. */
+  setupCode?(language: Language): string | undefined;
   execute(
     language: Language,
     code: string,
@@ -105,6 +107,17 @@ export class ExecutionService {
     };
     record.codePreview = summarize(record).codePreview;
     this.repository.create(record); // Nothing is queued unless its exact source is durable.
+    const setupCode =
+      input.purpose === "setup" ? undefined : this.kernel.setupCode?.(input.language);
+    const setup = setupCode
+      ? this.submit({
+          language: input.language,
+          actor: "system",
+          purpose: "setup",
+          code: setupCode,
+          runId: input.runId,
+        })
+      : undefined;
     let resolve!: Job["resolve"], reject!: Job["reject"];
     const promise = new Promise<Execution>((yes, no) => {
       resolve = yes;
@@ -120,9 +133,20 @@ export class ExecutionService {
       reject,
       settled: false,
       acknowledgment,
-      beforeDispatch,
+      beforeDispatch: setup
+        ? () => {
+            const configured = this.get(setup.id);
+            if (configured?.status !== "succeeded")
+              throw new Error(
+                `Session setup did not complete; code was not run. ${configured?.error ?? configured?.status ?? "Setup missing."}`,
+              );
+            if (configured.kernelGeneration !== record.kernelGeneration)
+              throw new Error("Kernel restarted after session setup. Code was not run; retry it.");
+            beforeDispatch?.();
+          }
+        : beforeDispatch,
       effects:
-        input.purpose === "inspection" && input.inspection
+        input.purpose === "setup" || (input.purpose === "inspection" && input.inspection)
           ? Promise.resolve(emptyEffects())
           : analyzeCode(input.language, input.code),
     };
@@ -251,7 +275,12 @@ export class ExecutionService {
         abort.signal,
       );
       if (captureError) throw captureError;
-      if (!job.settled) record.status = abort.signal.aborted ? "interrupted" : "succeeded";
+      if (!job.settled) {
+        record.status = "succeeded";
+        if (abort.signal.aborted)
+          record.error =
+            "Cancellation was requested, but the code reported normal completion. Later statements may have run; review the results and live objects.";
+      }
     } catch (error) {
       if (!job.settled) {
         record.status =

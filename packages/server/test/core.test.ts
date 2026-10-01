@@ -131,6 +131,128 @@ test("cancelling an agent run removes queued work before interrupting active wor
   }
 });
 
+test("normal kernel completion after cancellation is retained without claiming interruption", async () => {
+  const f = fixture();
+  let finish!: () => void;
+  let dispatch!: () => void;
+  const started = new Promise<void>((resolve) => (dispatch = resolve));
+  const service = new ExecutionService(
+    f.store,
+    f.events,
+    {
+      execute: async (_language, code, output, identity) => {
+        identity({ sessionId: "r-session", kernelId: "r-kernel" });
+        dispatch();
+        await new Promise<void>((resolve) => (finish = resolve));
+        output({ kind: "stream", text: "A later statement completed.\n" });
+        assert.equal(code, "Sys.sleep(60); later_statement <- TRUE");
+      },
+      interrupt: async () => finish(),
+    },
+    new OutputService(f.store, f.events, join(f.root, "artifacts")),
+  );
+  try {
+    const record = service.submit({
+      language: "r",
+      actor: "human",
+      code: "Sys.sleep(60); later_statement <- TRUE",
+    });
+    await started;
+    await service.cancel(record.id);
+    const completed = await service.wait(record.id);
+    assert.equal(completed.status, "succeeded");
+    assert.match(completed.error!, /Cancellation was requested.*normal completion/);
+    assert.equal(completed.code, record.code);
+    assert.equal(service.outputs.raw(record.id)[0].text, "A later statement completed.\n");
+  } finally {
+    await service.close();
+    f.close();
+  }
+});
+
+for (const outcome of ["succeeded", "setup_failed", "restarted"])
+  test(`session setup is recorded and guards exact source (${outcome})`, async () => {
+    const f = fixture();
+    const setupCode = "install_interrupt_handler()";
+    const calls: string[] = [];
+    const kernel: KernelBackend = {
+      setupCode: (language) => (language === "r" ? setupCode : undefined),
+      execute: async (_language, code, output, started) => {
+        started({
+          sessionId: "r-session",
+          kernelId: "r-kernel",
+          kernelGeneration: code !== setupCode && outcome === "restarted" ? "new" : "original",
+        });
+        calls.push(code);
+        if (code === setupCode && outcome === "setup_failed") throw new Error("Setup failed");
+        output({ kind: "stream", text: code });
+      },
+      interrupt: async () => {},
+    };
+    const service = new ExecutionService(
+      f.store,
+      f.events,
+      kernel,
+      new OutputService(f.store, f.events, join(f.root, "artifacts")),
+    );
+    try {
+      const code = "x <- 2\n\n";
+      const document = { path: "analysis.R", version: 7 };
+      const record = await service.wait(
+        service.submit({ language: "r", actor: "human", code, document }).id,
+      );
+      assert.equal(record.code, code);
+      assert.equal(record.codeHash, digest(code));
+      assert.deepEqual(record.document, document);
+      assert.deepEqual(calls, outcome === "succeeded" ? [setupCode, code] : [setupCode]);
+      assert.equal(record.status, outcome === "succeeded" ? "succeeded" : "failed");
+      if (outcome !== "succeeded") assert.match(record.error!, /[Cc]ode was not run/);
+      const setups = service.repository.list().items.filter((item) => item.purpose === "setup");
+      assert.equal(setups.length, 1);
+      const setup = service.get(setups[0].id)!;
+      assert.equal(setup.actor, "system");
+      assert.equal(setup.code, setupCode);
+      assert.equal(setup.codeHash, digest(setupCode));
+      assert.equal(setup.status, outcome === "setup_failed" ? "failed" : "succeeded");
+      assert.deepEqual(service.repository.unfinished(), []);
+    } finally {
+      await service.close();
+      f.close();
+    }
+  });
+
+test("cancelling an agent during session setup prevents its scientific code from dispatching", async () => {
+  const f = fixture();
+  const kernel = new ControlledKernel() as ControlledKernel & KernelBackend;
+  kernel.setupCode = (language) => (language === "r" ? "configure_interrupts()" : undefined);
+  const service = new ExecutionService(
+    f.store,
+    f.events,
+    kernel,
+    new OutputService(f.store, f.events, join(f.root, "artifacts")),
+  );
+  try {
+    const record = service.submit({
+      language: "r",
+      actor: "agent",
+      runId: "stopped-agent",
+      code: "must_not_run <- TRUE",
+    });
+    await kernel.waitForCalls(1);
+    await service.cancelRun("stopped-agent");
+    assert.deepEqual(
+      kernel.calls.map((item) => item.code),
+      ["configure_interrupts()"],
+    );
+    assert.equal((await service.wait(record.id)).status, "cancelled");
+    const setup = service.repository.list().items.find((item) => item.purpose === "setup")!;
+    assert.equal(setup.status, "interrupted");
+  } finally {
+    await service.close();
+    f.close();
+  }
+});
+
 test("unfinished work is marked abandoned after restart and never replayed", () => {
   const f = fixture();
   try {

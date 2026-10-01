@@ -25,54 +25,55 @@ const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) =>
   fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 
 // All of these use PiAdapter.create -> createAgentSession; only the provider and kernel are scripted.
-test(
-  "AgentSession preserves approval, unsaved source identity, streaming and canonical history",
-  timeout,
-  async () => {
-    const f = await fixture();
-    try {
-      assert.equal(f.options.settingsManager.getCacheWarmingMode(), "off");
-      const doc = f.documents.edit("analysis.py", "x = 2\nprint(x)", 1);
-      f.faux.setResponses([
-        call("execute_code", {
-          language: "python",
-          code: doc.content,
-          document: { path: doc.path, version: doc.version },
-          reason: "Check the existing object",
-        }),
-        fauxAssistantMessage("Observed test output; interpretation remains open."),
-      ]);
-      const requested = f.requested();
-      const finished = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Inspect the value.");
-      const request = await requested;
-      assert.equal(f.calls.length, 0);
-      assert.equal(request.code, doc.content);
-      f.permissions.decide(request.id, true);
-      assert.equal((await finished).status, "completed");
-      assert.deepEqual(f.calls, [doc.content]);
-      const record = f.execution.get(f.execution.repository.list().items[0].id)!;
-      assert.equal(record.codeHash, digest(doc.content));
-      assert.deepEqual(record.document, { path: doc.path, version: doc.version });
-      assert.equal(record.runId, run.id);
-      assert.equal(record.toolCallId, request.toolCallId);
-      assert.equal(record.kernelId, "kernel");
-      assert.equal(readFileSync(join(f.root, "analysis.py"), "utf8"), "x = 1");
-      assert.ok(f.observed.some((event) => event.type === "agent-delta"));
-      assert.deepEqual(
-        f.sessions.page(f.conversationId, 200).items.map((message) => message.delivery),
-        ["delivered", "delivered"],
-      );
-      assert.equal(f.sessions.page(f.conversationId, 200).items[1].runId, run.id);
-      assert.ok(existsSync(f.sessions.get(f.conversationId).getSessionFile()!));
-      assert.equal(f.store.list("transcript").length, 0);
-      assert.equal(f.store.list("message").length, 0);
-      assert.ok(f.store.list("run-request").length >= 2);
-    } finally {
-      await f.close();
-    }
-  },
-);
+for (const includeCode of [true, false])
+  test(
+    `AgentSession preserves approval, unsaved source identity, streaming and canonical history (${includeCode ? "provided code" : "document reference"})`,
+    timeout,
+    async () => {
+      const f = await fixture();
+      try {
+        assert.equal(f.options.settingsManager.getCacheWarmingMode(), "off");
+        const doc = f.documents.edit("analysis.py", "x = 2\nprint(x)\n\n", 1);
+        f.faux.setResponses([
+          call("execute_code", {
+            language: "python",
+            ...(includeCode ? { code: doc.content } : {}),
+            document: { path: doc.path, version: doc.version },
+            reason: "Check the existing object",
+          }),
+          fauxAssistantMessage("Observed test output; interpretation remains open."),
+        ]);
+        const requested = f.requested();
+        const finished = f.finished();
+        const run = f.supervisor.start(f.conversationId, "Inspect the value.");
+        const request = await requested;
+        assert.equal(f.calls.length, 0);
+        assert.equal(request.code, doc.content);
+        f.permissions.decide(request.id, true);
+        assert.equal((await finished).status, "completed");
+        assert.deepEqual(f.calls, [doc.content]);
+        const record = f.execution.get(f.execution.repository.list().items[0].id)!;
+        assert.equal(record.codeHash, digest(doc.content));
+        assert.deepEqual(record.document, { path: doc.path, version: doc.version });
+        assert.equal(record.runId, run.id);
+        assert.equal(record.toolCallId, request.toolCallId);
+        assert.equal(record.kernelId, "kernel");
+        assert.equal(readFileSync(join(f.root, "analysis.py"), "utf8"), "x = 1");
+        assert.ok(f.observed.some((event) => event.type === "agent-delta"));
+        assert.deepEqual(
+          f.sessions.page(f.conversationId, 200).items.map((message) => message.delivery),
+          ["delivered", "delivered"],
+        );
+        assert.equal(f.sessions.page(f.conversationId, 200).items[1].runId, run.id);
+        assert.ok(existsSync(f.sessions.get(f.conversationId).getSessionFile()!));
+        assert.equal(f.store.list("transcript").length, 0);
+        assert.equal(f.store.list("message").length, 0);
+        assert.ok(f.store.list("run-request").length >= 2);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
 test("declined and cancelled Pi tool requests cannot execute", timeout, async () => {
   const f = await fixture();
@@ -100,6 +101,52 @@ test("declined and cancelled Pi tool requests cannot execute", timeout, async ()
     await f.close();
   }
 });
+
+test(
+  "document-only execution rejects a stale reference and a buffer changed during approval",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      const doc = f.documents.edit("analysis.py", "x = 2\n\n", 1);
+      f.faux.setResponses([
+        call("execute_code", {
+          language: "python",
+          document: { path: doc.path, version: 1 },
+          reason: "Stale reference",
+        }),
+        fauxAssistantMessage("Read the current revision."),
+      ]);
+      await f.run("Run the document.");
+      assert.equal(f.permissions.list().length, 0);
+      assert.deepEqual(f.calls, []);
+      assert.match(textOf(f.requests.at(-1)!), /Document changed/);
+      f.faux.setResponses([
+        call("execute_code", {
+          language: "python",
+          document: { path: doc.path, version: doc.version },
+          reason: "Current reference",
+        }),
+        fauxAssistantMessage("Review the changed document."),
+      ]);
+      const requested = f.requested();
+      const finished = f.finished();
+      f.supervisor.start(f.conversationId, "Run the current revision.");
+      const request = await requested;
+      assert.equal(request.code, doc.content);
+      f.documents.edit(doc.path, "x = 3\n\n", doc.version);
+      f.permissions.decide(request.id, true);
+      await finished;
+      assert.deepEqual(f.calls, []);
+      const record = f.execution.get(f.execution.repository.list().items[0].id)!;
+      assert.equal(record.status, "failed");
+      assert.match(record.error!, /Document changed before execution/);
+      assert.equal(record.code, doc.content);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test("document identity is checked again after the approval wait", timeout, async () => {
   const f = await fixture();
@@ -883,8 +930,10 @@ test(
         execute: async (_language, _code, _output, identity, signal) => {
           identity({ sessionId: "shared", kernelId: "kernel" });
           started.resolve();
-          await new Promise<void>((resolve) =>
-            signal.addEventListener("abort", () => resolve(), { once: true }),
+          await new Promise<void>((_resolve, reject) =>
+            signal.addEventListener("abort", () => reject(new Error("Interrupted")), {
+              once: true,
+            }),
           );
         },
         interrupt: async () => {
