@@ -83,7 +83,7 @@ async function createOwnedApp(
   const execution = new ExecutionService(store, events, kernel, outputs);
   const environment = new EnvironmentService(execution, events);
   const permissions = new Permissions(store, events);
-  const sessions = new ConversationSessions(documents.root, options.stateDir, store, events);
+  const sessions = new ConversationSessions(store, events);
   const auth = new ProviderAuth(pi);
   const attachments = new Attachments(store, documents);
   const supervisor = new Supervisor(

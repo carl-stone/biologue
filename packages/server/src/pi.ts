@@ -299,10 +299,13 @@ export class PiAdapter {
       const models = new Proxy(runtime, {
         get: (target, key) => {
           const value = Reflect.get(target, key);
-          if (key === "streamSimple")
+          if (key === "streamSimple" || key === "completeSimple")
             return (...args: Parameters<ModelRuntime["streamSimple"]>) => {
-              for (const message of args[1].messages) this.requestGuards.get(message)?.();
-              return target.streamSimple(...args);
+              const guards = args[1].messages.map((message) => this.requestGuards.get(message));
+              if (!guards.length || guards.some((guard) => !guard))
+                throw new Error("Scientific policy is not ready for this model request.");
+              for (const guard of guards) guard!();
+              return target[key](...args);
             };
           return typeof value === "function" ? value.bind(target) : value;
         },

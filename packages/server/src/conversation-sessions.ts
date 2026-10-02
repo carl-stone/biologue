@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import type { Message as PiMessage, ImageContent } from "@earendil-works/pi-ai";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import {
   defineDoc,
@@ -27,6 +25,14 @@ export const IdentityDoc = defineDoc({
   fork: "initial",
   initial: () => ({ id: "" }),
 });
+const RestoredInputsDoc = defineDoc({
+  kind: "biologue.restored-inputs",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ entries: {} as Record<string, number> }),
+});
 export type BiologueMessage = PiMessage & {
   biologue?: { inputId?: string; chatId?: string; runId?: string; contextVersion?: number };
 };
@@ -47,8 +53,6 @@ export class ConversationSessions {
   private opening = new Map<string, Promise<DurableConversation>>();
   private detach?: () => void;
   constructor(
-    private project: string,
-    private stateDir: string,
     private store: Store,
     private events: Events,
   ) {
@@ -125,13 +129,11 @@ export class ConversationSessions {
       }
       cursor = page.next;
     } while (cursor);
-    const legacy = this.legacy(id); // Validate legacy files before creating anything.
     const conversation = await this.harness.createConversation(
       {
         ownership: { kind: "ownerless" },
         init: async (tx, conversationId) => {
           (await tx.doc(IdentityDoc, conversationId)).id = id;
-          for (const entry of legacy) await tx.appendEntry(conversationId, entry);
         },
       },
       context,
@@ -142,77 +144,6 @@ export class ConversationSessions {
     this.ids.set(conversation.id, id);
     this.store.put("durable-conversation", id, { id: conversation.id, version: "1.0.0" });
     return conversation;
-  }
-  private legacy(id: string) {
-    const ref = this.store.get<{ file: string; persisted: boolean }>("pi-session", id);
-    if (ref?.persisted && !existsSync(ref.file))
-      throw new Error(
-        "The Pi session file is missing. Restore it before continuing this conversation.",
-      );
-    const manager =
-      ref && existsSync(ref.file)
-        ? SessionManager.open(ref.file, undefined, this.project)
-        : undefined;
-    const entries: Omit<EntryRecord, "id" | "conversationId">[] = [];
-    const delivered = new Set<string>();
-    const old = this.store.list<Message>("message").filter((m) => m.conversationId === id);
-    const messages =
-      manager?.buildSessionProjection().messages ??
-      this.store.get<BiologueMessage[]>("transcript", id) ??
-      [];
-    for (const message of messages) {
-      if (!["user", "assistant", "system", "toolResult"].includes(message.role)) continue;
-      const metadata = (message as BiologueMessage).biologue;
-      const receipt =
-        metadata?.inputId && this.store.get<Message>("input-receipt", metadata.inputId);
-      const display =
-        receipt ||
-        old.find(
-          (m) => !delivered.has(m.id) && m.role === message.role && m.text === messageText(message),
-        );
-      if (display) delivered.add(display.id);
-      entries.push({
-        kind: `biologue.import.${message.role}`,
-        model: [message as PiMessage],
-        data: JSON.parse(JSON.stringify({ display: display || undefined, legacy: true })),
-      });
-    }
-    // Supply error results for unfinished historical calls, never schedule them.
-    const answered = new Set(
-      messages.flatMap((m) => (m.role === "toolResult" ? [m.toolCallId] : [])),
-    );
-    for (const m of messages)
-      if (m.role === "assistant")
-        for (const b of m.content)
-          if (b.type === "toolCall" && !answered.has(b.id))
-            entries.push({
-              kind: "biologue.import.toolResult",
-              model: [
-                {
-                  role: "toolResult",
-                  toolCallId: b.id,
-                  toolName: b.name,
-                  content: [
-                    {
-                      type: "text",
-                      text: "Interrupted legacy tool call: effects are unknown. Review recorded executions and current state before retrying.",
-                    },
-                  ],
-                  isError: true,
-                  timestamp: Date.now(),
-                },
-              ],
-            });
-    for (const display of old.filter((m) => !delivered.has(m.id)))
-      entries.push({
-        kind: "biologue.import.display",
-        data: JSON.parse(JSON.stringify({ display })),
-        model:
-          display.role === "user"
-            ? [{ role: "user", content: display.text, timestamp: Date.parse(display.createdAt) }]
-            : undefined,
-      });
-    return entries;
   }
   accept(
     id: string,
@@ -362,6 +293,35 @@ export class ConversationSessions {
       )
       .all(id, id)
       .map((r) => JSON.parse(r.value as string));
+  }
+  async restore(input: Message) {
+    const conversation = await this.get(input.conversationId);
+    // The display index may have failed after an earlier transcript commit.
+    const existing = (await this.history(input.conversationId)).find(
+      (entry) => (entry.data as { display?: Message } | undefined)?.display?.id === input.id,
+    );
+    await conversation.commit(async (tx) => {
+      const restored = await tx.doc(RestoredInputsDoc, conversation.id);
+      if (restored.entries[input.id] !== undefined) return;
+      if (existing) {
+        restored.entries[input.id] = existing.id;
+        return;
+      }
+      const content = this.content(input);
+      const entry = await tx.appendEntry(conversation.id, {
+        kind: "biologue.import.user",
+        model: [
+          {
+            role: "user",
+            content: [{ type: "text", text: content.text }, ...content.images],
+            timestamp: Date.parse(input.createdAt),
+          },
+        ],
+        data: JSON.parse(JSON.stringify({ display: input })),
+      });
+      restored.entries[input.id] = entry.id;
+    }, context);
+    await this.synchronize(input.conversationId);
   }
   async discardPending(id: string, ids: string[]) {
     const conversation = await this.get(id);

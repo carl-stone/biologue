@@ -9,6 +9,11 @@ import {
   section,
   defineExtension,
   UsageDoc,
+  defineDoc,
+  CompactionTask,
+  LiveDoc,
+  type TaskId,
+  type CompactionResult,
   type Harness,
   type Registry,
   type Conversation as DurableConversation,
@@ -38,6 +43,14 @@ import { ConversationSessions } from "./conversation-sessions.ts";
 import { workspaceTools } from "./workspace-tools.ts";
 import { createScientificExtension } from "../../pi-science/index.ts";
 
+const ManualCompactionsDoc = defineDoc({
+  kind: "biologue.manual-compactions",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ tasks: {} as Record<string, number> }),
+});
 type RunInput = {
   schemaVersion: number;
   inputId?: string;
@@ -70,6 +83,9 @@ type ActiveRun = {
   integrationError?: Error;
   ready: Promise<void>;
   markReady: () => void;
+  admitted: Promise<void>;
+  markAdmitted: () => void;
+  submissions: Promise<void>;
   completion: Promise<void>;
   streamedText?: number;
   controller: AbortController;
@@ -112,7 +128,7 @@ export class Supervisor {
             endReason: "interrupted",
             finishedAt: new Date().toISOString(),
             error:
-              "The previous harness stopped during this run. Its history was preserved; scientific tools were not replayed.",
+              "The saved run input is missing or invalid. Review the recorded history before continuing.",
           });
           continue;
         }
@@ -188,10 +204,17 @@ export class Supervisor {
     const ready = new Promise<void>((resolve) => {
       markReady = resolve;
     });
+    let markAdmitted!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      markAdmitted = resolve;
+    });
     const active: ActiveRun = {
       run,
       ready,
       markReady,
+      admitted,
+      markAdmitted,
+      submissions: Promise.resolve(),
       completion: Promise.resolve(),
       controller: new AbortController(),
     };
@@ -317,14 +340,29 @@ export class Supervisor {
         }
       });
       if (run.kind === "compaction") {
-        const taskId = input.compactionId as
-          | import("@earendil-works/pi-durable").TaskId<
-              import("@earendil-works/pi-durable").CompactionResult
-            >
-          | undefined;
-        const id = taskId ?? (await conversation.compact(undefined, ctx));
+        // Bind the app run and native task in the same durable transaction.
+        const id = await conversation.commit(async (tx) => {
+          const manual = await tx.doc(ManualCompactionsDoc, conversation.id);
+          const existing = manual.tasks[run.id] ?? input.compactionId;
+          if (existing !== undefined) return existing as TaskId<CompactionResult>;
+          const taskId = await tx.createTask(
+            CompactionTask,
+            { reason: "manual" },
+            {
+              ownership: { kind: "conversation" },
+              conversationId: conversation.id,
+              background: false,
+            },
+          );
+          const live = await tx.doc(LiveDoc, conversation.id);
+          (live.compactions ??= []).push({ taskId, reason: "manual", blocking: false, attempt: 1 });
+          manual.tasks[run.id] = taskId;
+          return taskId;
+        }, ctx);
         input.compactionId = id;
         this.store.put("run-input", run.id, input);
+        active.markAdmitted();
+        await this.submitQueued(active);
         const task = await this.harness.waitForTask(id, ctx);
         if (task.state.outcome.status !== "completed")
           throw new Error(`Scientific compaction ${task.state.outcome.status}.`);
@@ -354,9 +392,10 @@ export class Supervisor {
         if (handled) {
           await this.sessions.discardPending(run.conversationId, [accepted.id]);
         } else {
+          await this.sessions.publishMessages(run.conversationId);
           // Old receipts that were withdrawn on cancellation remain available as context.
           for (const pending of this.sessions.pending(run.conversationId)) {
-            if (pending.id === accepted.id) continue;
+            if (pending.id === accepted.id || pending.runId === run.id) continue;
             const record = await this.harness.commit(
               (tx) => tx.submissionByRequest(conversation.id, pending.id),
               ctx,
@@ -366,20 +405,7 @@ export class Supervisor {
               throw new Error(
                 "An unsent attachment requires a vision model. Choose a vision model before continuing this conversation.",
               );
-            await conversation.commit(async (tx) => {
-              const content = this.sessions.content(pending);
-              await tx.appendEntry(conversation.id, {
-                kind: "biologue.import.user",
-                model: [
-                  {
-                    role: "user",
-                    content: [{ type: "text", text: content.text }, ...content.images],
-                    timestamp: Date.parse(pending.createdAt),
-                  },
-                ],
-                data: JSON.parse(JSON.stringify({ display: pending })),
-              });
-            }, ctx);
+            await this.sessions.restore(pending);
           }
           const existing = await this.harness.commit(
             (tx) => tx.submissionByRequest(conversation.id, accepted.id),
@@ -390,6 +416,8 @@ export class Supervisor {
             : await this.sessions.submit(accepted, (text) => tools.expand(text));
           input.submissionId = submission!.id;
           this.store.put("run-input", run.id, input);
+          active.markAdmitted();
+          await this.submitQueued(active);
           const settled = await submission!.wait(ctx);
           await conversation.waitForIdle(ctx);
           const terminal = await conversation.entries({}, 1, undefined, ctx);
@@ -437,10 +465,29 @@ export class Supervisor {
           (error instanceof Error ? error.message : String(error));
         // A failed host setup must not leave old durable work waiting to resume
         // under the next run's model or permissions.
+        if (active.conversation) {
+          const name = `biologue-failed:${run.conversationId}`;
+          this.registry.install(
+            defineExtension({
+              name,
+              sections: [
+                section("failed_setup", () => {
+                  throw new Error(run.error);
+                }),
+              ],
+            }),
+          );
+          try {
+            await active.conversation.configure({ extensions: [{ name }] }, ctx);
+          } catch (cleanupError) {
+            this.failure(active, "Block failed conversation", cleanupError);
+          }
+        }
         void this.stop(active);
       }
     } finally {
       active.markReady();
+      active.markAdmitted();
       if (active.stopping) await active.stopping;
       try {
         await stream?.stop();
@@ -623,6 +670,7 @@ export class Supervisor {
       this.attempt(active, "Cancel questions", () => this.dialogs.cancelRun(active.run.id));
       active.controller.abort();
       await active.ready;
+      await this.recoveryReady;
       const results = await Promise.allSettled([
         active.conversation?.abort(ctx, { background: true }),
         this.execution.cancelRun(active.run.id),
@@ -660,25 +708,47 @@ export class Supervisor {
           "This model does not accept images. Choose a vision model or remove the image.",
         );
     }
-    const input = this.sessions.accept(active.run.conversationId, text, id, {
+    this.sessions.accept(active.run.conversationId, text, id, {
       ...extra,
       queue: mode,
     });
-    await active.ready;
-    if (active.run.status === "running") {
-      await this.sessions.submit(input, (text) => active.session!.expand(text));
-    }
+    await active.admitted;
+    if (active.run.status === "running" && !this.closing) await this.submitQueued(active);
+  }
+  private submitQueued(active: ActiveRun) {
+    const submit = active.submissions.then(async () => {
+      for (const input of this.sessions.pending(active.run.conversationId)) {
+        if (active.run.status !== "running" || this.closing) return;
+        if (input.runId !== active.run.id || !input.queue) continue;
+        const existing = await this.harness.commit(
+          (tx) => tx.submissionByRequest(active.conversation!.id, input.id),
+          ctx,
+        );
+        if (existing) continue;
+        await this.sessions.submit(input, (text) => active.session!.expand(text));
+      }
+    });
+    active.submissions = submit.catch(() => {});
+    return submit;
   }
   async clearQueue(id: string) {
     const active = this.active.get(id);
     if (!active) throw new Conflict("This response has already ended.");
     await active.ready;
-    const pending = this.sessions.pending(active.run.conversationId).filter((m) => m.queue);
-    await this.sessions.discardPending(
-      active.run.conversationId,
-      pending.map((m) => m.id),
+    await this.recoveryReady;
+    const clear = active.submissions.then(async () => {
+      const pending = this.sessions.pending(active.run.conversationId).filter((m) => m.queue);
+      await this.sessions.discardPending(
+        active.run.conversationId,
+        pending.map((m) => m.id),
+      );
+      return pending;
+    });
+    active.submissions = clear.then(
+      () => {},
+      () => {},
     );
-    return pending;
+    return clear;
   }
   async close() {
     if (this.closing) return;

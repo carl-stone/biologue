@@ -357,7 +357,7 @@ test("accepted messages survive before admission to the durable harness", timeou
       "The baseline is a paired sample.",
       randomUUID(),
     );
-    const reopened = new ConversationSessions(f.root, f.stateDir, f.store, f.events);
+    const reopened = new ConversationSessions(f.store, f.events);
     reopened.bind(f.supervisor.harness);
     assert.equal(reopened.pending(f.conversationId)[0].id, receipt.id);
     f.faux.setResponses([fauxAssistantMessage("The prior input is available.")]);
@@ -368,61 +368,6 @@ test("accepted messages survive before admission to the durable harness", timeou
     await f.close();
   }
 });
-
-test(
-  "legacy transcripts and display-only corrections migrate without duplicate chat or tool replay",
-  timeout,
-  async () => {
-    let f = await fixture();
-    try {
-      const first: Message = {
-        id: randomUUID(),
-        conversationId: f.conversationId,
-        role: "user",
-        text: "An old observation.",
-        createdAt: new Date().toISOString(),
-      };
-      const correction: Message = {
-        ...first,
-        id: randomUUID(),
-        text: "A correction formerly stranded in the chat record.",
-      };
-      f.store.put("message", first.id, first);
-      f.store.put("message", correction.id, correction);
-      f.store.put("transcript", f.conversationId, [
-        { role: "user", content: first.text, timestamp: Date.now() },
-        fauxAssistantMessage(
-          fauxToolCall("execute_code", {
-            language: "python",
-            code: "never_replay()",
-            reason: "Unfinished old action",
-          }),
-          { stopReason: "toolUse" },
-        ),
-      ]);
-      f.faux.setResponses([fauxAssistantMessage("Recovered history is available.")]);
-      assert.equal((await f.run("Continue carefully.")).status, "completed");
-      const request = textOf(f.requests.at(-1)!);
-      assert.match(request, /formerly stranded/);
-      assert.match(
-        request,
-        /never_replay/,
-        "Exact legacy code remains recorded, accompanied by uncertainty.",
-      );
-      assert.match(request, /effects are unknown/);
-      assert.equal(f.calls.length, 0);
-      const messages = (await f.sessions.page(f.conversationId, 200)).items;
-      assert.equal(messages.filter((message) => message.id === first.id).length, 1);
-      assert.equal(messages.filter((message) => message.id === correction.id).length, 1);
-      const root = f.root;
-      await f.close(false);
-      f = await fixture({ root });
-      assert.deepEqual((await f.sessions.page(f.conversationId, 200)).items, messages);
-    } finally {
-      await f.close();
-    }
-  },
-);
 
 test("kernel failures become Pi tool errors with recorded evidence", timeout, async () => {
   const f = await fixture({
@@ -1394,6 +1339,249 @@ test(
       assert.match(JSON.stringify(f.requests[0]), /artifact-123/);
       assert.doesNotMatch(JSON.stringify(f.requests[0]), /encoded-image-evidence/);
       assert.ok(JSON.stringify(await f.sessions.history(f.conversationId)).includes(image));
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+for (const mode of ["steer", "followUp"] as const)
+  test(
+    `startup ${mode} inputs follow the original request in acceptance order`,
+    timeout,
+    async () => {
+      const entered = deferred(),
+        release = deferred(),
+        responding = deferred(),
+        finishResponse = deferred();
+      const f = await fixture({
+        beforeInitialize: (pi) => {
+          const create = pi.create.bind(pi);
+          pi.create = async (input) => {
+            entered.resolve();
+            await release.promise;
+            return create(input);
+          };
+        },
+      });
+      try {
+        f.faux.setResponses([
+          async () => {
+            responding.resolve();
+            await finishResponse.promise;
+            return fauxAssistantMessage("Initial answer");
+          },
+          fauxAssistantMessage("Queued corrections received"),
+          fauxAssistantMessage("All inputs received"),
+        ]);
+        const done = f.finished();
+        const run = f.supervisor.start(f.conversationId, "Original scientific request");
+        await entered.promise;
+        const first = f.supervisor.steer(run.id, "First startup correction", mode);
+        const second = f.supervisor.steer(run.id, "Second startup correction", mode);
+        release.resolve();
+        await responding.promise;
+        await Promise.all([first, second]);
+        const users = (request: Context) =>
+          request.messages.filter((m) => m.role === "user").map((m) => contentText(m.content));
+        assert.equal(users(f.requests[0])[0], "Original scientific request");
+        finishResponse.resolve();
+        assert.equal((await done).status, "completed");
+        assert.deepEqual(
+          (await f.sessions.history(f.conversationId))
+            .flatMap((e) => e.model ?? [])
+            .filter((m) => m.role === "user")
+            .map((m) => contentText(m.content)),
+          ["Original scientific request", "First startup correction", "Second startup correction"],
+        );
+      } finally {
+        release.resolve();
+        finishResponse.resolve();
+        await f.close();
+      }
+    },
+  );
+
+test(
+  "a correction committed before a display-index failure enters the next model context once",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      const receipt = f.sessions.accept(
+        f.conversationId,
+        "Preserved donor correction",
+        "stopped-run",
+      );
+      const conversation = await f.sessions.get(f.conversationId);
+      const put = f.store.put.bind(f.store);
+      let injected = false;
+      f.store.put = (kind, id, value) => {
+        if (kind === "durable-display" && !injected) {
+          injected = true;
+          throw new Error("Injected projection write failure");
+        }
+        return put(kind, id, value);
+      };
+      await conversation.commit(
+        (tx) =>
+          tx.appendEntry(conversation.id, {
+            kind: "biologue.import.user",
+            model: [{ role: "user", content: receipt.text, timestamp: Date.now() }],
+            data: JSON.parse(JSON.stringify({ display: receipt })),
+          }),
+        durableContext,
+      );
+      f.store.put = put;
+      assert.ok(injected);
+      assert.equal(f.sessions.pending(f.conversationId).length, 1);
+      f.faux.setResponses([fauxAssistantMessage("Correction understood")]);
+      const result = await f.run("Continue with the corrected unit");
+      assert.equal(result.status, "completed", result.error);
+      await Promise.all([f.sessions.restore(receipt), f.sessions.restore(receipt)]);
+      assert.equal(
+        f.requests[0].messages.filter(
+          (m) => m.role === "user" && contentText(m.content).includes(receipt.text),
+        ).length,
+        1,
+      );
+      assert.equal(
+        (await f.sessions.history(f.conversationId)).filter(
+          (e) => (e.data as { display?: Message })?.display?.id === receipt.id,
+        ).length,
+        1,
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "native model dispatch fails closed when the scientific extension is missing",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      const conversation = await f.sessions.get(f.conversationId);
+      await conversation.configure(
+        { model: { provider: f.options.provider, modelId: f.options.modelId } },
+        durableContext,
+      );
+      f.faux.setResponses([fauxAssistantMessage("This unguarded response must not be requested")]);
+      const submission = await conversation.submit(
+        { type: "input", content: "Unconfigured scientific request" },
+        durableContext,
+      );
+      const settled = await submission.wait(durableContext);
+      assert.equal(settled.status, "unanswered");
+      assert.equal(f.requests.length, 0);
+      assert.equal(f.calls.length, 0);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "clearing startup corrections prevents their admission while the clear is in progress",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const authenticating = deferred(),
+      authenticated = deferred(),
+      clearing = deferred(),
+      cleared = deferred(),
+      responding = deferred();
+    const runtime = await f.pi.modelRuntime();
+    runtime.checkAuth = async () => {
+      authenticating.resolve();
+      await authenticated.promise;
+      return undefined;
+    };
+    const discard = f.sessions.discardPending.bind(f.sessions);
+    f.sessions.discardPending = async (id, ids) => {
+      clearing.resolve();
+      await cleared.promise;
+      return discard(id, ids);
+    };
+    try {
+      f.faux.setResponses([
+        async () => {
+          responding.resolve();
+          return fauxAssistantMessage("Initial answer");
+        },
+        fauxAssistantMessage("A cleared correction must not be requested"),
+      ]);
+      const done = f.finished();
+      const run = f.supervisor.start(f.conversationId, "Original scientific request");
+      await authenticating.promise;
+      const steered = f.supervisor.steer(run.id, "Correction withdrawn during startup", "followUp");
+      const clear = f.supervisor.clearQueue(run.id);
+      await clearing.promise;
+      authenticated.resolve();
+      await responding.promise;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(f.requests.length, 1);
+      cleared.resolve();
+      assert.deepEqual(
+        (await clear).map((m) => m.text),
+        ["Correction withdrawn during startup"],
+      );
+      await steered;
+      assert.equal((await done).status, "completed");
+      assert.equal(f.requests.length, 1);
+      assert.equal(f.sessions.pending(f.conversationId).length, 0);
+      assert.deepEqual(
+        (await f.sessions.page(f.conversationId)).items
+          .filter((m) => m.role === "user")
+          .map((m) => m.text),
+        ["Original scientific request"],
+      );
+    } finally {
+      authenticated.resolve();
+      cleared.resolve();
+      await f.close();
+    }
+  },
+);
+
+test(
+  "native compaction also fails closed when the scientific extension is missing",
+  timeout,
+  async () => {
+    const f = await fixture({
+      settings: { compaction: { enabled: false, keepRecentTokens: 100 } },
+    });
+    try {
+      const conversation = await f.sessions.get(f.conversationId);
+      await conversation.configure(
+        { model: { provider: f.options.provider, modelId: f.options.modelId } },
+        durableContext,
+      );
+      await appendMessage(conversation, {
+        role: "user",
+        content: "Original biological measurements. ".repeat(1000),
+        timestamp: Date.now(),
+      });
+      await appendMessage(conversation, {
+        role: "user",
+        content: "Current unresolved question. ".repeat(1000),
+        timestamp: Date.now(),
+      });
+      f.faux.setResponses([fauxAssistantMessage("An unguarded summary must not be requested")]);
+      const task = await f.supervisor.harness.waitForTask(
+        await conversation.compact(undefined, durableContext),
+        durableContext,
+      );
+      assert.equal(task.state.outcome.status, "faulted");
+      assert.equal(f.requests.length, 0);
+      assert.equal(f.faux.state.callCount, 0);
+      assert.equal(
+        (await f.sessions.history(f.conversationId)).filter((e) => e.kind === "pi.compaction")
+          .length,
+        0,
+      );
     } finally {
       await f.close();
     }

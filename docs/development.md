@@ -159,9 +159,14 @@ them to project files. Execution captures exact source independently of later
 edits. All human, agent, and inspection code goes through ExecutionService.
 
 Active durable runs resume after their scientific extensions and tools are
-restored. Accepted inputs are deduplicated by receipt ID; queued corrections
-remain available. Unfinished pre-Durable runs and scientific executions are
-marked abandoned. Interrupted tools, including calls that were waiting for
+restored for every recovering conversation. Failed setup blocks provider dispatch
+and waits for that same recovery barrier before aborting native work. The original
+input is admitted before startup corrections; correction admissions follow receipt
+order and retain request identity across restarts. Queue clearing shares the
+admission lock. Manual compaction admission and its run
+identity commit together, and restoring an unsent correction is idempotent even
+if the display index fails. Interrupted scientific executions are marked abandoned.
+Interrupted tools, including calls that were waiting for
 approval, settle as unknown effects and are never replayed automatically. A surviving Jupyter session can be reattached; restarting
 the managed launcher restarts Jupyter and clears live objects. Cancellation with
 an uncertain outcome gates further dispatch until the kernel is reconciled.

@@ -15,6 +15,7 @@ export default defineConfig({
     url: "http://127.0.0.1:5174",
     reuseExistingServer: false,
     timeout: 60000,
-    gracefulShutdown: { signal: "SIGTERM", timeout: 5000 },
+    // Allow the app launcher's 12-second drain and runtime shutdown before cleanup.
+    gracefulShutdown: { signal: "SIGTERM", timeout: 20000 },
   },
 });

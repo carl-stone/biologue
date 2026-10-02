@@ -315,3 +315,135 @@ test(
     }
   },
 );
+
+test(
+  "failed recovery setup cannot start another conversation before its scientific policy is installed",
+  { timeout: 90_000 },
+  async () => {
+    const killed = await crash("providers");
+    const [first, second] = killed.runs!;
+    const model = await scriptedModel();
+    model.faux.setResponses([fauxAssistantMessage("Recovered second answer")]);
+    const entered = deferred(),
+      release = deferred();
+    const opening = fixture({
+      root: killed.root,
+      model,
+      beforeInitialize: (pi, store, context) => {
+        store.put("run", first.id, {
+          ...first,
+          settings: { ...first.settings!, model: "removed-model" },
+        });
+        context.update(
+          "Newest correction: the biological unit is the donor.",
+          context.get().version,
+        );
+        const create = pi.create.bind(pi);
+        pi.create = async (input) => {
+          if (input.run.id === second.id) {
+            entered.resolve();
+            await release.promise;
+          }
+          return create(input);
+        };
+      },
+    });
+    await entered.promise;
+    // Setup failure in the first conversation must not resume the global scheduler.
+    try {
+      await delay(150);
+      assert.equal(model.requests.length, 0);
+    } finally {
+      release.resolve();
+    }
+    const f = await opening;
+    try {
+      const failed = await eventually(
+        () => f.store.get<AgentRun>("run", first.id)!,
+        (r) => !!r.finishedAt,
+      );
+      assert.equal(failed.status, "failed");
+      const recovered = await eventually(
+        () => f.store.get<AgentRun>("run", second.id)!,
+        (r) => !!r.finishedAt,
+      );
+      assert.equal(recovered.status, "completed", recovered.error);
+      assert.equal(model.requests.length, 1);
+      assert.match(
+        JSON.stringify(model.requests[0]),
+        /Newest correction: the biological unit is the donor/,
+      );
+      assert.ok(
+        model.requests[0].messages.some(
+          (m) => m.role === "system" && m.toolsAdded?.some((t) => t.name === "execute_code"),
+        ),
+      );
+      assert.equal(
+        f.store.list<{ runId: string }>("run-request").filter((r) => r.runId === second.id).length,
+        2,
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "SIGKILL after native compaction admission recovers the same task before the app pointer is saved",
+  { timeout: 90_000 },
+  async () => {
+    const killed = await crash("summary-admitted");
+    const model = await scriptedModel();
+    model.faux.setResponses([
+      fauxAssistantMessage("Measurements retained; interpretation remains unresolved."),
+    ]);
+    const f = await fixture({ root: killed.root, model });
+    try {
+      const run = await eventually(
+        () => f.store.get<AgentRun>("run", killed.run.id)!,
+        (r) => !!r.finishedAt,
+      );
+      assert.equal(run.status, "completed", run.error);
+      assert.equal(model.requests.length, 1);
+      assert.equal(
+        (await f.sessions.history(run.conversationId)).filter((e) => e.kind === "pi.compaction")
+          .length,
+        1,
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "SIGKILL before initial admission preserves startup follow-ups after the original input",
+  { timeout: 90_000 },
+  async () => {
+    const killed = await crash("startup");
+    const model = await scriptedModel();
+    model.faux.setResponses([
+      fauxAssistantMessage("Initial investigation response"),
+      fauxAssistantMessage("Startup correction received"),
+    ]);
+    const f = await fixture({ root: killed.root, model });
+    try {
+      const run = await eventually(
+        () => f.store.get<AgentRun>("run", killed.run.id)!,
+        (r) => !!r.finishedAt,
+      );
+      assert.equal(run.status, "completed", run.error);
+      const inputs = (await f.sessions.history(run.conversationId))
+        .flatMap((e) => e.model ?? [])
+        .filter((m) => m.role === "user");
+      assert.equal(inputs.length, 2);
+      assert.match(JSON.stringify(inputs[0].content), /Continue the scientific investigation/);
+      assert.match(JSON.stringify(inputs[1].content), /Startup correction: use donor as the unit/);
+      const initial = model.requests[0].messages.find((m) => m.role === "user")!;
+      assert.match(JSON.stringify(initial.content), /Continue the scientific investigation/);
+      assert.equal(f.sessions.pending(run.conversationId).length, 0);
+    } finally {
+      await f.close();
+    }
+  },
+);

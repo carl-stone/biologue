@@ -70,6 +70,7 @@ export async function fixture(
     settings?: Settings;
     cancellationTimeoutMs?: number;
     model?: Awaited<ReturnType<typeof scriptedModel>>;
+    beforeInitialize?: (pi: PiAdapter, store: Store, context: ContextService) => void;
   } = {},
 ) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), "biologue-session-"));
@@ -96,7 +97,7 @@ export async function fixture(
     options.cancellationTimeoutMs,
   );
   const permissions = new Permissions(store, events);
-  const sessions = new ConversationSessions(root, stateDir, store, events);
+  const sessions = new ConversationSessions(store, events);
   const model = options.model ?? (await scriptedModel(options.settings));
   const pi = new PiAdapter({ project: root, stateDir, ...model.options });
   // Title generation has its own tests; do not consume scripted agent responses.
@@ -112,6 +113,7 @@ export async function fixture(
     collaboratorPrompt,
     sessions,
   );
+  options.beforeInitialize?.(pi, store, context);
   await supervisor.initialize();
   const conversationId = store.list<Conversation>("conversation")[0].id;
   const observed: AppEvent[] = [];

@@ -42,7 +42,7 @@ f.store.put("conversation", conversation.id, {
     mode: "auto",
   },
 });
-if (scenario === "summary") {
+if (scenario.startsWith("summary")) {
   const c = await f.sessions.get(f.conversationId);
   await c.commit(async (tx) => {
     for (const content of [
@@ -61,16 +61,22 @@ if (scenario === "summary") {
     if (
       publication.changes.some(
         (c) =>
-          c.type === "document" &&
-          c.record.kind === "biologue.scientific-summary" &&
-          Array.isArray(c.value?.responses) &&
-          c.value.responses.length,
+          (scenario === "summary" &&
+            c.type === "document" &&
+            c.record.kind === "biologue.scientific-summary" &&
+            Array.isArray(c.value?.responses) &&
+            c.value.responses.length) ||
+          (scenario === "summary-admitted" &&
+            c.type === "task" &&
+            c.value.kind === "pi.compaction"),
       )
     ) {
       send({ kind: "summary-committed" });
       process.kill(process.pid, "SIGKILL");
     }
   });
+} else if (scenario === "startup") {
+  f.pi.create = async () => new Promise(() => {});
 } else if (scenario === "provider" || scenario === "providers") {
   let requests = 0;
   f.options.modelRuntime.streamSimple = () => {
@@ -122,8 +128,13 @@ if (scenario === "summary") {
 f.supervisor.start(
   f.conversationId,
   "Continue the scientific investigation.",
-  scenario === "summary" ? { kind: "compaction" } : undefined,
+  scenario.startsWith("summary") ? { kind: "compaction" } : undefined,
 );
+if (scenario === "startup") {
+  const run = f.store.list<AgentRun>("run").find((r) => r.status === "running")!;
+  void f.supervisor.steer(run.id, "Startup correction: use donor as the unit.", "followUp");
+  send({ kind: "startup-inputs-accepted" });
+}
 if (scenario === "providers") {
   const c = f.context.createConversation("Independent second conversation");
   f.context.updateConversation(c.id, {
