@@ -1,157 +1,155 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
-import { stripFrontmatter, type PromptTemplate } from "@earendil-works/pi-coding-agent";
-import { validateToolArguments, type ToolCall } from "@earendil-works/pi-ai";
-import type { Context, JsonValue } from "@earendil-works/chord";
-import { withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { Type } from "typebox";
 import {
+  stripFrontmatter,
+  type DefaultResourceLoader,
+  type McpServerEntry,
+  type ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
+import { validateToolArguments, type ToolCall } from "@earendil-works/pi-ai";
+import {
+  CodemodeSandbox,
+  parseCodemodeSource,
+  renderDeclarations,
+  type CodemodeTool,
+  type CodemodeJsonSchema,
+} from "@earendil-works/pi-codemode";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { Context, JsonValue } from "@earendil-works/chord";
+import {
+  AgentDoc,
+  defineDoc,
   defineExtension,
   defineTool,
   section,
-  AgentDoc,
   type Registry,
+  type Harness,
+  type Conversation,
+  type ToolRegistration,
   type ToolExecutionApi,
   type ToolExecutionResult,
-  type Conversation,
-  type Harness,
   type JsonObject,
 } from "@earendil-works/pi-durable";
-import type {
-  DefaultResourceLoader,
-  ToolDefinition,
-  ExtensionToolContext,
-  ExtensionContext,
-  LoadExtensionsResult,
-  ModelRuntime,
-  ExtensionUIContext,
-  ToolLoadout,
-} from "@earendil-works/pi-coding-agent";
 import type { AgentRun } from "@biologue/protocol";
 import type { Permissions } from "./permissions.ts";
-import type { ConversationSessions } from "./conversation-sessions.ts";
+import type { ExtensionDialogs } from "./extension-ui.ts";
+import { NativeMcp, type NativeTool } from "./native-mcp.ts";
+import { expandPrompt } from "./prompt-expansion.ts";
 
-const json = <T>(value: T): T => JSON.parse(JSON.stringify(value));
-// The pinned Pi release does not re-export its pure template utility. Resolve it
-// relative to Pi's entry point so quoted, positional and default arguments retain
-// their native behavior without constructing an AgentSession.
-const { expandPromptTemplate } = (await import(
-  new URL("./core/prompt-templates.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href
-)) as { expandPromptTemplate: (text: string, templates: PromptTemplate[]) => string };
-type Invocation = { writes: { kind: string; data: JsonValue }[] };
+const CodeStore = defineDoc({
+  kind: "biologue.codemode-store",
+  version: 1,
+  scope: "conversation",
+  history: "rewindable",
+  fork: "asOf",
+  initial: () => ({ values: {} as Record<string, JsonValue> }),
+});
 
-/** Adapts Pi's tool-only extensions to durable tasks. No Agent or AgentSession is constructed. */
+/** Native tool registrations; standalone Pi clients provide protocol and sandbox services. */
 export class DurableTools {
   readonly name: string;
   private active = new Set<string>();
-  private runtime: LoadExtensionsResult;
-  private workspace: ToolDefinition[];
-  private invocation = new AsyncLocalStorage<Invocation>();
-  private controller = new AbortController();
-  private cancel = () => this.controller.abort();
-  private sections: Record<string, string> = {};
-  private dirty = true;
+  private mcp: NativeMcp;
   private stopped = false;
   constructor(
     private input: {
       project: string;
+      stateDir: string;
       loader: DefaultResourceLoader;
-      tools: ToolDefinition[];
+      tools: ToolRegistration[];
       run: AgentRun;
       models: ModelRuntime;
       registry: Registry;
       harness: Harness;
       conversation: Conversation;
-      sessions: ConversationSessions;
       permissions: Permissions;
-      ui: ExtensionUIContext;
-      uiForCall: (callId: string) => ExtensionUIContext;
+      dialogs: ExtensionDialogs;
       signal: AbortSignal;
-      onError: (error: Error) => void;
+      servers: McpServerEntry[];
     },
   ) {
-    input.signal.addEventListener("abort", this.cancel, { once: true });
-    if (input.signal.aborted) this.cancel();
     this.name = `biologue-tools:${input.run.conversationId}`;
-    this.workspace = input.tools;
-    this.runtime = input.loader.getExtensions();
-    if (this.runtime.errors.length)
-      throw new Error(
-        `Pi tools failed to load: ${this.runtime.errors.map((e) => e.error).join("; ")}`,
-      );
-    this.active = new Set([
-      ...input.tools.map((t) => t.name),
-      "ask_user",
-      "codemode",
-      "tool_search",
-    ]);
-    // These are tool discovery and bookkeeping callbacks, not agent-loop actions.
-    Object.assign(this.runtime.runtime, {
-      getAllTools: () =>
-        this.definitions().map((t) => ({ ...t, exposure: t.exposure ?? "direct" })),
-      getActiveTools: () => [...this.active],
-      setActiveTools: (names: string[]) => {
-        this.active = new Set(names);
-        this.dirty = true;
+    this.mcp = new NativeMcp({
+      entries: input.servers,
+      project: input.project,
+      stateDir: input.stateDir,
+      models: input.models,
+      signal: input.signal,
+      changed: async () => {
+        this.publish();
+        await this.configure();
       },
-      refreshTools: () => {
-        this.dirty = true;
-      },
-      getSettings: () => ({ codemode: { mode: "on" } }),
-      appendEntry: (kind: string, data: JsonValue) => {
-        const invocation = this.invocation.getStore();
-        if (!invocation) throw new Error("Tool bookkeeping requires an active durable invocation.");
-        invocation.writes.push({ kind, data: json(data) });
-      },
+      notify: (text, level) => input.dialogs.notify(input.run, text, level),
     });
+    this.mcp.approve = (name, args, callId, signal) =>
+      input.permissions.request(
+        {
+          runId: input.run.id,
+          conversationId: input.run.conversationId,
+          tool: name,
+          toolCallId: callId,
+          description: `Call ${name}`,
+          code: JSON.stringify(args, null, 2),
+        },
+        signal,
+        input.run.settings?.mode,
+      );
     this.publish();
   }
-  private definitions() {
+  private definitions(): NativeTool[] {
     return [
-      ...this.workspace,
-      ...this.runtime.extensions.flatMap((e) => [...e.tools.values()].map((t) => t.definition)),
+      ...this.input.tools,
+      this.askTool(),
+      this.codeTool(),
+      this.searchTool(),
+      ...this.mcp.tools(),
     ];
   }
-  private definition(name: string) {
-    return this.definitions()
-      .slice()
-      .reverse()
-      .find((t) => t.name === name);
-  }
-  private declared(definitions: ToolDefinition[]) {
-    return definitions.filter(
-      (t) =>
-        t.exposure !== "hidden" &&
-        (this.active.has(t.name) ||
-          t.exposure === "direct" ||
-          (!t.exposure && t.defaultActive !== false)),
+  private publish() {
+    if (this.stopped) return;
+    const loader = this.input.loader;
+    this.input.registry.install(
+      defineExtension({
+        name: this.name,
+        tools: this.definitions().map((tool) => ({
+          ...tool,
+          replay: tool.replay ?? "unsafe",
+          executionMode: "sequential",
+        })),
+        sections: [
+          section(
+            "project_instructions",
+            () =>
+              loader
+                .getAgentsFiles()
+                .agentsFiles.map((f) => `${f.path}\n${f.content}`)
+                .join("\n\n") || undefined,
+          ),
+          section(
+            "skills",
+            () =>
+              loader
+                .getSkills()
+                .skills.map((s) => `${s.name}: ${s.description}\nPath: ${s.filePath}`)
+                .join("\n") || undefined,
+          ),
+          section("mcp_servers", () => this.mcp.instructions() || undefined),
+        ],
+      }),
     );
   }
-  private baseContext(
-    signal: AbortSignal,
-    branch: unknown[] = [],
-    ui = this.input.ui,
-  ): ExtensionContext {
-    return {
-      cwd: this.input.project,
-      hasUI: true,
-      mode: "rpc",
-      ui,
-      signal,
-      model: this.input.models.getModel(
-        this.input.run.settings!.provider,
-        this.input.run.settings!.model,
-      ),
-      modelRegistry: this.input.models,
-      isProjectTrusted: () => true,
-      sessionManager: { getBranch: () => branch },
-      isIdle: () => false,
-      abort: () => this.controller.abort(),
-    } as unknown as ExtensionContext;
-  }
-  async emit(name: string, event: unknown, signal = this.controller.signal) {
-    const ctx = this.baseContext(signal);
-    for (const extension of this.runtime.extensions)
-      for (const handler of extension.handlers.get(name) ?? []) await handler(event as never, ctx);
+  private async configure() {
+    if (this.stopped) return;
+    await this.input.conversation.configure(
+      {
+        tools: this.definitions().filter(
+          (t) =>
+            t.exposure !== "hidden" &&
+            (!t.exposure || t.exposure === "direct" || this.active.has(t.name)),
+        ),
+      },
+      BACKGROUND_CONTEXT,
+    );
   }
   async start() {
     const saved = await this.input.harness.snapshot(
@@ -159,226 +157,280 @@ export class DurableTools {
       this.input.conversation.id,
       BACKGROUND_CONTEXT,
     );
-    if (Array.isArray(saved?.tools))
-      this.active = new Set([...saved.tools, ...this.workspace.map((t) => t.name)]);
-    await this.emit("session_start", { type: "session_start" });
-    await this.prepare();
-  }
-  async prepare() {
-    const event = { type: "before_agent_start", systemPromptOptions: { sections: {} } };
-    await this.emit("before_agent_start", event);
-    this.sections = event.systemPromptOptions.sections;
+    if (Array.isArray(saved?.tools)) this.active = new Set(saved.tools);
+    await this.mcp.start();
+    if ([...this.active].some((name) => name.startsWith("mcp__"))) await this.mcp.ready();
     this.publish();
-    await this.flush();
-  }
-  private publish() {
-    const definitions = this.definitions();
-    const loadout = {
-      declared: this.declared(definitions),
-      callable: definitions.filter(
-        (t) => t.name !== "codemode" && !["hidden", "model-only"].includes(t.exposure ?? "direct"),
-      ),
-      registered: definitions,
-      getExposure: (name: string) => this.definition(name)?.exposure ?? "direct",
-      getNamespace: (name: string) => this.definition(name)?.namespace,
-    } as unknown as ToolLoadout;
-    const descriptions: Record<string, string> = {};
-    for (const definition of definitions)
-      Object.assign(descriptions, definition.prepareLoadout?.(loadout)?.descriptions);
-    const tools = definitions
-      .filter((t) => t.exposure !== "hidden")
-      .map((definition) =>
-        defineTool({
-          ...definition,
-          description: descriptions[definition.name] ?? definition.description,
-          replay: definition.name === "ask_user" ? ("safe" as const) : ("unsafe" as const),
-          executionMode: "sequential" as const,
-          execute: (args, api, context) =>
-            this.invoke(definition.name, args as JsonObject, api, context),
-        }),
-      );
-    const skills = this.input.loader.getSkills().skills;
-    const instructions = this.input.loader.getAgentsFiles().agentsFiles;
-    this.input.registry.install(
-      defineExtension({
-        name: this.name,
-        tools,
-        sections: [
-          section(
-            "project_instructions",
-            () => instructions.map((f) => `${f.path}\n${f.content}`).join("\n\n") || undefined,
-          ),
-          section(
-            "skills",
-            () =>
-              skills.map((s) => `${s.name}: ${s.description}\nPath: ${s.filePath}`).join("\n") ||
-              undefined,
-          ),
-          ...Object.keys(this.sections).map((key) => section(key, () => this.sections[key])),
-        ],
-      }),
-    );
-    this.dirty = true;
-  }
-  async flush() {
-    if (this.stopped || !this.dirty) return;
-    this.dirty = false;
-    const definitions = this.definitions();
-    await this.input.conversation.configure(
-      {
-        tools: this.declared(definitions).map((t) => ({ name: t.name }) as never),
-      },
-      BACKGROUND_CONTEXT,
-    );
+    await this.configure();
   }
   expand(text: string) {
-    const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
-    if (!match) return text;
-    const expanded = expandPromptTemplate(text, this.input.loader.getPrompts().prompts);
+    const expanded = expandPrompt(text, this.input.loader.getPrompts().prompts);
     if (expanded !== text) return expanded;
-    const skill = this.input.loader.getSkills().skills.find((s) => `skill:${s.name}` === match[1]);
+    const match = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+    const skill = match && this.input.loader.getSkills().skills.find((s) => s.name === match[1]);
     if (!skill) return text;
-    const body = stripFrontmatter(readFileSync(skill.filePath, "utf8")).trim();
-    return `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>\n\n${match[2] ?? ""}`;
+    return `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${stripFrontmatter(readFileSync(skill.filePath, "utf8")).trim()}\n</skill>\n\n${match![2] ?? ""}`;
   }
   async command(text: string) {
-    const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+    const match = /^\/mcp(?:\s+([\s\S]*))?$/.exec(text.trim());
     if (!match) return false;
-    const command = this.runtime.extensions
-      .flatMap((e) => [...e.commands.values()])
-      .find((c) => c.name === match[1]);
-    if (!command) return false;
-    await command.handler(match[2] ?? "", this.baseContext(this.controller.signal) as never);
+    await this.mcp.command(match[1] ?? "");
     return true;
   }
-  private async invoke(
-    name: string,
-    args: JsonObject,
+  private askTool() {
+    return defineTool({
+      name: "ask_user",
+      description:
+        "Ask the scientist a question when their answer matters to the next scientific decision. Provide suggested options or request free text.",
+      replay: "safe",
+      parameters: Type.Object({
+        question: Type.String(),
+        context: Type.Optional(Type.String()),
+        options: Type.Optional(
+          Type.Array(
+            Type.Union([
+              Type.String(),
+              Type.Object({ title: Type.String(), description: Type.Optional(Type.String()) }),
+            ]),
+          ),
+        ),
+        allowFreeform: Type.Optional(Type.Boolean()),
+        timeout: Type.Optional(Type.Number()),
+      }),
+      execute: async (args, api, context) => {
+        const options = args.options?.map((o) => (typeof o === "string" ? o : o.title));
+        const select = options?.length && args.allowFreeform === false;
+        const answer = await this.input.dialogs.ask(
+          this.input.run,
+          api.callId,
+          select ? "select" : "input",
+          args.question +
+            (args.context ? `\n${args.context}` : "") +
+            (!select && options?.length ? `\nSuggestions: ${options.join("; ")}` : ""),
+          select ? options : undefined,
+          "Type your answer...",
+          { signal: context.abortSignal, timeout: args.timeout ? args.timeout * 1000 : undefined },
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                answer === undefined ? "User cancelled the question" : `User answered: ${answer}`,
+            },
+          ],
+          details: {
+            question: args.question,
+            cancelled: answer === undefined,
+            answer: answer ?? null,
+          },
+        };
+      },
+    });
+  }
+  private matches(query: string, tools = this.mcp.tools(), limit = 8) {
+    const words = query
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    return tools
+      .map((tool) => ({
+        tool,
+        score: words.reduce(
+          (score, word) =>
+            score +
+            (JSON.stringify([tool.name, tool.description, tool.parameters])
+              .toLowerCase()
+              .includes(word)
+              ? 1
+              : 0),
+          0,
+        ),
+      }))
+      .filter((m) => m.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((m) => m.tool);
+  }
+  private searchTool() {
+    return defineTool({
+      name: "tool_search",
+      description:
+        "Search connected MCP tools by name, description, or parameters and declare matches for the next model request.",
+      parameters: Type.Object({
+        query: Type.String({ minLength: 1 }),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+      }),
+      execute: async ({ query, limit }) => {
+        await this.mcp.ready();
+        const matches = this.matches(query, undefined, limit);
+        for (const tool of matches) this.active.add(tool.name);
+        return {
+          control: { addTools: matches.map((t) => t.name) },
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                matches.map((t) => ({
+                  name: t.name,
+                  description: t.description,
+                  parameters: t.parameters,
+                })),
+              ),
+            },
+          ],
+          details: { loaded: matches.map((t) => t.name) },
+        };
+      },
+    });
+  }
+  private codeTool() {
+    const tools = this.input.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: JSON.parse(JSON.stringify(tool.parameters)) as CodemodeJsonSchema,
+      execute: () => undefined,
+    }));
+    return defineTool({
+      name: "codemode",
+      description: `Run JavaScript that calls workspace or MCP tools, chains calls, or filters results. Scientific execution and inspection must use workspace tools. Use text() or return for output; store()/load() retain JSON values. Discover MCP tools with searchTools(query, {limit, namespace}), describeTool(name), or describeNamespace(name). Scripts have no filesystem, network, or shell access.\n${renderDeclarations({ tools })}`,
+      replay: "unsafe",
+      parameters: Type.Object({ code: Type.String() }),
+      execute: (args, api, context) => this.code(args.code, api, context),
+    });
+  }
+  private async code(
+    source: string,
     api: ToolExecutionApi,
     context: Context,
   ): Promise<ToolExecutionResult> {
-    const signal = AbortSignal.any([
-      context.abortSignal ?? this.controller.signal,
-      this.controller.signal,
-    ]);
-    if (this.stopped || this.controller.signal.aborted || this.input.run.status !== "running")
-      throw new Error("Agent run cancelled.");
-    const definition = this.definition(name);
-    if (!definition || definition.exposure === "hidden")
-      throw new Error(`Tool ${name} is unavailable.`);
-    let params: unknown;
-    try {
-      params = args; // Native ToolTask already validated the top-level call.
-      await this.emit(
-        "tool_call",
-        { type: "tool_call", toolName: name, toolCallId: api.callId, input: params },
-        signal,
-      );
-      // Connections can register tools while the native tool_call hooks wait.
-      this.publish();
-      await this.flush();
-      if (
-        name.startsWith("mcp__") ||
-        ["read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates"].includes(name)
-      )
-        if (!definition.annotations?.readOnlyHint)
-          await this.input.permissions.request(
-            {
-              runId: this.input.run.id,
-              conversationId: this.input.run.conversationId,
-              tool: name,
-              toolCallId: api.callId,
-              description: `Call ${name}`,
-              code: JSON.stringify(params, null, 2),
-            },
-            signal,
-            this.input.run.settings?.mode,
+    await this.mcp.ready();
+    const { code, options } = parseCodemodeSource(source);
+    const definitions = this.definitions().filter(
+      (t) => !["codemode", "tool_search"].includes(t.name) && t.exposure !== "hidden",
+    );
+    let number = 0;
+    const tools: CodemodeTool[] = definitions.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: JSON.parse(JSON.stringify(tool.parameters)) as CodemodeJsonSchema,
+      execute: async (raw, { signal }) => {
+        if (this.stopped || this.input.run.status !== "running")
+          throw new Error("Agent run cancelled.");
+        const call: ToolCall = {
+          type: "toolCall",
+          id: `${api.callId}/${++number}`,
+          name: tool.name,
+          arguments: raw as JsonObject,
+        };
+        const args = validateToolArguments(tool, call);
+        const result = await tool.execute(
+          args,
+          { ...api, callId: call.id },
+          withAbortSignal(
+            AbortSignal.any([signal, ...(context.abortSignal ? [context.abortSignal] : [])]),
+            context,
+          ),
+        );
+        if (result?.isError)
+          throw new Error(
+            result.content
+              ?.filter((b) => b.type === "text")
+              .map((b) => b.text)
+              .join("\n") || "Tool failed.",
           );
-      signal.throwIfAborted();
-      const branch =
-        name === "codemode"
-          ? (await this.input.sessions.history(this.input.run.conversationId))
-              .filter((e) => e.kind.startsWith("biologue.custom."))
-              .map((e) => ({
-                type: "custom",
-                customType: e.kind.slice("biologue.custom.".length),
-                data: e.data,
-              }))
-          : [];
-      let nestedNumber = 0;
-      const nestedTools = this.definitions().filter(
-        (t) =>
-          t.name !== "codemode" &&
-          t.exposure !== "hidden" &&
-          t.exposure !== "model-only" &&
-          (this.active.has(t.name) ||
-            ["direct", "codemode", "deferred"].includes(t.exposure ?? "direct")),
-      );
-      const toolContext = {
-        ...this.baseContext(signal, branch, this.input.uiForCall(api.callId)),
-        tools: nestedTools,
-        executeTool: async (toolName: string, raw: unknown, opts?: { signal?: AbortSignal }) => {
-          const callId = `${api.callId}/${++nestedNumber}`;
-          const definition = this.definition(toolName);
-          if (!definition || !nestedTools.some((t) => t.name === toolName))
-            throw new Error(`Tool ${toolName} is unavailable.`);
-          const call: ToolCall = {
-            type: "toolCall",
-            id: callId,
-            name: toolName,
-            arguments: json(raw) as JsonObject,
-          };
-          // Pi's unsafe code-mode ToolTask owns the whole plan. It will never
-          // replay this JavaScript or any of its nested scientific effects.
-          const args = validateToolArguments(definition, call);
-          const result = await this.invoke(
-            toolName,
-            args as JsonObject,
-            { ...api, callId },
-            withAbortSignal(
-              opts?.signal ? AbortSignal.any([signal, opts.signal]) : signal,
-              context,
-            ),
-          );
-          return { toolCall: call, result, isError: result.isError ?? false };
-        },
-      } as unknown as ExtensionToolContext;
-      const invocation: Invocation = { writes: [] };
-      const result = await this.invocation.run(invocation, () =>
-        definition.execute(
-          api.callId,
-          params as never,
-          signal,
-          (update) => {
-            if (update.details !== undefined)
-              void api.details(json(update.details) as JsonValue, context).catch(() => {});
+        const details = result?.details as { structuredContent?: JsonValue } | undefined;
+        return (
+          details?.structuredContent ??
+          (result?.content?.some((b) => b.type === "image")
+            ? result.content
+            : result?.content
+                ?.filter((b) => b.type === "text")
+                .map((b) => b.text)
+                .join("\n")) ??
+          ""
+        );
+      },
+    }));
+    const describe = (name: string) => definitions.find((t) => t.name === name);
+    const sandbox = new CodemodeSandbox({
+      tools,
+      globals: [
+        {
+          name: "searchTools",
+          spread: true,
+          execute: (raw) => {
+            const [query, options] = raw as [string, { limit?: number; namespace?: string }?];
+            return this.matches(
+              query,
+              definitions.filter(
+                (t) => !options?.namespace || t.namespace?.includes(options.namespace),
+              ),
+              options?.limit,
+            ).map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
           },
-          toolContext,
-        ),
-      );
-      if (invocation.writes.length)
+        },
+        {
+          name: "describeTool",
+          execute: (raw) => {
+            const t = describe(String(raw));
+            return t
+              ? { name: t.name, description: t.description, parameters: t.parameters }
+              : null;
+          },
+        },
+        {
+          name: "describeNamespace",
+          execute: (raw) => ({
+            instructions: this.mcp.instructions(),
+            tools: definitions
+              .filter((t) => t.namespace?.includes(String(raw)))
+              .map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
+          }),
+        },
+      ],
+      memoryLimitBytes: 128 * 1024 * 1024,
+    });
+    try {
+      const state = await api.snapshot(CodeStore, api.conversationId, context);
+      const result = await sandbox.execute(code, {
+        signal: context.abortSignal,
+        timeoutMs: options.timeoutMs ?? Infinity,
+        store: state?.values,
+      });
+      if (result.ok)
         await api.commit(async (tx) => {
-          for (const write of invocation.writes)
-            await tx.appendEntry(api.conversationId, {
-              kind: `biologue.custom.${write.kind}`,
-              data: write.data,
-            });
+          const state = await tx.doc(CodeStore, api.conversationId);
+          for (const key of result.storeWrites.delete) delete state.values[key];
+          Object.assign(state.values, result.storeWrites.set);
         }, context);
-      // tool_search activation becomes durable before its result is committed.
-      await this.flush();
-      return json(result) as ToolExecutionResult;
-    } catch (cause) {
-      if (signal.aborted) throw cause;
+      const content = [...result.output];
+      if (result.ok && result.value !== undefined)
+        content.push({ type: "text", text: JSON.stringify(result.value) });
+      if (!result.ok)
+        content.push({ type: "text", text: result.error.stack ?? result.error.message });
+      const budget = Math.max(100, options.maxOutputTokens ?? 4000) * 4;
+      let remaining = budget;
       return {
-        isError: true,
-        content: [{ type: "text", text: cause instanceof Error ? cause.message : String(cause) }],
+        content: content.map((item) => {
+          if (item.type !== "text") return item;
+          const text =
+            item.text.length > remaining
+              ? item.text.slice(0, remaining) +
+                "\n[Output truncated; filter results or retrieve captured artifacts with workspace tools.]"
+              : item.text;
+          remaining = Math.max(0, remaining - text.length);
+          return { ...item, text };
+        }),
+        isError: !result.ok,
+        details: JSON.parse(JSON.stringify({ calls: result.calls })),
       };
+    } finally {
+      await sandbox.close();
     }
   }
   async stop() {
-    this.input.signal.removeEventListener("abort", this.cancel);
-    this.controller.abort();
     this.stopped = true;
-    await this.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+    await this.mcp.close();
   }
 }

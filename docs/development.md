@@ -136,11 +136,13 @@ commands expand through Pi. The [science package](../packages/pi-science/README.
 supplies the research-context and compaction integration.
 
 Configure native Pi MCP in **Agent settings → MCP**; project configuration lives
-in `<stateDir>/pi/mcp.json`. `/mcp` checks connections and `/mcp login <name>`
-starts sign-in. MCP OAuth credentials use Pi's `~/.pi/agent/mcp-auth.json` store.
-Code mode orchestrates tools; it has no direct filesystem or network access, and
-auxiliary model calls are disabled. Native shell/file-writing tools are excluded,
-and executable extensions require an explicit host integration.
+in `<stateDir>/pi/mcp.json`. `/mcp` shows connection status; authentication
+challenges offer a sign-in link in the workbench. Pi's MCP OAuth provider stores
+credentials per server and URL in `<stateDir>/pi/mcp-auth/`; its loopback callback
+listener opens only when sign-in is needed. Tools register directly with Pi
+Durable, using Pi's standalone MCP clients and code-mode sandbox. Code mode
+orchestrates tools without direct filesystem, network, shell, or auxiliary model
+access. Executable extensions require an explicit host integration.
 
 ## State and recovery
 
@@ -169,6 +171,11 @@ admission lock. Manual compaction admission and its run
 identity commit together, and restoring an unsent correction is idempotent even
 if the display index fails. Native code-mode tool tasks own their entire plan,
 including nested calls; there is no separate nested-task scheduler or replay journal.
+Tool discovery activates native registrations through Durable controls. Code-mode
+saved values live in a rewindable native document and follow the selected branch
+prefix. Scientific summaries run in native child conversations owned by compaction
+tasks, with Durable generation, retry, recovery, cancellation, and usage accounting.
+The app aggregates parent and child usage for display without duplicating it.
 Interrupted scientific executions are marked abandoned.
 Interrupted tools, including calls that were waiting for
 approval, settle as unknown effects and are never replayed automatically. A surviving Jupyter session can be reattached; restarting

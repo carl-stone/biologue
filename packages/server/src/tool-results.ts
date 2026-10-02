@@ -7,7 +7,10 @@ import type { ObservationReceipt } from "./stale-context.ts";
 export const textResult = (
   text: string,
   details?: { executionId?: string; biologueObservation?: ObservationReceipt },
-) => ({ content: [{ type: "text" as const, text }], details });
+) => ({
+  content: [{ type: "text" as const, text }],
+  details,
+});
 
 export const clip = (text: string, limit: number) =>
   text.length <= limit ? text : `${text.slice(0, limit)}…`;

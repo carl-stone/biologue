@@ -3,7 +3,8 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { z } from "zod";
-import type { Skill, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { Skill } from "@earendil-works/pi-coding-agent";
+import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { AgentRun, Execution } from "@biologue/protocol";
 import type { Documents } from "./documents.ts";
 import type { ExecutionService } from "./execution.ts";
@@ -45,22 +46,21 @@ export function workspaceTools(
   execution: ExecutionService,
   permissions: Permissions,
   skills: Skill[],
-): ToolDefinition[] {
-  execution.context.begin(run.conversationId);
+  supportsImages = false,
+): ToolRegistration[] {
   const language = Type.Union([Type.Literal("python"), Type.Literal("r")]);
   const projectPath = (path: string) => relative(documents.root, resolve(documents.root, path));
   const skillsRoots = skills.map((skill) => realpathSync(skill.baseDir));
-  const tools: ToolDefinition[] = [
+  const tools: ToolRegistration[] = [
     {
       name: "list_files",
-      label: "List project files",
       description: "List project files and untitled working documents.",
       parameters: Type.Object({
         offset: Type.Optional(
           Type.Integer({ minimum: 0, description: "File index (0-based; default 0)." }),
         ),
       }),
-      execute: async (_id, raw) => {
+      execute: async (raw) => {
         const { offset } = z.object({ offset: z.number().int().min(0).default(0) }).parse(raw);
         const files = documents.listWorking();
         const page: string[] = [];
@@ -79,7 +79,6 @@ export function workspaceTools(
     },
     {
       name: "read",
-      label: "Read current document or skill",
       description:
         "Read a text document's current buffer and version (including unsaved edits), or a discovered skill resource.",
       parameters: Type.Object({
@@ -97,7 +96,7 @@ export function workspaceTools(
           }),
         ),
       }),
-      execute: async (_id, raw) => {
+      execute: async (raw) => {
         const args = z
           .object({
             path: z.string().min(1),
@@ -143,7 +142,6 @@ export function workspaceTools(
     },
     {
       name: "edit_document",
-      label: "Edit document buffer",
       description:
         "Replace a document buffer; requires approval and does not save to disk. Read the whole document first.",
       parameters: Type.Object({
@@ -151,7 +149,9 @@ export function workspaceTools(
         content: Type.String(),
         expectedVersion: Type.Integer({ minimum: 1, description: "Version returned by read." }),
       }),
-      execute: async (toolCallId, raw, signal) => {
+      execute: async (raw, api, context) => {
+        const toolCallId = api.callId,
+          signal = context.abortSignal;
         const args = z
           .object({
             path: z.string().max(1000),
@@ -183,7 +183,6 @@ export function workspaceTools(
     },
     {
       name: "inspect_environment",
-      label: "Inspect shared environment",
       description:
         "Preview live object names, types, and values with bounded recorded code. R promises may be evaluated.",
       parameters: Type.Object({
@@ -198,7 +197,9 @@ export function workspaceTools(
           Type.Integer({ minimum: 0, description: "Object index (0-based; default 0)." }),
         ),
       }),
-      execute: async (toolCallId, raw, signal) => {
+      execute: async (raw, api, context) => {
+        const toolCallId = api.callId,
+          signal = context.abortSignal;
         const args = z
           .object({
             language: z.enum(["python", "r"]),
@@ -226,7 +227,6 @@ export function workspaceTools(
     },
     {
       name: "execute_code",
-      label: "Execute in shared session",
       description:
         "Run code or a working document in the shared session with approval. For a complete buffer, provide its document path/version and omit code; the workspace captures its exact contents, including unsaved edits. On 'Not run', inspect or revise, or acknowledge the warning with a reason.",
       parameters: Type.Object({
@@ -258,7 +258,9 @@ export function workspaceTools(
           ),
         ),
       }),
-      execute: async (toolCallId, raw, signal) => {
+      execute: async (raw, api, context) => {
+        const toolCallId = api.callId,
+          signal = context.abortSignal;
         const args = z
           .object({
             language: z.enum(["python", "r"]),
@@ -334,7 +336,6 @@ export function workspaceTools(
     },
     {
       name: "list_executions",
-      label: "Find recorded executions",
       description:
         "Find recent recorded executions in this project, newest first, including the scientist's runs. Defaults to analysis history. Use read_execution for exact source and output IDs, then read_artifact for captured figures or full output. History does not establish current live object state.",
       parameters: Type.Object({
@@ -350,7 +351,7 @@ export function workspaceTools(
           Type.String({ description: "Continuation execution ID from this tool." }),
         ),
       }),
-      execute: async (_id, raw) => {
+      execute: async (raw) => {
         const {
           limit: count,
           before,
@@ -392,7 +393,6 @@ export function workspaceTools(
     },
     {
       name: "read_execution",
-      label: "Read recorded execution",
       description:
         "Read recorded code and output previews. Use read_artifact for full output or images.",
       parameters: Type.Object({
@@ -410,7 +410,7 @@ export function workspaceTools(
           }),
         ),
       }),
-      execute: async (_id, raw) => {
+      execute: async (raw) => {
         const { executionId, codeOffset, outputOffset } = z
           .object({
             executionId: z.string().uuid(),
@@ -427,7 +427,6 @@ export function workspaceTools(
     },
     {
       name: "read_artifact",
-      label: "Inspect captured artifact",
       description:
         "Read captured text, data, or a PNG. Historical output does not establish current runtime state.",
       parameters: Type.Object({
@@ -437,7 +436,7 @@ export function workspaceTools(
           Type.Integer({ minimum: 0, description: "Text character offset (0-based; default 0)." }),
         ),
       }),
-      execute: async (_id, raw, _signal, _update, ctx) => {
+      execute: async (raw) => {
         const args = z
           .object({
             executionId: z.string().uuid(),
@@ -474,7 +473,7 @@ export function workspaceTools(
               }
             : {}),
         });
-        if (typeof image === "string" && args.offset === 0 && ctx.model?.input.includes("image")) {
+        if (typeof image === "string" && args.offset === 0 && supportsImages) {
           if (image.length > 14_000_000)
             throw new Error(
               "Image exceeds the retrieval limit. Create a smaller view with execute_code.",

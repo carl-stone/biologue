@@ -1297,7 +1297,9 @@ test(
       assert.ok(
         f.requests.every((r) =>
           r.messages.some(
-            (m) => m.role === "system" && m.sections?.scientific_retention === scientificRetention,
+            (m) =>
+              m.role === "system" &&
+              m.sections?.scientific_retention?.includes(scientificRetention),
           ),
         ),
       );

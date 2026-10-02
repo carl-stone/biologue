@@ -5,11 +5,11 @@ import type { Store } from "./store.ts";
 import type { ExecutionRepository } from "./execution-repository.ts";
 import { digest } from "./documents.ts";
 
-export interface ObservationReceipt {
+export type ObservationReceipt = {
   executionId: string;
   names: string[];
   kind: "environment_preview" | "execution_result";
-}
+};
 type Observation = { seq: number; epoch: string; execution_id: string; kind: string };
 type Activity = { seq: number; execution_id: string; effects: string };
 export type ContextAcknowledgment = NonNullable<ExecutionContextCheck["acknowledgment"]>;

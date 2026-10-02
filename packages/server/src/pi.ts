@@ -1,28 +1,16 @@
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { ModelThinkingLevel as ThinkingLevel } from "@earendil-works/pi-ai";
 import {
-  createCodemodeExtension,
-  createToolSearchExtension,
-  createMcpExtension,
   DefaultResourceLoader,
   ModelRuntime,
   SettingsManager,
   type Skill,
-  type ToolDefinition,
-  type ExtensionUIContext,
   type McpServerEntry,
 } from "@earendil-works/pi-coding-agent";
-import type {
-  ResearchContext,
-  Message,
-  AgentSettings,
-  AgentResources,
-  AgentModel,
-} from "@biologue/protocol";
+import type { Message, AgentSettings, AgentResources, AgentModel } from "@biologue/protocol";
 
 export { scientificRetention } from "../../pi-science/index.ts";
 
@@ -42,26 +30,24 @@ import {
   type Conversation,
   type Registry,
   type HarnessSettings,
+  type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { acquireDurableOwner } from "./durable-owner.ts";
 import { DurableTools } from "./durable-tools.ts";
-import type { ConversationSessions } from "./conversation-sessions.ts";
+import type { ExtensionDialogs } from "./extension-ui.ts";
 import type { Permissions } from "./permissions.ts";
 import type { AgentRun } from "@biologue/protocol";
 
-export interface CreateScientificSession {
+export interface CreateDurableTools {
   harness: Harness;
   registry: Registry;
   conversation: Conversation;
-  sessions: ConversationSessions;
   run: AgentRun;
   permissions: Permissions;
-  tools: (skills: Skill[]) => ToolDefinition[];
-  onError: (error: Error) => void;
-  ui: ExtensionUIContext;
-  uiForCall: (callId: string) => ExtensionUIContext;
+  tools: (skills: Skill[]) => ToolRegistration[];
+  dialogs: ExtensionDialogs;
   signal: AbortSignal;
 }
 
@@ -73,9 +59,13 @@ export class PiAdapter {
   private agentDir: string;
   private settings: SettingsManager;
   private releaseOwner?: () => void;
-  private requestGuards = new WeakMap<object, () => void>();
-  guardRequest(messages: readonly import("@earendil-works/pi-ai").Message[], check: () => void) {
-    for (const message of messages) this.requestGuards.set(message, check);
+  private requestGuards = new WeakMap<object, { check: () => void; maxTokens?: number }>();
+  guardRequest(
+    messages: readonly import("@earendil-works/pi-ai").Message[],
+    check: () => void,
+    maxTokens?: number,
+  ) {
+    for (const message of messages) this.requestGuards.set(message, { check, maxTokens });
   }
   releaseHarness() {
     this.releaseOwner?.();
@@ -150,9 +140,6 @@ export class PiAdapter {
       steeringMode: this.settings.getSteeringMode(),
       followUpMode: this.settings.getFollowUpMode(),
     };
-  }
-  retryPolicy() {
-    return this.settings.getRetrySettings();
   }
   async configurePreferences(value: ReturnType<PiAdapter["preferences"]>) {
     this.settings.setCompactionEnabled(value.autoCompact);
@@ -304,7 +291,13 @@ export class PiAdapter {
               const guards = args[1].messages.map((message) => this.requestGuards.get(message));
               if (!guards.length || guards.some((guard) => !guard))
                 throw new Error("Scientific policy is not ready for this model request.");
-              for (const guard of guards) guard!();
+              for (const guard of guards) guard!.check();
+              const limit = Math.min(...guards.map((guard) => guard!.maxTokens ?? Infinity));
+              if (Number.isFinite(limit))
+                args[2] = {
+                  ...args[2],
+                  maxTokens: Math.min(limit, args[2]?.maxTokens ?? (args[0].maxTokens || limit)),
+                };
               return target[key](...args);
             };
           return typeof value === "function" ? value.bind(target) : value;
@@ -323,7 +316,7 @@ export class PiAdapter {
       throw error;
     }
   }
-  async create(input: CreateScientificSession): Promise<DurableTools> {
+  async create(input: CreateDurableTools): Promise<DurableTools> {
     const runtime = await this.modelRuntime();
     const loader = new DefaultResourceLoader({
       cwd: this.options.project,
@@ -331,25 +324,8 @@ export class PiAdapter {
       settingsManager: this.settings,
       noExtensions: true,
       noThemes: true,
-      additionalExtensionPaths: [
-        join(createRequire(import.meta.url).resolve("pi-ask-user/package.json"), "..", "index.ts"),
-      ],
       additionalPromptTemplatePaths: [
         fileURLToPath(new URL("../../pi-science/prompts", import.meta.url)),
-      ],
-      extensionFactories: [
-        { name: "codemode", factory: createCodemodeExtension({ mode: "on", models: false }) },
-        { name: "tool-search", factory: createToolSearchExtension() },
-        {
-          name: "mcp",
-          factory: createMcpExtension({
-            loadConfig: () => ({ servers: this.mcpServers(), errors: [] }),
-            logPath: join(this.agentDir, "mcp.log"),
-            openUrl: (url) => input.ui.notify(`Sign in: ${url}`, "info"),
-            updateConfig: (entry, patch) =>
-              this.saveMcpServer(entry.name, { ...entry.config, ...patch }),
-          }),
-        },
       ],
     });
     await loader.reload();
@@ -358,6 +334,8 @@ export class PiAdapter {
       loader,
       models: runtime,
       project: this.options.project,
+      stateDir: this.agentDir,
+      servers: this.mcpServers(),
       tools: input.tools(loader.getSkills().skills),
     });
   }

@@ -235,33 +235,38 @@ export class Supervisor {
         harness: this.harness,
         registry: this.registry,
         conversation,
-        sessions: this.sessions,
         run,
         permissions: this.permissions,
-        ui: this.dialogs.context(run),
-        uiForCall: (callId) => this.dialogs.context(run, callId),
+        dialogs: this.dialogs,
         signal: active.controller.signal,
         tools: (skills) =>
-          workspaceTools(run, this.documents, this.execution, this.permissions, skills),
-        onError: (error) => {
-          this.failure(active, "Pi integration", error);
-          void this.stop(active);
-        },
+          workspaceTools(
+            run,
+            this.documents,
+            this.execution,
+            this.permissions,
+            skills,
+            model.input.includes("image"),
+          ),
       });
       active.session = tools;
       const science = createScientificExtension({
         prompt: input.prompt,
         research: () => this.context.get(),
         mode: run.settings?.mode,
-        models: runtime,
         harness: this.harness,
-        retry: () => this.pi.retryPolicy(),
+        registry: this.registry,
+        conversationId: conversation.id,
         model: { provider: model.provider, modelId: model.id },
-        guardRequest: (messages) => {
-          this.pi.guardRequest(messages, () => {
-            if (active.integrationError) throw active.integrationError;
-            if (run.status !== "running" || this.closing) throw new Error("Agent run stopped.");
-          });
+        guardRequest: (messages, maxTokens) => {
+          this.pi.guardRequest(
+            messages,
+            () => {
+              if (active.integrationError) throw active.integrationError;
+              if (run.status !== "running" || this.closing) throw new Error("Agent run stopped.");
+            },
+            maxTokens,
+          );
         },
         onContext: (messages) => {
           try {
@@ -608,17 +613,32 @@ export class Supervisor {
   }
   private async updateUsage(active: ActiveRun) {
     if (!active.conversation) return;
-    const usage = await this.harness.snapshot(UsageDoc, active.conversation.id, ctx);
-    if (!usage) return;
     const sums = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
     let cost = 0;
-    for (const bucket of [...Object.values(usage.models), ...Object.values(usage.tools)]) {
-      sums.input += bucket.input;
-      sums.output += bucket.output;
-      sums.cacheRead += bucket.cacheRead;
-      sums.cacheWrite += bucket.cacheWrite;
-      sums.total += bucket.totalTokens;
-      cost += bucket.cost.total;
+    // Native child conversations own summary requests and usage. Aggregate their
+    // spend for display without copying it into the parent's durable accounts.
+    const pending = [active.conversation.id];
+    while (pending.length) {
+      const id = pending.shift()!;
+      const usage = await this.harness.snapshot(UsageDoc, id, ctx);
+      if (usage)
+        for (const bucket of [...Object.values(usage.models), ...Object.values(usage.tools)]) {
+          sums.input += bucket.input;
+          sums.output += bucket.output;
+          sums.cacheRead += bucket.cacheRead;
+          sums.cacheWrite += bucket.cacheWrite;
+          sums.total += bucket.totalTokens;
+          cost += bucket.cost.total;
+        }
+      let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+      do {
+        const page = await this.harness.commit(
+          (tx) => tx.scanConversations({ ownerConversationId: id }, 100, cursor),
+          ctx,
+        );
+        pending.push(...page.items.map((child) => child.id));
+        cursor = page.next;
+      } while (cursor);
     }
     const runtime = await this.pi.modelRuntime();
     const settings = active.run.settings!;

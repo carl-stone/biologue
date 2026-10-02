@@ -103,7 +103,7 @@ test(
 );
 
 test(
-  "installed pi-ask-user waits for a browser answer, records it, and releases on cancellation",
+  "native ask_user waits for a browser answer, records it, and releases on cancellation",
   timeout,
   async () => {
     const f = await fixture();

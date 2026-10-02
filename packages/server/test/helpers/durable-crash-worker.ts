@@ -63,9 +63,10 @@ if (scenario.startsWith("summary")) {
         (c) =>
           (scenario === "summary" &&
             c.type === "document" &&
-            c.record.kind === "biologue.scientific-summary" &&
-            Array.isArray(c.value?.responses) &&
-            c.value.responses.length) ||
+            c.record.kind === "pi.usage" &&
+            publication.changes.some(
+              (change) => change.type === "entry" && change.value.kind === "pi.assistant",
+            )) ||
           (scenario === "summary-admitted" &&
             c.type === "task" &&
             c.value.kind === "pi.compaction"),
