@@ -241,6 +241,52 @@ test(
       assert.equal(execution.outputs.raw(refreshed.id)[0].text, "40\n");
       await execute(
         "python",
+        `import pandas as pd
+import numpy as np
+table_measurements = pd.DataFrame({
+    'signal': [1.5, np.inf, -np.inf, np.nan],
+    'nullable': pd.Series([1.5, np.inf, -np.inf, pd.NA], dtype='Float64'),
+    'collected_at': pd.date_range('2026-01-01', periods=4),
+    'sample_id': pd.Series([9223372036854775807, -9223372036854775808, 42, 9007199254740991], dtype='Int64'),
+    'unsigned_id': pd.Series([18446744073709551615, 9007199254740992, 42, pd.NA], dtype='UInt64'),
+})`,
+      );
+      const pythonTable = await execution.wait(
+        execution.submit({
+          language: "python",
+          actor: "human",
+          purpose: "inspection",
+          inspection: "table",
+          code: adapters.python.tableCode("table_measurements"),
+        }).id,
+      );
+      assert.equal(pythonTable.status, "succeeded", pythonTable.error);
+      const tablePreview = execution.outputs.result(pythonTable.id);
+      assert.equal(tablePreview?.kind, "table");
+      if (tablePreview?.kind !== "table") throw new Error("Missing Python table preview");
+      assert.deepEqual(tablePreview.rows, [
+        [1.5, 1.5, "2026-01-01T00:00:00.000", "9223372036854775807", "18446744073709551615"],
+        [
+          "Infinity",
+          "Infinity",
+          "2026-01-02T00:00:00.000",
+          "-9223372036854775808",
+          "9007199254740992",
+        ],
+        ["-Infinity", "-Infinity", "2026-01-03T00:00:00.000", 42, 42],
+        [null, null, "2026-01-04T00:00:00.000", 9007199254740991, null],
+      ]);
+      await execute(
+        "python",
+        `assert np.isposinf(table_measurements.loc[1, 'signal'])
+assert np.isneginf(table_measurements.loc[2, 'nullable'])
+assert pd.isna(table_measurements.loc[3, 'signal'])
+assert str(table_measurements.nullable.dtype) == 'Float64'
+assert table_measurements.loc[0, 'sample_id'] == 9223372036854775807
+assert table_measurements.loc[0, 'unsigned_id'] == 18446744073709551615`,
+      );
+      await execute(
+        "python",
         `class ExplosiveMeta(type):
     def __eq__(self, other):
         raise RuntimeError('Metaclass equality must not run')
@@ -284,7 +330,7 @@ for _i in range(105):
         const rHuman = execution.submit({
           language: "r",
           actor: "human",
-          code: "human_value <- 7\nmeasurements <- data.frame(sample = c('A', 'B'), signal = c(2.4, 3.1))",
+          code: "human_value <- 7\nmeasurements <- data.frame(sample = c('A', 'B', 'C', 'D', 'E'), signal = c(2.4, 3.1, Inf, -Inf, NA_real_))",
         });
         const rFirst = await execution.wait(rHuman.id);
         assert.equal(rFirst.status, "succeeded", rFirst.error);
@@ -354,6 +400,22 @@ for _i in range(105):
               .join(""),
           ).columns,
           ["sample", "signal"],
+        );
+        assert.deepEqual(execution.outputs.result(table.id), {
+          kind: "table",
+          columns: ["sample", "signal"],
+          rows: [
+            ["A", 2.4],
+            ["B", 3.1],
+            ["C", "Infinity"],
+            ["D", "-Infinity"],
+            ["E", null],
+          ],
+          truncated: false,
+        });
+        await execute(
+          "r",
+          "stopifnot(identical(measurements$signal, c(2.4, 3.1, Inf, -Inf, NA_real_)))",
         );
         const rPlot = execution.submit({
           language: "r",

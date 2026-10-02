@@ -397,6 +397,19 @@ export function Environment() {
 
 const cellText = (cell: unknown) =>
   cell === null ? "null" : typeof cell === "object" ? JSON.stringify(cell) : String(cell);
+function compareCells(left: unknown, right: unknown): number {
+  const numeric = (cell: unknown): number | bigint | undefined => {
+    if (typeof cell === "number") return cell;
+    if (cell === "Infinity") return Infinity;
+    if (cell === "-Infinity") return -Infinity;
+    if (typeof cell === "string" && cell.length <= 100 && /^[+-]?\d+$/.test(cell))
+      return BigInt(cell);
+  };
+  const a = numeric(left),
+    b = numeric(right);
+  if (a !== undefined && b !== undefined) return a < b ? -1 : a > b ? 1 : 0;
+  return cellText(left).localeCompare(cellText(right), undefined, { numeric: true });
+}
 const delimitedText = (rows: unknown[][], delimiter: string) =>
   rows
     .map((row) =>
@@ -422,6 +435,8 @@ export function Data() {
     artifactTarget,
     tableFilter,
     setTableFilter,
+    tableSort: sort,
+    setTableSort: setSort,
   } = useWorkbench(
     "language",
     "tablePreview",
@@ -432,6 +447,8 @@ export function Data() {
     "artifactTarget",
     "tableFilter",
     "setTableFilter",
+    "tableSort",
+    "setTableSort",
   );
   const snapshot = useSnapshot("executions");
   const environmentRecord = [...snapshot.executions]
@@ -503,7 +520,6 @@ export function Data() {
   const filterSource = `${language}:${target?.outputId ?? record?.id ?? ""}`;
   const filter = tableFilter?.source === filterSource ? tableFilter.value : "";
   const setFilter = (value: string) => setTableFilter({ source: filterSource, value });
-  const [sort, setSort] = useState<{ source: string; column: number; descending: boolean }>();
   const rows =
     table?.rows
       .map((cells, index) => ({ cells, index }))
@@ -514,10 +530,7 @@ export function Data() {
     rows.sort((a, b) => {
       const left = a.cells[sort.column],
         right = b.cells[sort.column];
-      const order =
-        typeof left === "number" && typeof right === "number"
-          ? left - right
-          : cellText(left).localeCompare(cellText(right), undefined, { numeric: true });
+      const order = compareCells(left, right);
       return (sort.descending ? -order : order) || a.index - b.index;
     });
   }

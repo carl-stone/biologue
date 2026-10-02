@@ -326,7 +326,10 @@ export class StaleContext {
         prior.codeHash === record.codeHash &&
         prior.contextCheck?.epoch === epoch
       ) {
-        accepted = new Set(prior.contextCheck.issues.map((issue) => issue.id));
+        accepted = new Set([
+          ...(prior.contextCheck.acknowledgedIssueIds ?? []),
+          ...prior.contextCheck.issues.map((issue) => issue.id),
+        ]);
       } else
         add({
           id: `invalid-ack:${through}`,
@@ -336,10 +339,11 @@ export class StaleContext {
         });
     }
     const all = [...issues.values()];
+    const remaining = all.filter((issue) => !accepted.has(issue.id));
     // Keep warning payloads bounded. Acknowledgment only covers the evidence actually returned.
     // Load source only for evidence that will actually be returned. A large
     // history or many overlapping dependencies must not repeatedly load scripts.
-    const bounded = all.slice(0, 16).map((issue) => {
+    const bounded = (remaining.length ? remaining : all).slice(0, 16).map((issue) => {
       const execution = issue.executionId ? this.executions.get(issue.executionId) : undefined;
       return execution
         ? {
@@ -350,22 +354,26 @@ export class StaleContext {
           }
         : issue;
     });
-    if (all.length > 16)
+    if (remaining.length > 16)
       bounded.push({
         id: `additional:${through}`,
         kind: "unknown",
-        message: "More possible changes omitted; inspect the affected objects.",
+        message:
+          "More possible changes remain; inspect affected objects or acknowledge this page to review the next group.",
       });
     return {
-      disposition: all.some((issue) => !accepted.has(issue.id))
-        ? "review"
-        : all.length
-          ? "acknowledged"
-          : "clear",
+      disposition: remaining.length ? "review" : all.length ? "acknowledged" : "clear",
       through,
       epoch,
       issues: bounded,
       acknowledgment,
+      ...(accepted.size
+        ? {
+            acknowledgedIssueIds: all
+              .filter((issue) => accepted.has(issue.id))
+              .map((issue) => issue.id),
+          }
+        : {}),
       notes: [
         ...effects.notes,
         "Static evidence only: no warning is not proof of unchanged state. Background work, external files, custom dispatch, and activity outside this harness may be missed.",

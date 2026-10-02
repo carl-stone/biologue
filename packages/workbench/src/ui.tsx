@@ -70,8 +70,15 @@ export function useProjectDraft<T>(name: string, initial: T) {
 export function useFollowOutput(change: string | number, resetKey: string, hasContent = true) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
+  const held = useRef(false);
   const [away, setAway] = useState(false);
+  function pause() {
+    held.current = true;
+    follow.current = false;
+    setAway(true);
+  }
   function toLatest() {
+    held.current = false;
     if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
     if (!follow.current) setAway(false);
     follow.current = true;
@@ -84,6 +91,9 @@ export function useFollowOutput(change: string | number, resetKey: string, hasCo
     if (hasContent && follow.current) toLatest();
   }, [change]);
   const onScroll = () => {
+    // Historical navigation stays held while source/output arrives, even if its
+    // temporary preview fits the viewport. Latest output explicitly resumes it.
+    if (held.current) return;
     const element = scroll.current;
     if (!element) return;
     const next = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
@@ -92,7 +102,10 @@ export function useFollowOutput(change: string | number, resetKey: string, hasCo
       setAway(!next);
     }
   };
-  return { scroll, onScroll, away, toLatest };
+  const onResize = () => {
+    if (follow.current) toLatest();
+  };
+  return { scroll, onScroll, onResize, away, toLatest, pause };
 }
 
 export function CopyButton({

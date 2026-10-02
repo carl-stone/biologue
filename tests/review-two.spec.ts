@@ -15,6 +15,79 @@ const execution: Execution = {
   document: { path: "analysis.py", version: 1 },
 };
 
+test("historical output navigation shows the source after layout and delayed loading", async ({
+  page,
+}) => {
+  const png =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jJ1kAAAAASUVORK5CYII=";
+  const old = {
+    ...execution,
+    id: "historical",
+    codePreview: "print('historical')",
+    code: "print('historical')\n" + "# recorded source\n".repeat(100),
+    outputs: [
+      {
+        id: "historical-figure",
+        executionId: "historical",
+        sequence: 0,
+        kind: "display" as const,
+        data: { "image/png": png },
+      },
+    ],
+  };
+  const newer = {
+    ...execution,
+    id: "newer",
+    createdAt: "2026-09-30T12:00:00Z",
+    code: "print('newer')\n" + "# later source\n".repeat(200),
+    codePreview: "print('newer')",
+  };
+  const later = { ...newer, id: "later", createdAt: "2026-10-01T12:00:00Z" };
+  const last = { ...newer, id: "last", createdAt: "2026-10-02T12:00:00Z" };
+  const ui = await fixture(page, { executions: [old, newer] });
+  let releaseSource!: () => void;
+  const sourcePending = new Promise<void>((resolve) => {
+    releaseSource = resolve;
+  });
+  ui.handle(async (request) => {
+    if (request.path === "/executions/historical") {
+      await sourcePending;
+      return { body: old };
+    }
+    if (request.path === "/executions/later") return { body: later };
+    if (request.path === "/executions/last") return { body: last };
+  });
+  await page.route("**/api/outputs/*/png", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(png, "base64"),
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Focus Plots", exact: true }).click();
+  await page.locator(".plots").getByRole("button", { name: "View output", exact: true }).click();
+  releaseSource();
+  const firstLine = page.locator("#execution-historical .console-code-line").first();
+  await expect(page.locator("#execution-historical .console-code")).toContainText(
+    "# recorded source",
+  );
+  await expect(firstLine).toBeInViewport();
+  await ui.emit({ type: "execution", execution: later });
+  await expect(page.locator("#execution-later .console-code")).toContainText("# later source");
+  await expect(firstLine).toBeInViewport();
+  await page.getByRole("button", { name: "Clear console", exact: true }).click();
+  await expect(page.locator("#execution-historical")).toHaveCount(0);
+  await page.locator(".plots").getByRole("button", { name: "View output", exact: true }).click();
+  await expect(firstLine).toBeInViewport();
+  await page.getByRole("button", { name: "Latest output", exact: true }).click();
+  await ui.emit({ type: "execution", execution: last });
+  await expect(page.locator("#execution-last .console-code")).toContainText("# later source");
+  await expect(page.locator("#execution-last .console-code-line").nth(200)).toBeInViewport();
+  expect(
+    ui.requests.some((request) => request.path === "/executions" && request.method === "POST"),
+  ).toBe(false);
+});
+
 test("a changed document cannot be approved from an outdated inline or expanded proposal", async ({
   page,
 }) => {

@@ -265,6 +265,56 @@ test("acknowledgments cover only the shown evidence, code, conversation and kern
   }
 });
 
+test("large context reviews advance through unacknowledged evidence and include intervening changes", async () => {
+  const f = fixture();
+  try {
+    const names = Array.from({ length: 40 }, (_, index) => `A${index}`);
+    await f.run(names.map((name) => `${name} = 1`).join("\n"));
+    await f.inspect(names);
+    const changed = await f.run(names.map((name) => `${name} = 2`).join("\n"));
+    const code = `print(${names.join(", ")})`;
+    const first = await f.run(code, { agent: true });
+    assert.equal(first.status, "not_executed");
+    assert.equal(
+      first.contextCheck!.issues.filter((issue) => issue.executionId === changed.id).length,
+      16,
+    );
+    const second = await f.run(code, { agent: true, acknowledgment: acknowledge(first) });
+    assert.equal(second.status, "not_executed", "Unseen warnings still require review");
+    const shownFirst = new Set(
+      first.contextCheck!.issues.filter((issue) => issue.object).map((issue) => issue.id),
+    );
+    assert.ok(
+      second
+        .contextCheck!.issues.filter((issue) => issue.object)
+        .every((issue) => !shownFirst.has(issue.id)),
+    );
+    assert.equal(second.contextCheck!.acknowledgedIssueIds!.length, 16);
+    const newer = await f.run(`${names[0]} = 3`);
+    const third = await f.run(code, { agent: true, acknowledgment: acknowledge(second) });
+    assert.equal(third.status, "not_executed");
+    assert.ok(third.contextCheck!.issues.some((issue) => issue.executionId === newer.id));
+    assert.equal(third.contextCheck!.acknowledgedIssueIds!.length, 32);
+    const completed = await f.run(code, { agent: true, acknowledgment: acknowledge(third) });
+    assert.equal(completed.status, "succeeded");
+    assert.equal(completed.contextCheck!.disposition, "acknowledged");
+    assert.equal(f.calls.filter((call) => call === code).length, 1);
+    assert.equal(
+      (await f.run(code, { agent: true, acknowledgment: acknowledge(first) })).status,
+      "not_executed",
+      "An earlier page cannot acknowledge later pages implicitly",
+    );
+    f.restart();
+    assert.equal(
+      (await f.run(code, { agent: true, acknowledgment: acknowledge(third) })).status,
+      "not_executed",
+      "Accumulated acknowledgments cannot cross a kernel generation",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("fresh delivered inspection resolves a warning; reading an old result cannot refresh it", async () => {
   const f = fixture();
   try {

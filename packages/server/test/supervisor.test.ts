@@ -629,6 +629,7 @@ test(
           "execute_code",
           "inspect_environment",
           "list_files",
+          "list_executions",
           "read",
           "read_artifact",
           "read_execution",
@@ -642,6 +643,91 @@ test(
       assert.doesNotMatch(doc, /unsaved line 5000/);
       assert.ok(doc.length < 17_000);
       assert.match(contentText(results[1].content), /samples share a donor/);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "agents discover and page scientist executions without running code or treating history as live state",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      const records: Execution[] = [];
+      for (let index = 0; index < 5; index++) {
+        const code = `# scientist run ${index}\nx = ${index}\n\n`;
+        records.push(
+          await f.execution.wait(
+            f.execution.submit({
+              language: "python",
+              actor: "human",
+              code,
+              document: { path: "analysis.py", version: index + 1 },
+            }).id,
+          ),
+        );
+      }
+      await f.execution.wait(
+        f.execution.submit({ language: "r", actor: "human", code: "x <- 1" }).id,
+      );
+      await f.execution.wait(
+        f.execution.submit({ language: "python", actor: "agent", purpose: "inspection", code: "x" })
+          .id,
+      );
+      const callsBefore = f.calls.length;
+      f.faux.setResponses([
+        call("list_executions", { language: "python", actor: "human", limit: 2 }),
+        call("list_executions", {
+          language: "python",
+          actor: "human",
+          limit: 2,
+          before: records[3].id,
+        }),
+        call("list_executions", {
+          language: "python",
+          actor: "human",
+          limit: 2,
+          before: records[1].id,
+        }),
+        call("read_execution", { executionId: records[4].id }),
+        fauxAssistantMessage("Reviewed the scientist's recorded run, which describes past state."),
+      ]);
+      assert.equal(
+        (await f.run("Review my latest Python analysis and its output.")).status,
+        "completed",
+      );
+      const results = toolResults(f.requests.at(-1)!);
+      const listed = results.slice(0, 3).flatMap((result) =>
+        contentText(result.content)
+          .split("\n")
+          .filter((line) => line.startsWith("{"))
+          .map((line) => JSON.parse(line)),
+      );
+      assert.deepEqual(
+        listed.map((item) => item.id),
+        records.map((record) => record.id).reverse(),
+      );
+      assert.ok(
+        listed.every(
+          (item) =>
+            item.actor === "human" && item.language === "python" && item.purpose === "analysis",
+        ),
+      );
+      assert.equal(listed[0].document.version, 5);
+      assert.match(contentText(results[0].content), new RegExp(`before=${records[3].id}`));
+      assert.match(contentText(results[1].content), new RegExp(`before=${records[1].id}`));
+      assert.doesNotMatch(contentText(results[2].content), /More:/);
+      assert.ok(contentText(results[3].content).includes(records[4].code));
+      assert.match(contentText(results[3].content), /actual test output/);
+      assert.ok(
+        results.every(
+          (result) => !(result.details as { biologueObservation?: unknown })?.biologueObservation,
+        ),
+      );
+      assert.equal(f.calls.length, callsBefore);
+      assert.equal(f.permissions.list().length, 0);
     } finally {
       await f.close();
     }

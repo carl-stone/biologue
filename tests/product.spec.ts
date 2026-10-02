@@ -228,6 +228,86 @@ test("table filtering and export preserve quoted data and never execute code", a
   );
 });
 
+test("numeric table previews sort and export exact large integers and infinities", async ({
+  page,
+}) => {
+  const ui = await fixture(page, {
+    executions: [
+      {
+        id: "table",
+        language: "python",
+        actor: "human",
+        purpose: "inspection",
+        inspection: "table",
+        status: "succeeded",
+        codeHash: "",
+        codePreview: "",
+        createdAt: "2026-10-01T16:00:00Z",
+      },
+    ],
+  });
+  ui.handle(async (request) =>
+    request.path === "/executions/table/result"
+      ? {
+          body: {
+            kind: "table",
+            columns: ["sample_id", "signal"],
+            truncated: false,
+            rows: [
+              ["9223372036854775807", null],
+              ["-9223372036854775808", "Infinity"],
+              [-42, "-Infinity"],
+              [42, 1.25],
+              [9007199254740991, -2.5],
+            ],
+          },
+        }
+      : undefined,
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Focus Data", exact: true }).click();
+  const table = page.locator(".data-pane table");
+  await table.getByRole("button", { name: "sample_id", exact: true }).click();
+  await expect(table.locator("tbody tr td:first-of-type")).toHaveText([
+    "-9223372036854775808",
+    "-42",
+    "42",
+    "9007199254740991",
+    "9223372036854775807",
+  ]);
+  await page.setViewportSize({ width: 720, height: 900 });
+  await page.getByRole("button", { name: "Focus Data", exact: true }).click();
+  await expect(table.locator("tbody tr td:first-of-type")).toHaveText([
+    "-9223372036854775808",
+    "-42",
+    "42",
+    "9007199254740991",
+    "9223372036854775807",
+  ]);
+  await table.getByRole("button", { name: "signal", exact: true }).click();
+  await expect(table.locator("tbody tr td:nth-of-type(2)")).toHaveText([
+    "-Infinity",
+    "-2.5",
+    "1.25",
+    "Infinity",
+    "null",
+  ]);
+  await expect(table.locator("tbody tr th")).toHaveText(["3", "5", "4", "2", "1"]);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download preview CSV", exact: true }).click();
+  const csv = readFileSync((await (await download).path())!, "utf8");
+  expect(csv).toContain("-9223372036854775808,Infinity");
+  expect(csv).toContain("9223372036854775807,null");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("button", { name: "Copy table", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("-9223372036854775808\tInfinity");
+  expect(
+    ui.requests.some((request) => request.path === "/executions" && request.method === "POST"),
+  ).toBe(false);
+});
+
 test("figure browsing holds its place and recovers failed images and historical requests", async ({
   page,
 }) => {

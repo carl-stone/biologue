@@ -194,6 +194,7 @@ export function Console() {
       (inspections || item.purpose === "analysis" || item.id === executionTarget),
   );
   const pending = all.filter((item) => ["running", "queued"].includes(item.status));
+  const targetVisible = executions.some((item) => item.id === executionTarget);
   const latest = executions.at(-1);
   const scroll = useFollowOutput(
     `${executions.length}:${latest?.status}:${outputVersion}`,
@@ -205,9 +206,7 @@ export function Console() {
   useEffect(() => {
     const element = transcript.current;
     if (!element) return;
-    const observer = new ResizeObserver(() => {
-      if (!scroll.away) scroll.toLatest();
-    });
+    const observer = new ResizeObserver(scroll.onResize);
     observer.observe(element);
     return () => observer.disconnect();
   }, [scroll.away]);
@@ -224,9 +223,18 @@ export function Console() {
       setCleared((items) =>
         items.includes(executionTarget) ? items.filter((id) => id !== executionTarget) : items,
       );
-      document.getElementById(`execution-${executionTarget}`)?.scrollIntoView({ block: "nearest" });
     }
   }, [executionTarget, panelRequest]);
+  useEffect(() => {
+    if (executionTarget && targetVisible) {
+      // Wait for the requested panel and any restored execution to enter the layout.
+      const frame = requestAnimationFrame(() => {
+        scroll.pause();
+        document.getElementById(`execution-${executionTarget}`)?.scrollIntoView({ block: "start" });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [executionTarget, panelRequest, targetVisible]);
   const history = all
     .filter((item) => item.actor === "human" && item.purpose === "analysis")
     .slice()

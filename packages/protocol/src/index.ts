@@ -28,6 +28,8 @@ export interface ExecutionContextCheck {
   issues: ContextIssue[];
   notes: string[];
   acknowledgment?: { warningExecutionId: string; reason: string };
+  /** Previously shown evidence accepted for this exact code and kernel generation. */
+  acknowledgedIssueIds?: string[];
 }
 export interface ExecutionSummary {
   id: string;

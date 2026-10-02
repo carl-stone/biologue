@@ -1,7 +1,7 @@
 import { OutputService } from "../src/outputs.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Document, Execution, Language, Output } from "@biologue/protocol";
@@ -307,6 +307,34 @@ test("document revisions preserve exact buffers and reject stale edits, disk cha
     assert.throws(() => documents.open("../private.py"), /inside/);
     assert.throws(() => documents.open("linked.py"), /outside/);
     assert.equal(f.store.get<Document>("document-revision", "analysis.py:1")?.content, "x = 1\n");
+  } finally {
+    f.close();
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("creating and saving nested documents creates project folders without traversing excluded paths", () => {
+  const f = fixture();
+  const outside = mkdtempSync(join(tmpdir(), "biologue-nested-outside-"));
+  try {
+    const documents = new Documents(f.root, f.store, f.events);
+    const source = documents.createUntitled("text");
+    const text = "Δ area is an observation, not functional rescue.\n";
+    const edited = documents.edit(source.path, text, source.version);
+    const saved = documents.saveAs(source.path, "notes/day 1/lab notes.txt", edited.version);
+    assert.equal(saved.content, text);
+    assert.equal(readFileSync(join(f.root, saved.path), "utf8"), text);
+    assert.equal(documents.open(source.path).savedAs, saved.path);
+    const created = documents.create("scripts/python/analysis.py");
+    assert.equal(created.content, "");
+    assert.ok(documents.list().includes(created.path));
+    assert.throws(() => documents.saveAs(saved.path, saved.path, saved.version), /already/);
+    symlinkSync(outside, join(f.root, "outside-link"));
+    assert.throws(() => documents.create("outside-link/new/subfolder/file.txt"), /outside/);
+    assert.equal(existsSync(join(outside, "new")), false);
+    assert.throws(() => documents.create(".biologue/new/file.txt"), /Internal/);
+    assert.equal(existsSync(join(f.root, ".biologue/new")), false);
+    assert.throws(() => documents.create("../new/subfolder/file.txt"), /inside/);
   } finally {
     f.close();
     rmSync(outside, { recursive: true, force: true });

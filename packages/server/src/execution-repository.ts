@@ -70,14 +70,27 @@ export class ExecutionRepository {
       .get(id);
     return row ? { ...JSON.parse(row.value as string), code: row.code as string } : undefined;
   }
-  list(limit = 100, before?: string): Page<ExecutionSummary> {
+  list(
+    limit = 100,
+    before?: string,
+    filter: Partial<Pick<ExecutionSummary, "language" | "actor" | "purpose">> = {},
+  ): Page<ExecutionSummary> {
+    const conditions: string[] = [];
+    const values: string[] = [];
+    for (const field of ["language", "actor", "purpose"] as const) {
+      if (filter[field] !== undefined) {
+        conditions.push(`json_extract(value, '$.${field}')=?`);
+        values.push(filter[field]!);
+      }
+    }
     const rows = this.store.db
       .prepare(
         `SELECT id, value FROM execution_records
       WHERE rowid < COALESCE((SELECT rowid FROM execution_records WHERE id=?), 9223372036854775807)
+      ${conditions.length ? "AND " + conditions.join(" AND ") : ""}
       ORDER BY rowid DESC LIMIT ?`,
       )
-      .all(before ?? null, limit + 1);
+      .all(before ?? null, ...values, limit + 1);
     const page = rows.slice(0, limit);
     return {
       items: page.map((row) => displaySummary(JSON.parse(row.value as string))).reverse(),

@@ -12,12 +12,20 @@ export const adapters: Record<Language, LanguageAdapter> = {
     language: "python",
     kernelName: process.env.BIOLOGUE_PYTHON_KERNEL || "python3",
     tableCode: (name) => `def _biologue_table():
-    import json
+    import json, math, numbers
     from IPython.display import display
     value = globals()[${JSON.stringify(name)}]
     if type(value).__name__ != 'DataFrame' or not type(value).__module__.startswith('pandas'):
         raise TypeError('Table preview currently supports pandas DataFrames.')
-    preview = json.loads(value.head(100).to_json(orient='split', date_format='iso'))
+    part = value.head(100)
+    preview = json.loads(part.to_json(orient='split', date_format='iso'))
+    # Keep nonfinite values and integers beyond JavaScript's exact range explicit.
+    for row, cells in enumerate(part.itertuples(index=False, name=None)):
+        for column, cell in enumerate(cells):
+            if isinstance(cell, numbers.Integral) and abs(int(cell)) > 9007199254740991:
+                preview['data'][row][column] = str(cell)
+            elif isinstance(cell, numbers.Real) and not isinstance(cell, numbers.Integral) and math.isinf(cell):
+                preview['data'][row][column] = 'Infinity' if cell > 0 else '-Infinity'
     display({'application/json': {'columns': preview['columns'], 'rows': preview['data'], 'truncated': len(value) > 100}}, raw=True)
 _biologue_table()
 del _biologue_table`,
@@ -82,7 +90,13 @@ del _biologue_inspect`,
   value <- get(${JSON.stringify(name)}, envir = .GlobalEnv)
   if (!is.data.frame(value)) stop("Table preview currently supports data frames.")
   part <- head(value, 100)
-  rows <- lapply(seq_len(nrow(part)), function(i) unname(as.list(part[i, , drop = FALSE])))
+  rows <- lapply(seq_len(nrow(part)), function(i) {
+    lapply(unname(as.list(part[i, , drop = FALSE])), function(cell) {
+      if (is.double(cell) && !is.object(cell) && length(cell) == 1L && is.infinite(cell))
+        return(if (cell > 0) "Infinity" else "-Infinity")
+      cell
+    })
+  })
   cat(jsonlite::toJSON(list(columns = I(names(part)), rows = rows, truncated = nrow(value) > 100), auto_unbox = TRUE, na = "null"))
 })`,
     inspectionCode: ({ names, offset = 0 } = {}) => `local({

@@ -331,6 +331,64 @@ export function workspaceTools(
       },
     },
     {
+      name: "list_executions",
+      label: "Find recorded executions",
+      description:
+        "Find recent recorded executions in this project, newest first, including the scientist's runs. Defaults to analysis history. Use read_execution for exact source and output IDs, then read_artifact for captured figures or full output. History does not establish current live object state.",
+      parameters: Type.Object({
+        language: Type.Optional(language),
+        actor: Type.Optional(
+          Type.Union([Type.Literal("human"), Type.Literal("agent"), Type.Literal("system")]),
+        ),
+        purpose: Type.Optional(
+          Type.Union([Type.Literal("analysis"), Type.Literal("inspection"), Type.Literal("setup")]),
+        ),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+        before: Type.Optional(
+          Type.String({ description: "Continuation execution ID from this tool." }),
+        ),
+      }),
+      execute: async (_id, raw) => {
+        const {
+          limit: count,
+          before,
+          ...filter
+        } = z
+          .object({
+            language: z.enum(["python", "r"]).optional(),
+            actor: z.enum(["human", "agent", "system"]).optional(),
+            purpose: z.enum(["analysis", "inspection", "setup"]).default("analysis"),
+            limit: z.number().int().min(1).max(20).default(10),
+            before: z.string().uuid().optional(),
+          })
+          .parse(raw);
+        const page = execution.repository.list(count, before, filter);
+        const items = page.items
+          .slice()
+          .reverse()
+          .map((record) =>
+            JSON.stringify({
+              id: record.id,
+              language: record.language,
+              actor: record.actor,
+              purpose: record.purpose,
+              status: record.status,
+              createdAt: record.createdAt,
+              document: record.document
+                ? { ...record.document, path: clip(record.document.path, 300) }
+                : undefined,
+              codePreview: record.codePreview,
+            }),
+          );
+        return textResult(
+          (items.join("\n") || "No matching executions.") +
+            (page.next
+              ? `\n[More: list_executions before=${page.next}; keep the same filters.]`
+              : ""),
+        );
+      },
+    },
+    {
       name: "read_execution",
       label: "Read recorded execution",
       description:

@@ -158,6 +158,8 @@ interface WorkbenchState {
   setPlotView: (language: Language, view: Partial<PlotView>) => void;
   tableFilter: { source: string; value: string } | null;
   setTableFilter: (filter: WorkbenchState["tableFilter"]) => void;
+  tableSort: { source: string; column: number; descending: boolean } | null;
+  setTableSort: (sort: WorkbenchState["tableSort"]) => void;
   revealArtifact: (
     execution: ExecutionSummary,
     output: OutputReference,
@@ -230,6 +232,8 @@ class WorkbenchStore {
         }),
       tableFilter: null,
       setTableFilter: set("tableFilter"),
+      tableSort: null,
+      setTableSort: set("tableSort"),
       tablePreview: null,
       setError: set("error"),
       setLanguage: set("language"),

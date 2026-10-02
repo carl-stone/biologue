@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -42,9 +43,9 @@ export class Documents {
     const within = (value: string) => value.startsWith(this.root + sep);
     if (!path || !within(candidate))
       throw new InvalidPath("Path must name a file inside this project.");
-    const actual = existsSync(candidate)
-      ? realpathSync(candidate)
-      : resolve(realpathSync(dirname(candidate)), relative(dirname(candidate), candidate));
+    let ancestor = candidate;
+    while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+    const actual = resolve(realpathSync(ancestor), relative(ancestor, candidate));
     if (!within(actual)) throw new InvalidPath("Links outside this project cannot be opened.");
     if (
       relative(this.root, actual)
@@ -178,6 +179,7 @@ export class Documents {
     const full = this.resolve(path);
     if (existsSync(full) || this.store.get("document", path))
       throw new Conflict("A document already uses this name. Choose another name.");
+    mkdirSync(dirname(full), { recursive: true });
     // Exclusive creation also protects a file created after the existence check.
     try {
       writeFileSync(full, "", { flag: "wx", mode: 0o644 });
@@ -210,6 +212,7 @@ export class Documents {
     const full = this.resolve(target);
     if (existsSync(full) || this.store.get("document", target))
       throw new Conflict("A file already uses this name. Choose another name.");
+    mkdirSync(dirname(full), { recursive: true });
     // Never overwrite an existing project file, including one created concurrently.
     try {
       writeFileSync(full, doc.content, { flag: "wx", mode: 0o644 });
