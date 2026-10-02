@@ -113,6 +113,27 @@ Jupyter to be running; `npm run serve` manages Jupyter unless `JUPYTER_URL` is s
 
 ## Pi and model providers
 
+Pi Durable is the application's harness. It owns conversations, submissions,
+generation, tool tasks, retries, compaction, recovery, and usage. Register new
+agent capabilities through its native extensions, tools, hooks, and documents.
+
+Keep `pi-coding-agent` for its public `ModelRuntime`, `SettingsManager`, and
+`DefaultResourceLoader` utilities. This preserves Pi's credential persistence,
+provider configuration, preferences, and resource discovery. The official
+[Durable coding demo](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/experimental/durable/runtime.ts)
+and [vacation planner](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/experimental/vacation/runtime.ts)
+also supply `ModelRuntime` and `SettingsManager` to a native Durable harness.
+Do not introduce a Coding Agent session or extension runner alongside Durable.
+
+Declare `pi-mcp` and `pi-codemode` directly because the application imports their
+standalone clients and sandbox. Coding Agent's published dependency lock also
+installs private copies; accept that packaging overhead rather than importing
+private paths or replacing useful SDK utilities with app-owned implementations.
+The [minimal Durable setup](https://github.com/earendil-works/pi/blob/main/packages/durable/README.md#quick-start)
+can use `pi-ai` directly, but removing Coding Agent here would require replacing
+credential persistence, configuration, and resource loading. Provider login and
+token refresh would still belong to `pi-ai`.
+
 Select a model, thinking level, and permission mode per conversation in Agent
 settings. Provider credentials can be configured under Providers. For server-side
 API-key setup, set `BIOLOGUE_PROVIDER`, `BIOLOGUE_MODEL`, and the provider's key
