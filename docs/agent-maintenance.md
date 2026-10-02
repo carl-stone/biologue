@@ -148,15 +148,15 @@ reason, occurrence counts, and evidence. An example machine-readable block is:
   "schema": "biologue-maintenance/v1",
   "fingerprint": "EXAMPLE_FINGERPRINT",
   "latestEventId": 123,
-  "targetBranch": "codex/pi-durable-harness",
+  "targetBranch": "main",
   "observedRevision": "DEPLOYED_COMMIT",
   "runIds": ["EXAMPLE_RUN_ID"],
   "evidenceRef": "WORKER_ACCESSIBLE_BUNDLE_REFERENCE"
 }
 ```
 
-The target branch is orchestrator configuration; update it when the migration
-branch is integrated. The observed revision identifies where the failure happened;
+The target branch is orchestrator configuration; maintenance now targets `main`.
+The observed revision identifies where the failure happened;
 the repair branch is based on the current target head. Diagnostic IDs are
 project-local, so retain project identity in the evidence and publisher state.
 A remote worker needs a portable redacted bundle or authenticated access to its
