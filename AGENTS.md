@@ -19,6 +19,10 @@ Keep the default agent a clean coding assistant built directly on Pi Durable.
 Put domain-specific behavior in project instructions and skills rather than
 hardcoded agent policy or custom summary machinery.
 
+For automated maintenance, read [the maintenance charter](docs/agent-maintenance.md).
+It defines protected behavior, implementation anchors, and validation requirements.
+Agents may substantially refactor implementation while preserving those boundaries.
+
 Run checks appropriate to the changed behavior. Core checks are `npm run build`
 and `npm test`; kernel changes also need `npm run test:integration`, and workbench
 changes need `npm run test:ui`.
