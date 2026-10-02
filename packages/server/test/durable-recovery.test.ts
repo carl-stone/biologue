@@ -158,13 +158,23 @@ test(
         store.db.exec(
           "DELETE FROM records WHERE kind IN ('run', 'durable-index', 'durable-display'); DELETE FROM chat_messages;",
         );
+        const put = store.put.bind(store);
+        let injected = false;
+        store.put = (kind, id, value) => {
+          if (!injected && kind === "run") {
+            injected = true;
+            throw new Error("Recovery display cache unavailable");
+          }
+          return put(kind, id, value);
+        };
       },
     });
     try {
       const run = await eventually(
-        () => f.store.get<AgentRun>("run", killed.run.id)!,
-        (r) => !!r.finishedAt,
+        () => f.store.get<AgentRun>("run", killed.run.id),
+        (r) => !!r?.finishedAt,
       );
+      assert.ok(run);
       assert.equal(run.status, "completed", run.error);
       assert.equal(
         (await f.sessions.page(run.conversationId)).items.filter((m) => m.role === "user").length,

@@ -3,7 +3,7 @@ import type {
   PermissionRequest,
   PermissionDecision,
   PermissionDecisionSummary,
-  AgentRun,
+  PermissionMode,
 } from "@biologue/protocol";
 import type { Events } from "./events.ts";
 import type { Store } from "./store.ts";
@@ -38,9 +38,12 @@ export class Permissions {
       .all()
       .map((row) => JSON.parse(row.value as string));
   }
-  request(input: Omit<PermissionRequest, "id" | "createdAt">, signal?: AbortSignal): Promise<void> {
+  request(
+    input: Omit<PermissionRequest, "id" | "createdAt">,
+    signal?: AbortSignal,
+    mode: PermissionMode = "ask",
+  ): Promise<void> {
     if (signal?.aborted) return Promise.reject(new Error("Agent run cancelled."));
-    const mode = this.store.get<AgentRun>("run", input.runId)?.settings?.mode ?? "ask";
     if (mode === "plan")
       return Promise.reject(
         new Error(

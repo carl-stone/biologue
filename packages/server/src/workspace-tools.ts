@@ -174,6 +174,7 @@ export function workspaceTools(
             code: args.content,
           },
           signal,
+          run.settings?.mode,
         );
         signal?.throwIfAborted();
         const doc = documents.edit(projectPath(args.path), args.content, args.expectedVersion);
@@ -301,6 +302,7 @@ export function workspaceTools(
             language: args.language,
           },
           signal,
+          run.settings?.mode,
         );
         signal?.throwIfAborted();
         const record = execution.submit({

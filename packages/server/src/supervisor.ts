@@ -104,7 +104,11 @@ export class Supervisor {
       for (const conversation of page.items) {
         const state = await this.harness.snapshot(RunsDoc, conversation.id, ctx);
         for (const saved of state?.runs ?? []) {
-          this.store.put("run", saved.run.id, saved.run); // Rebuild the UI cache from native state.
+          try {
+            this.store.put("run", saved.run.id, saved.run);
+          } catch (error) {
+            console.error("Recovered run display failed", error);
+          }
           if (!saved.run.finishedAt) {
             recovering.push(JSON.parse(JSON.stringify(saved)));
           }
@@ -172,14 +176,17 @@ export class Supervisor {
       if (run.kind !== "compaction") {
         const accepted = await this.sessions.accept(conversationId, text, run.id, options, saved);
         saved.inputId = accepted.id;
-        this.context.firstTitle(conversationId, text);
+        try {
+          this.context.firstTitle(conversationId, text);
+        } catch (error) {
+          console.error("Initial conversation title failed", error);
+        }
       } else {
         const conversation = await this.sessions.get(conversationId);
         await conversation.commit(async (tx) => {
           (await tx.doc(RunsDoc, conversation.id)).runs.push(JSON.parse(JSON.stringify(saved)));
         }, ctx);
       }
-      this.execution.context.begin(conversationId);
       this.launch(run, saved, false);
       this.publish(this.active.get(run.id)!);
       return run;
@@ -218,6 +225,7 @@ export class Supervisor {
     try {
       const conversation = await this.sessions.get(run.conversationId);
       active.conversation = conversation;
+      this.execution.context.begin(run.conversationId);
       run.piSessionId = String(conversation.id);
       const runtime = await this.pi.modelRuntime();
       const model = runtime.getModel(run.settings!.provider, run.settings!.model);
@@ -661,7 +669,7 @@ export class Supervisor {
     try {
       this.store.put("run", active.run.id, active.run);
     } catch (error) {
-      this.failure(active, "Record agent run", error);
+      console.error("Agent run display failed", error);
       try {
         this.store.put("run", active.run.id, active.run);
       } catch {

@@ -3,6 +3,7 @@ import type { Message as PiMessage, ImageContent } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import {
   defineDoc,
+  InboxDoc,
   type Harness,
   type Conversation as DurableConversation,
   type ConversationId,
@@ -44,6 +45,7 @@ export class ConversationSessions {
   private detach?: () => void;
   private inputs = new Map<string, InputReceipt>();
   private entryInputs = new Map<number, Message>();
+  private lastRun = new Map<string, string>();
   constructor(
     private store: Store,
     private events: Events,
@@ -66,10 +68,12 @@ export class ConversationSessions {
           .filter((c) => c.type === "submission")
           .map((c) => c.value);
         for (const record of submissions) this.indexSubmission(record);
-        for (const change of publication.changes) {
-          if (change.type !== "entry") continue;
-          const id = this.ids.get(change.value.conversationId);
-          if (id) this.indexEntry(id, change.value);
+        const entries = publication.changes
+          .flatMap((change) => (change.type === "entry" ? [change.value] : []))
+          .sort((a, b) => a.id - b.id);
+        for (const entry of entries) {
+          const id = this.ids.get(entry.conversationId);
+          if (id) this.indexEntry(id, entry);
         }
       } catch (error) {
         // The transcript is already safe; rebuild the projection on its next read.
@@ -175,7 +179,12 @@ export class ConversationSessions {
         );
     }, context);
     this.inputs.set(message.id, receipt);
-    this.put(message);
+    try {
+      this.put(message);
+    } catch (error) {
+      // Native acceptance has committed. A display cache cannot revoke it.
+      console.error("Accepted input display failed", error);
+    }
     this.events.emit({ type: "message", message });
     return message;
   }
@@ -197,7 +206,7 @@ export class ConversationSessions {
       },
       context,
     );
-    await this.synchronize(input.conversationId);
+    await this.publishMessages(input.conversationId);
     return submission;
   }
   private indexSubmission(record: SubmissionRecord) {
@@ -230,10 +239,6 @@ export class ConversationSessions {
     const text = display?.text ?? (m ? messageText(m) : "");
     if (!text) return;
     const timestamp = m?.timestamp ?? Date.now();
-    const run = this.store
-      .list<import("@biologue/protocol").AgentRun>("run")
-      .filter((r) => r.conversationId === id && r.status === "running")
-      .at(-1);
     const saved = this.store.get<{ createdAt: string; runId?: string }>(
       "durable-display",
       String(entry.id),
@@ -247,7 +252,14 @@ export class ConversationSessions {
       new Date(
         Math.max(timestamp, typeof previous === "string" ? Date.parse(previous) : 0),
       ).toISOString();
-    const attributedRun = display?.runId ?? saved?.runId ?? run?.id;
+    const attributedRun =
+      display?.runId ??
+      saved?.runId ??
+      (m?.role === "assistant" ? this.lastRun.get(id) : undefined);
+    if (m?.role === "user") {
+      if (display?.runId) this.lastRun.set(id, display.runId);
+      else this.lastRun.delete(id);
+    }
     if (!saved)
       this.store.put("durable-display", String(entry.id), { createdAt, runId: attributedRun });
     const message: Message = {
@@ -288,8 +300,8 @@ export class ConversationSessions {
   private async loadInputs(conversation: DurableConversation) {
     const state = await this.harness.snapshot(InputsDoc, conversation.id, context);
     const receipts = state?.receipts ?? [];
-    if (!receipts.length) return [];
-    return this.harness.commit(async (tx) => {
+    if (!receipts.length) return { receipts, pending: [] as Message[] };
+    const pending = await this.harness.commit(async (tx) => {
       const pending: Message[] = [];
       for (const receipt of receipts) {
         this.inputs.set(receipt.message.id, receipt);
@@ -309,9 +321,10 @@ export class ConversationSessions {
       }
       return pending;
     }, context);
+    return { receipts, pending };
   }
   async pending(id: string): Promise<Message[]> {
-    return this.loadInputs(await this.get(id));
+    return (await this.loadInputs(await this.get(id))).pending;
   }
   async restore(input: Message) {
     const conversation = await this.get(input.conversationId);
@@ -335,30 +348,36 @@ export class ConversationSessions {
       });
       receipt.restoredEntry = entry.id;
     }, context);
-    await this.synchronize(input.conversationId);
+    await this.publishMessages(input.conversationId);
   }
   async discardPending(id: string, ids: string[]) {
     const conversation = await this.get(id);
-    for (const inputId of ids) {
-      const record = await this.harness.commit(
-        (tx) => tx.submissionByRequest(conversation.id, inputId),
-        context,
+    await conversation.commit(async (tx) => {
+      // Read all records before the first table write. Native inbox withdrawal
+      // and app metadata share one transaction, including a multi-message clear.
+      const records = await Promise.all(
+        ids.map((inputId) => tx.submissionByRequest(conversation.id, inputId)),
       );
-      if (record) {
-        const result = await this.harness.abortSubmission(record.id, context, conversation.id);
-        if (result === "already_placed") throw new Error("This message was already delivered.");
-      } else if (!(await this.pending(id)).some((m) => m.id === inputId))
-        throw new Error("This message was already delivered.");
-      await conversation.commit(async (tx) => {
-        const receipt = (await tx.doc(InputsDoc, conversation.id)).receipts.find(
-          (r) => r.message.id === inputId,
+      const inputs = await tx.doc(InputsDoc, conversation.id);
+      const inbox = await tx.doc(InboxDoc, conversation.id);
+      const selected = ids.map((inputId, index) => {
+        const receipt = inputs.receipts.find(
+          (r) => r.message.id === inputId && r.conversation === conversation.id,
         );
-        if (receipt) receipt.discarded = true;
-      }, context);
-      this.store.db
-        .prepare("DELETE FROM chat_messages WHERE conversation_id=? AND id=?")
-        .run(id, inputId);
-    }
+        const record = records[index];
+        if (!receipt || receipt.restoredEntry || record?.entry)
+          throw new Error("This message was already delivered.");
+        return { receipt, record };
+      });
+      for (const { receipt, record } of selected) {
+        if (record?.status === "queued") {
+          tx.settleSubmission(record.id, { status: "unanswered", reason: "aborted" });
+          inbox.items = inbox.items.filter((item) => item.id !== record.id);
+        }
+        receipt.discarded = true;
+      }
+    }, context);
+    await this.publishMessages(id);
     this.events.emit({ type: "messages-reset", conversationId: id });
   }
   async history(id: string): Promise<EntryRecord[]> {
@@ -402,7 +421,24 @@ export class ConversationSessions {
       .prepare("SELECT 1 FROM chat_messages WHERE conversation_id=? LIMIT 1")
       .get(id);
     const previous = hasRows ? this.store.get<number>("durable-index", id) : undefined;
-    const pending = await this.loadInputs(conversation);
+    const { receipts, pending } = await this.loadInputs(conversation);
+    // Seed an incremental rebuild from the last displayed native input. Its
+    // identity resolves to native receipt metadata, including inherited inputs.
+    this.lastRun.delete(id);
+    if (previous) {
+      const last = this.store.db
+        .prepare(
+          "SELECT id FROM chat_messages WHERE conversation_id=? AND json_extract(value,'$.role')='user' AND json_extract(value,'$.delivery')='delivered' ORDER BY CAST(json_extract(value,'$.entryId') AS INTEGER) DESC LIMIT 1",
+        )
+        .get(id);
+      const runId = last && this.inputs.get(String(last.id))?.message.runId;
+      if (runId) this.lastRun.set(id, runId);
+    }
+    for (const receipt of receipts)
+      if (receipt.discarded)
+        this.store.db
+          .prepare("DELETE FROM chat_messages WHERE conversation_id=? AND id=?")
+          .run(id, receipt.message.id);
     let cursor: Cursor | undefined;
     const entries: EntryRecord[] = [];
     do {
@@ -485,6 +521,10 @@ export class ConversationSessions {
     };
   }
   async publishMessages(id: string) {
-    await this.synchronize(id);
+    try {
+      await this.synchronize(id);
+    } catch (error) {
+      console.error("Durable conversation display failed", error);
+    }
   }
 }

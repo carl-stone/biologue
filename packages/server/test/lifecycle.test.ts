@@ -10,6 +10,97 @@ import { fixture } from "./helpers/pi-fixture.ts";
 
 const timeout = { timeout: 20_000 };
 
+test("title-cache failure cannot strand a native accepted run", timeout, async () => {
+  const f = await fixture();
+  const put = f.store.put.bind(f.store);
+  try {
+    let injected = false;
+    f.store.put = (kind, id, value) => {
+      if (!injected && kind === "conversation") {
+        injected = true;
+        throw new Error("Title cache unavailable");
+      }
+      return put(kind, id, value);
+    };
+    f.faux.setResponses([fauxAssistantMessage("Answered.")]);
+    assert.equal((await f.run("Accepted despite a title-cache failure")).status, "completed");
+    assert.ok(injected);
+    assert.equal(f.requests.length, 1);
+  } finally {
+    f.store.put = put;
+    await f.close();
+  }
+});
+
+test(
+  "scientific setup failure after acceptance is terminal and cannot resume as unfinished work",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const begin = f.execution.context.begin.bind(f.execution.context);
+    try {
+      f.execution.context.begin = () => {
+        throw new Error("Scientific source unavailable");
+      };
+      const finished = await f.run("Protect scientific provenance");
+      assert.equal(finished.status, "failed");
+      assert.match(finished.error!, /Scientific source unavailable/);
+      assert.equal(f.requests.length, 0);
+      assert.equal(f.supervisor.isActive(), false);
+      const state = await f.supervisor.harness.snapshot(
+        RunsDoc,
+        (await f.sessions.get(f.conversationId)).id,
+        ctx,
+      );
+      assert.equal(state!.runs[0].run.status, "failed");
+      assert.ok(state!.runs[0].run.finishedAt);
+    } finally {
+      f.execution.context.begin = begin;
+      await f.close();
+    }
+  },
+);
+
+test(
+  "a failed display write after native acceptance cannot strand or reject a run",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const prepare = f.store.db.prepare.bind(f.store.db);
+    try {
+      let failed = false;
+      f.store.db.prepare = ((sql: string) => {
+        if (!failed && sql.startsWith("INSERT INTO chat_messages")) {
+          failed = true;
+          throw new Error("Chat projection unavailable");
+        }
+        return prepare(sql);
+      }) as typeof f.store.db.prepare;
+      f.faux.setResponses([fauxAssistantMessage("The accepted input was answered.")]);
+      const finished = f.finished();
+      const run = await f.supervisor.start(f.conversationId, "Accepted scientific request");
+      assert.equal((await finished).status, "completed");
+      assert.ok(failed);
+      assert.equal(f.requests.length, 1);
+      assert.equal(
+        (await f.sessions.page(f.conversationId)).items.filter((m) => m.role === "user").length,
+        1,
+      );
+      assert.equal(
+        (await f.supervisor.harness.snapshot(
+          RunsDoc,
+          (await f.sessions.get(f.conversationId)).id,
+          ctx,
+        ))!.runs.find((r) => r.run.id === run.id)!.run.status,
+        "completed",
+      );
+    } finally {
+      f.store.db.prepare = prepare;
+      await f.close();
+    }
+  },
+);
+
 test("failed permission writes reject all waiters, including aborts, and never grant execution", async () => {
   const store = new Store(":memory:");
   const events = new Events();
@@ -103,7 +194,7 @@ test(
   async () => {
     const f = await fixture();
     const create = f.pi.create.bind(f.pi);
-    const publish = f.sessions.publishMessages.bind(f.sessions);
+    const put = f.store.put.bind(f.store);
     try {
       f.pi.create = async (input) => {
         const session = await create(input);
@@ -114,22 +205,23 @@ test(
         };
         return session;
       };
-      f.sessions.publishMessages = async () => {
-        throw new Error("Projection unavailable");
+      f.store.put = (kind, id, value) => {
+        if (kind === "durable-display") throw new Error("Projection unavailable");
+        return put(kind, id, value);
       };
       f.faux.setResponses([fauxAssistantMessage("Retained in Pi.")]);
       const failed = await f.run("Discuss the observation.");
       assert.equal(failed.status, "failed");
       assert.equal(failed.endReason, "integration_error");
-      assert.match(failed.error!, /Projection unavailable/);
+      assert.doesNotMatch(failed.error!, /Projection unavailable/);
       assert.match(failed.error!, /Disposal failed/);
       f.pi.create = create;
-      f.sessions.publishMessages = publish;
+      f.store.put = put;
       f.faux.setResponses([fauxAssistantMessage("The conversation is usable again.")]);
       assert.equal((await f.run("Continue.")).status, "completed");
     } finally {
       f.pi.create = create;
-      f.sessions.publishMessages = publish;
+      f.store.put = put;
       await f.close();
     }
   },
@@ -170,7 +262,7 @@ test(
       assert.equal(result.status, "cancelled");
       assert.ok(result.finishedAt);
       assert.match(result.error!, /permission decisions/);
-      assert.match(result.error!, /Run disk failure/);
+      assert.doesNotMatch(result.error!, /Run disk failure/);
       assert.equal(f.permissions.list().length, 0);
       assert.deepEqual(f.calls, []);
       f.store.put = put;
@@ -184,7 +276,7 @@ test(
 );
 
 test(
-  "a failed final run write is reported live and releases the conversation",
+  "a failed final display write preserves the native successful outcome and releases the conversation",
   timeout,
   async () => {
     const f = await fixture();
@@ -200,9 +292,10 @@ test(
       };
       f.faux.setResponses([fauxAssistantMessage("A response.")]);
       const result = await f.run("Discuss.");
-      assert.equal(result.status, "failed");
-      assert.match(result.error!, /Final record failed/);
-      assert.equal(f.store.get<any>("run", result.id).status, "failed");
+      assert.equal(result.status, "completed");
+      assert.equal(result.error, undefined);
+      assert.ok(failed);
+      assert.equal(f.store.get<any>("run", result.id).status, "completed");
       f.faux.setResponses([fauxAssistantMessage("Another response.")]);
       assert.equal((await f.run("Continue.")).status, "completed");
     } finally {

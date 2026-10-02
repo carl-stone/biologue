@@ -92,7 +92,11 @@ export class ExtensionDialogs {
       custom: async () => undefined,
       notify: (text: string, level: "info" | "warning" | "error" = "info") => {
         run.notices = [...(run.notices ?? []), { text, level }].slice(-20);
-        this.store.put("run", run.id, run);
+        try {
+          this.store.put("run", run.id, run);
+        } catch (error) {
+          console.error("Run notice display failed", error);
+        }
         this.events.emit({ type: "agent-run", run: { ...run } });
       },
       onTerminalInput: () => noop,

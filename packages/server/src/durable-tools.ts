@@ -292,6 +292,7 @@ export class DurableTools {
               code: JSON.stringify(params, null, 2),
             },
             signal,
+            this.input.run.settings?.mode,
           );
       signal.throwIfAborted();
       const branch =

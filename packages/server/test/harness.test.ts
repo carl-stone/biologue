@@ -31,7 +31,8 @@ test(
         prepared: { text: "Original observation", images: [image] },
       });
       assert.equal((await finished).status, "completed");
-      const original = (await f.sessions.page(f.conversationId)).items[0];
+      const originalMessages = (await f.sessions.page(f.conversationId)).items;
+      const original = originalMessages[0];
       await f.sessions.accept(f.conversationId, "Unsent parent correction", "parent-run");
       const child = f.context.createConversation("Native branch");
       await f.sessions.fork(f.conversationId, child.id, original.entryId);
@@ -50,6 +51,12 @@ test(
       assert.deepEqual(reopened.content(branch[0]).images, [image]);
       assert.equal((await reopened.pending(child.id)).length, 0);
       assert.equal((await reopened.pending(f.conversationId)).length, 1);
+      const rebuilt = (await reopened.page(f.conversationId)).items;
+      assert.equal(
+        rebuilt[1].runId,
+        originalMessages[1].runId,
+        "Finished assistant work must retain its run association without display caches",
+      );
     } finally {
       reopened?.unbind();
       await f.close();
@@ -133,11 +140,16 @@ test(
 );
 
 test(
-  "permission modes apply to the selected conversation and remain durably auditable",
+  "permission modes use the active run despite a missing display cache and remain auditable",
   timeout,
   async () => {
     const f = await fixture();
+    const put = f.store.put.bind(f.store);
     try {
+      f.store.put = (kind, id, value) => {
+        if (kind === "run") throw new Error("Run display cache unavailable");
+        return put(kind, id, value);
+      };
       for (const mode of ["plan", "edit", "auto"] as const) {
         f.context.updateConversation(f.conversationId, {
           settings: {
@@ -169,6 +181,7 @@ test(
           .some((item) => item.feedback === "Allowed by auto mode."),
       );
     } finally {
+      f.store.put = put;
       await f.close();
     }
   },

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, createModels } from "@earendil-works/pi-ai";
-import { Harness, MemoryStorage, createRegistry } from "@earendil-works/pi-durable";
+import { Harness, MemoryStorage, createRegistry, InboxDoc } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Message } from "@biologue/protocol";
 import { Store } from "../src/store.ts";
@@ -12,6 +12,135 @@ import { Events } from "../src/events.ts";
 import { ContextService } from "../src/context.ts";
 import { ConversationSessions } from "../src/conversation-sessions.ts";
 import { createApp } from "../src/app.ts";
+import { InputsDoc } from "../src/durable-state.ts";
+
+test("a settled delivered input cannot be withdrawn or hidden", async () => {
+  const f = await fixture();
+  try {
+    const input = await f.sessions.accept(
+      f.conversation.id,
+      "Delivered scientific correction",
+      "run",
+    );
+    const conversation = await f.sessions.get(input.conversationId);
+    await conversation.commit(async (tx) => {
+      const entry = await tx.appendEntry(conversation.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: input.text, timestamp: Date.parse(input.createdAt) }],
+      });
+      const answer = await tx.appendEntry(conversation.id, {
+        kind: "pi.assistant",
+        model: [fauxAssistantMessage("Correction applied")],
+      });
+      await tx.createSubmission({
+        conversationId: conversation.id,
+        requestId: input.id,
+        type: "input",
+        status: "done",
+        entry: entry.id,
+        answer: answer.id,
+      });
+    }, ctx);
+    await assert.rejects(
+      f.sessions.discardPending(input.conversationId, [input.id]),
+      /already delivered/,
+    );
+    assert.equal(
+      (await f.harness.snapshot(InputsDoc, conversation.id, ctx))!.receipts[0].discarded,
+      undefined,
+    );
+    assert.equal((await f.sessions.page(input.conversationId)).items[0].text, input.text);
+  } finally {
+    await f.close();
+  }
+});
+
+test("native withdrawal remains cleared after a failed display-cache deletion", async () => {
+  const f = await fixture();
+  const prepare = f.store.db.prepare.bind(f.store.db);
+  try {
+    const input = await f.sessions.accept(
+      f.conversation.id,
+      "Withdraw this unsent correction",
+      "run",
+    );
+    let injected = false;
+    f.store.db.prepare = ((sql: string) => {
+      if (!injected && sql.startsWith("DELETE FROM chat_messages")) {
+        injected = true;
+        throw new Error("Deletion cache unavailable");
+      }
+      return prepare(sql);
+    }) as typeof f.store.db.prepare;
+    await f.sessions.discardPending(input.conversationId, [input.id]);
+    assert.ok(injected);
+    assert.equal((await f.sessions.pending(input.conversationId)).length, 0);
+    assert.equal((await f.sessions.page(input.conversationId)).items.length, 0);
+  } finally {
+    f.store.db.prepare = prepare;
+    await f.close();
+  }
+});
+
+test("queue withdrawal settles native submission and receipt in one commit", async () => {
+  const f = await fixture();
+  try {
+    const input = await f.sessions.accept(f.conversation.id, "Withdraw this correction", "run", {
+      queue: "followUp",
+    });
+    const second = await f.sessions.accept(
+      f.conversation.id,
+      "Withdraw this second correction",
+      "run",
+      { queue: "followUp" },
+    );
+    const ids = [input.id, second.id];
+    const conversation = await f.sessions.get(input.conversationId);
+    await conversation.commit(async (tx) => {
+      const inbox = await tx.doc(InboxDoc, conversation.id);
+      for (const message of [input, second]) {
+        const record = await tx.createSubmission({
+          conversationId: conversation.id,
+          requestId: message.id,
+          type: "input",
+          status: "queued",
+        });
+        inbox.items.push({
+          id: record.id,
+          mode: "followUp",
+          content: [{ type: "text", text: message.text }],
+        });
+      }
+    }, ctx);
+    let atomic = false;
+    const detach = f.harness.subscribeCommits((publication) => {
+      const submission =
+        publication.changes.filter(
+          (c) =>
+            c.type === "submission" &&
+            ids.includes(c.value.requestId ?? "") &&
+            c.value.status === "unanswered",
+        ).length === 2;
+      const receipt = publication.changes.some(
+        (c) =>
+          c.type === "document" &&
+          c.record.kind === InputsDoc.definition.kind &&
+          (c.value?.receipts as { discarded?: boolean }[] | undefined)?.every((r) => r.discarded),
+      );
+      if (submission && receipt) atomic = true;
+    });
+    await f.sessions.discardPending(input.conversationId, ids);
+    detach();
+    assert.ok(
+      atomic,
+      "Withdrawal must have no crash window between native cancellation and receipt removal",
+    );
+    assert.equal((await f.sessions.pending(input.conversationId)).length, 0);
+    assert.equal((await f.harness.snapshot(InboxDoc, conversation.id, ctx))!.items.length, 0);
+  } finally {
+    await f.close();
+  }
+});
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "biologue-chat-"));
@@ -192,7 +321,7 @@ test("concurrent correction restoration commits one entry despite repeated displ
       f.sessions.restore(input),
       f.sessions.restore(input),
     ]);
-    assert.ok(results.every((r) => r.status === "rejected"));
+    assert.ok(results.every((r) => r.status === "fulfilled"));
     assert.equal((await f.sessions.history(input.conversationId)).length, 1);
     f.store.put = put;
     await f.sessions.restore(input);
