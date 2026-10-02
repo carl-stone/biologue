@@ -9,7 +9,6 @@ import {
   section,
   defineExtension,
   UsageDoc,
-  defineDoc,
   CompactionTask,
   LiveDoc,
   type TaskId,
@@ -22,13 +21,7 @@ import {
   type EntryId,
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage, ImageContent, Message as PiMessage } from "@earendil-works/pi-ai";
-import type {
-  AgentRun,
-  Message,
-  ResearchContext,
-  Conversation,
-  Attachment,
-} from "@biologue/protocol";
+import type { AgentRun, Conversation, Attachment } from "@biologue/protocol";
 import { ExtensionDialogs } from "./extension-ui.ts";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
@@ -40,26 +33,10 @@ import type { Permissions } from "./permissions.ts";
 import type { PiAdapter } from "./pi.ts";
 import type { DurableTools } from "./durable-tools.ts";
 import { ConversationSessions } from "./conversation-sessions.ts";
+import { RunsDoc, type StoredRun } from "./durable-state.ts";
 import { workspaceTools } from "./workspace-tools.ts";
 import { createScientificExtension } from "../../pi-science/index.ts";
 
-const ManualCompactionsDoc = defineDoc({
-  kind: "biologue.manual-compactions",
-  version: 1,
-  scope: "conversation",
-  history: "latest",
-  fork: "initial",
-  initial: () => ({ tasks: {} as Record<string, number> }),
-});
-type RunInput = {
-  schemaVersion: number;
-  inputId?: string;
-  prompt: string;
-  researchContext: ResearchContext;
-  model: AgentRun["settings"];
-  submissionId?: number;
-  compactionId?: number;
-};
 function contextUsage(messages: readonly PiMessage[], contextWindow: number) {
   let index = messages.length - 1;
   for (; index >= 0; index--) {
@@ -96,6 +73,7 @@ type ActiveRun = {
 export class Supervisor {
   private active = new Map<string, ActiveRun>();
   private closing = false;
+  private starting = new Map<string, Promise<void>>();
   private recoveryReady: Promise<void> = Promise.resolve();
   harness!: Harness;
   registry!: Registry;
@@ -118,28 +96,32 @@ export class Supervisor {
     this.harness = opened.harness;
     this.registry = opened.registry;
     this.sessions.bind(this.harness);
-    for (const run of this.store.list<AgentRun>("run"))
-      if (run.status === "running") {
-        const input = this.store.get<RunInput>("run-input", run.id);
-        if (!input || input.schemaVersion !== 2) {
-          this.store.put("run", run.id, {
-            ...run,
-            status: "abandoned",
-            endReason: "interrupted",
-            finishedAt: new Date().toISOString(),
-            error:
-              "The saved run input is missing or invalid. Review the recorded history before continuing.",
-          });
-          continue;
+    const recovering: StoredRun[] = [];
+    this.store.db.prepare("DELETE FROM records WHERE kind='run'").run();
+    let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+    do {
+      const page = await this.harness.commit((tx) => tx.scanConversations({}, 100, cursor), ctx);
+      for (const conversation of page.items) {
+        const state = await this.harness.snapshot(RunsDoc, conversation.id, ctx);
+        for (const saved of state?.runs ?? []) {
+          this.store.put("run", saved.run.id, saved.run); // Rebuild the UI cache from native state.
+          if (!saved.run.finishedAt) {
+            recovering.push(JSON.parse(JSON.stringify(saved)));
+          }
         }
-        this.launch(run, input, true);
       }
+      cursor = page.next;
+    } while (cursor);
+    for (const saved of recovering) {
+      this.launch(saved.run, saved, true);
+      if (saved.run.status !== "running") void this.stop(this.active.get(saved.run.id)!);
+    }
     this.recoveryReady = Promise.all([...this.active.values()].map((a) => a.ready)).then(
       () => undefined,
     );
     await this.recoveryReady;
   }
-  start(
+  async start(
     conversationId: string,
     text: string,
     options?: {
@@ -147,7 +129,7 @@ export class Supervisor {
       prepared?: { text: string; images: ImageContent[] };
       attachments?: Attachment[];
     },
-  ): AgentRun {
+  ): Promise<AgentRun> {
     if (this.closing) throw new Conflict("The application is shutting down.");
     if (!this.context.hasConversation(conversationId))
       throw new Error("Conversation does not exist.");
@@ -178,28 +160,35 @@ export class Supervisor {
       kind: options?.kind ?? "response",
       phase: "working",
     };
-    const accepted =
-      run.kind === "compaction"
-        ? undefined
-        : this.sessions.accept(conversationId, text, run.id, options);
-    if (accepted) this.context.firstTitle(conversationId, text);
-    const input: RunInput = {
-      schemaVersion: 2,
-      inputId: accepted?.id,
-      prompt: this.prompt,
-      researchContext: research,
-      model: settings,
-    };
-    this.store.transaction(() => {
-      this.store.put("run-input", run.id, input);
-      this.store.put("run", run.id, run);
-    });
-    this.execution.context.begin(conversationId);
-    this.launch(run, input, false);
-    this.publish(this.active.get(run.id)!);
-    return run;
+    let admitted!: () => void;
+    this.starting.set(
+      conversationId,
+      new Promise<void>((resolve) => {
+        admitted = resolve;
+      }),
+    );
+    try {
+      const saved: StoredRun = { run, prompt: this.prompt };
+      if (run.kind !== "compaction") {
+        const accepted = await this.sessions.accept(conversationId, text, run.id, options, saved);
+        saved.inputId = accepted.id;
+        this.context.firstTitle(conversationId, text);
+      } else {
+        const conversation = await this.sessions.get(conversationId);
+        await conversation.commit(async (tx) => {
+          (await tx.doc(RunsDoc, conversation.id)).runs.push(JSON.parse(JSON.stringify(saved)));
+        }, ctx);
+      }
+      this.execution.context.begin(conversationId);
+      this.launch(run, saved, false);
+      this.publish(this.active.get(run.id)!);
+      return run;
+    } finally {
+      this.starting.delete(conversationId);
+      admitted();
+    }
   }
-  private launch(run: AgentRun, input: RunInput, recovery: boolean) {
+  private launch(run: AgentRun, input: StoredRun, recovery: boolean) {
     let markReady!: () => void;
     const ready = new Promise<void>((resolve) => {
       markReady = resolve;
@@ -221,7 +210,7 @@ export class Supervisor {
     this.active.set(run.id, active);
     active.completion = Promise.resolve().then(() => this.perform(active, input, recovery));
   }
-  private async perform(active: ActiveRun, input: RunInput, recovery: boolean) {
+  private async perform(active: ActiveRun, input: StoredRun, recovery: boolean) {
     const { run } = active;
     const cancelled = () => run.status === "cancelled";
     let stream: AgentEventStream | undefined;
@@ -342,8 +331,10 @@ export class Supervisor {
       if (run.kind === "compaction") {
         // Bind the app run and native task in the same durable transaction.
         const id = await conversation.commit(async (tx) => {
-          const manual = await tx.doc(ManualCompactionsDoc, conversation.id);
-          const existing = manual.tasks[run.id] ?? input.compactionId;
+          const saved = (await tx.doc(RunsDoc, conversation.id)).runs.find(
+            (r) => r.run.id === run.id,
+          )!;
+          const existing = saved.compactionId;
           if (existing !== undefined) return existing as TaskId<CompactionResult>;
           const taskId = await tx.createTask(
             CompactionTask,
@@ -356,11 +347,9 @@ export class Supervisor {
           );
           const live = await tx.doc(LiveDoc, conversation.id);
           (live.compactions ??= []).push({ taskId, reason: "manual", blocking: false, attempt: 1 });
-          manual.tasks[run.id] = taskId;
+          saved.compactionId = taskId;
           return taskId;
         }, ctx);
-        input.compactionId = id;
-        this.store.put("run-input", run.id, input);
         active.markAdmitted();
         await this.submitQueued(active);
         const task = await this.harness.waitForTask(id, ctx);
@@ -377,7 +366,7 @@ export class Supervisor {
         }
         await conversation.waitForIdle(ctx);
       } else {
-        const accepted = this.store.get<Message>("input-receipt", input.inputId!);
+        const accepted = this.sessions.receipt(input.inputId!);
         if (!accepted) throw new Error("The saved agent input is missing.");
         if (this.sessions.content(accepted).images.length && !model.input.includes("image"))
           throw new Error(
@@ -394,7 +383,7 @@ export class Supervisor {
         } else {
           await this.sessions.publishMessages(run.conversationId);
           // Old receipts that were withdrawn on cancellation remain available as context.
-          for (const pending of this.sessions.pending(run.conversationId)) {
+          for (const pending of await this.sessions.pending(run.conversationId)) {
             if (pending.id === accepted.id || pending.runId === run.id) continue;
             const record = await this.harness.commit(
               (tx) => tx.submissionByRequest(conversation.id, pending.id),
@@ -414,8 +403,6 @@ export class Supervisor {
           const submission = existing
             ? await this.harness.submission(existing.id, ctx)
             : await this.sessions.submit(accepted, (text) => tools.expand(text));
-          input.submissionId = submission!.id;
-          this.store.put("run-input", run.id, input);
           active.markAdmitted();
           await this.submitQueued(active);
           const settled = await submission!.wait(ctx);
@@ -509,21 +496,29 @@ export class Supervisor {
       } catch (error) {
         this.failure(active, "Conversation update", error);
       }
-      this.active.delete(run.id);
       if (!this.closing) {
         run.finishedAt = new Date().toISOString();
-        this.publish(active);
+        this.publish(active, false);
+        try {
+          await this.record(active);
+        } catch (error) {
+          this.failure(active, "Record durable run", error);
+          this.publish(active, false);
+        }
+        this.active.delete(run.id);
+        this.events.emit({ type: "agent-run", run: { ...run } });
         if (run.status === "completed" && run.kind !== "compaction" && !handled)
           try {
             this.context.refreshTitle(
               run.conversationId,
               (await this.sessions.page(run.conversationId, 12)).items,
               (messages) => this.pi.conversationTitle(messages),
+              await this.sessions.inputCount(run.conversationId),
             );
           } catch {
             /* Display titles do not affect execution. */
           }
-      }
+      } else this.active.delete(run.id);
     }
   }
   private consume(active: ActiveRun, events: readonly AgentEvent[]) {
@@ -629,8 +624,11 @@ export class Supervisor {
     };
   }
   isActive(conversationId?: string) {
-    return [...this.active.values()].some(
-      (item) => !conversationId || item.run.conversationId === conversationId,
+    return (
+      (conversationId ? this.starting.has(conversationId) : this.starting.size > 0) ||
+      [...this.active.values()].some(
+        (item) => !conversationId || item.run.conversationId === conversationId,
+      )
     );
   }
   private failure(active: ActiveRun, operation: string, cause: unknown) {
@@ -649,7 +647,17 @@ export class Supervisor {
       this.failure(active, operation, error);
     }
   }
-  private publish(active: ActiveRun) {
+  private async record(active: ActiveRun) {
+    const conversation =
+      active.conversation ?? (await this.sessions.get(active.run.conversationId));
+    await conversation.commit(async (tx) => {
+      const saved = (await tx.doc(RunsDoc, conversation.id)).runs.find(
+        (r) => r.run.id === active.run.id,
+      );
+      if (saved) saved.run = JSON.parse(JSON.stringify(active.run));
+    }, ctx);
+  }
+  private publish(active: ActiveRun, emit = true) {
     try {
       this.store.put("run", active.run.id, active.run);
     } catch (error) {
@@ -660,7 +668,7 @@ export class Supervisor {
         console.error(`Agent run ${active.run.id}: ${active.run.error}`);
       }
     }
-    this.events.emit({ type: "agent-run", run: { ...active.run } });
+    if (emit) this.events.emit({ type: "agent-run", run: { ...active.run } });
   }
   private stop(active: ActiveRun) {
     return (active.stopping ??= (async () => {
@@ -685,6 +693,7 @@ export class Supervisor {
     active.run.status = "cancelled";
     active.run.endReason = "cancelled";
     const stopped = this.stop(active);
+    await this.record(active);
     this.publish(active);
     await stopped;
     await active.completion;
@@ -708,16 +717,23 @@ export class Supervisor {
           "This model does not accept images. Choose a vision model or remove the image.",
         );
     }
-    this.sessions.accept(active.run.conversationId, text, id, {
-      ...extra,
-      queue: mode,
-    });
+    const accepted = active.submissions.then(() =>
+      this.sessions.accept(active.run.conversationId, text, id, {
+        ...extra,
+        queue: mode,
+      }),
+    );
+    active.submissions = accepted.then(
+      () => {},
+      () => {},
+    );
+    await accepted;
     await active.admitted;
     if (active.run.status === "running" && !this.closing) await this.submitQueued(active);
   }
   private submitQueued(active: ActiveRun) {
     const submit = active.submissions.then(async () => {
-      for (const input of this.sessions.pending(active.run.conversationId)) {
+      for (const input of await this.sessions.pending(active.run.conversationId)) {
         if (active.run.status !== "running" || this.closing) return;
         if (input.runId !== active.run.id || !input.queue) continue;
         const existing = await this.harness.commit(
@@ -737,7 +753,9 @@ export class Supervisor {
     await active.ready;
     await this.recoveryReady;
     const clear = active.submissions.then(async () => {
-      const pending = this.sessions.pending(active.run.conversationId).filter((m) => m.queue);
+      const pending = (await this.sessions.pending(active.run.conversationId)).filter(
+        (m) => m.queue,
+      );
       await this.sessions.discardPending(
         active.run.conversationId,
         pending.map((m) => m.id),
@@ -753,6 +771,8 @@ export class Supervisor {
   async close() {
     if (this.closing) return;
     this.closing = true;
+    // HTTP acceptance is now a native commit; let in-flight commits settle before closing storage.
+    await Promise.all(this.starting.values());
     for (const active of this.active.values()) active.controller.abort();
     // Close suspends durable work. Explicit Stop aborts it. Kernel requests must drain independently.
     const results = await Promise.allSettled([

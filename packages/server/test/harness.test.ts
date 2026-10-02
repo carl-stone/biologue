@@ -9,10 +9,53 @@ import { fixture, deferred } from "./helpers/pi-fixture.ts";
 import { Attachments } from "../src/attachments.ts";
 import { ProviderAuth } from "../src/provider-auth.ts";
 import type { PiAdapter } from "../src/pi.ts";
+import { ConversationSessions } from "../src/conversation-sessions.ts";
 
 const timeout = { timeout: 30_000 };
 const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) =>
   fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
+
+test(
+  "native forks rebuild input identity and attachments from the selected prefix",
+  timeout,
+  async () => {
+    const f = await fixture();
+    let reopened: ConversationSessions | undefined;
+    try {
+      const attachment = { id: "image", name: "observations.png", mimeType: "image/png", size: 12 };
+      const image = { type: "image" as const, data: "aW1hZ2U=", mimeType: "image/png" };
+      f.faux.setResponses([fauxAssistantMessage("The observation remains unverified.")]);
+      const finished = f.finished();
+      await f.supervisor.start(f.conversationId, "Original observation", {
+        attachments: [attachment],
+        prepared: { text: "Original observation", images: [image] },
+      });
+      assert.equal((await finished).status, "completed");
+      const original = (await f.sessions.page(f.conversationId)).items[0];
+      await f.sessions.accept(f.conversationId, "Unsent parent correction", "parent-run");
+      const child = f.context.createConversation("Native branch");
+      await f.sessions.fork(f.conversationId, child.id, original.entryId);
+      f.store.db.exec(
+        "DELETE FROM chat_messages; DELETE FROM records WHERE kind IN ('durable-display', 'durable-index');",
+      );
+      f.sessions.unbind();
+      reopened = new ConversationSessions(f.store, f.events);
+      reopened.bind(f.supervisor.harness);
+      const branch = (await reopened.page(child.id)).items;
+      assert.equal(branch.length, 1);
+      assert.equal(branch[0].id, original.id);
+      assert.equal(branch[0].createdAt, original.createdAt);
+      assert.equal(branch[0].conversationId, child.id);
+      assert.deepEqual(branch[0].attachments, [attachment]);
+      assert.deepEqual(reopened.content(branch[0]).images, [image]);
+      assert.equal((await reopened.pending(child.id)).length, 0);
+      assert.equal((await reopened.pending(f.conversationId)).length, 1);
+    } finally {
+      reopened?.unbind();
+      await f.close();
+    }
+  },
+);
 
 test(
   "native code mode preserves approval and exact shared-kernel execution provenance",
@@ -29,7 +72,7 @@ test(
       ]);
       const requested = f.requested(),
         done = f.finished();
-      f.supervisor.start(f.conversationId, "Run through code mode.");
+      await f.supervisor.start(f.conversationId, "Run through code mode.");
       const request = await requested;
       assert.equal(f.calls.length, 0);
       assert.equal(request.tool, "execute_code");
@@ -72,7 +115,7 @@ test(
           fauxAssistantMessage("Use the selected comparison."),
         ]);
         const done = f.finished();
-        const run = f.supervisor.start(f.conversationId, "Ask about the comparison.");
+        const run = await f.supervisor.start(f.conversationId, "Ask about the comparison.");
         const pending = await question.promise;
         assert.equal(pending.runId, run.id);
         assert.equal(pending.kind, "select");
@@ -114,7 +157,7 @@ test(
         ]);
         const done = f.finished();
         const requested = mode === "edit" ? f.requested() : undefined;
-        f.supervisor.start(f.conversationId, `Use ${mode} mode.`);
+        await f.supervisor.start(f.conversationId, `Use ${mode} mode.`);
         if (requested) f.permissions.decide((await requested).id, false);
         const run = await done;
         assert.equal(run.settings?.mode, mode);
@@ -154,7 +197,7 @@ test(
       assert.doesNotMatch(prepared.text, /later = 8/);
       f.faux.setResponses([fauxAssistantMessage("Read the attached snapshot.")]);
       const done = f.finished();
-      f.supervisor.start(f.conversationId, "Review this file.", {
+      await f.supervisor.start(f.conversationId, "Review this file.", {
         prepared,
         attachments: prepared.attachments,
       });
@@ -190,7 +233,7 @@ test(
       ]);
       const requested = f.requested(),
         done = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Begin.");
+      const run = await f.supervisor.start(f.conversationId, "Begin.");
       const permission = await requested;
       await f.supervisor.steer(run.id, "/review-analysis", "followUp");
       await f.supervisor.steer(run.id, "Change the comparison.", "steer");
@@ -199,7 +242,7 @@ test(
         removed.map((item) => item.text).sort(),
         ["/review-analysis", "Change the comparison."].sort(),
       );
-      assert.equal(f.sessions.pending(f.conversationId).length, 0);
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
       f.permissions.decide(permission.id, false);
       assert.equal((await done).status, "completed");
       assert.doesNotMatch(JSON.stringify(f.requests.at(-1)), /Change the comparison/);
@@ -262,7 +305,7 @@ test(
       ]);
       const requested = f.requested(),
         done = f.finished();
-      f.supervisor.start(f.conversationId, "Use the MCP server.");
+      await f.supervisor.start(f.conversationId, "Use the MCP server.");
       const request = await requested;
       assert.equal(calls, 0);
       assert.equal(request.tool, "mcp__test__write");
@@ -272,7 +315,7 @@ test(
       const status = await f.run("/mcp");
       assert.equal(status.status, "completed", status.error);
       assert.ok(status.notices?.some((item) => /test/.test(item.text)));
-      assert.equal(f.sessions.pending(f.conversationId).length, 0);
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
     } finally {
       await f.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -333,7 +376,7 @@ test(
       ]);
       const requested = f.requested(),
         done = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Initial question.");
+      const run = await f.supervisor.start(f.conversationId, "Initial question.");
       const permission = await requested;
       await f.supervisor.steer(run.id, "Afterwards, review assumptions.", "followUp");
       await f.supervisor.steer(run.id, "First, correct the comparison.", "steer");
@@ -359,7 +402,7 @@ test(
         "followUp",
       );
       assert.ok(messages.every((message) => message.delivery === "delivered"));
-      assert.equal(f.sessions.pending(f.conversationId).length, 0);
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
     } finally {
       await f.close();
     }
@@ -451,14 +494,14 @@ test(
         exposure: "direct",
       });
       const done = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Read the connected tools.");
+      const run = await f.supervisor.start(f.conversationId, "Read the connected tools.");
       await connected.promise;
       await f.supervisor.cancel(run.id);
       assert.equal((await done).status, "cancelled");
       assert.equal(f.supervisor.isActive(), false);
       assert.equal(f.faux.state.callCount, 0);
       assert.equal(f.calls.length, 0);
-      assert.equal(f.sessions.pending(f.conversationId).length, 1);
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 1);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

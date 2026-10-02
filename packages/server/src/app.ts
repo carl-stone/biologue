@@ -698,7 +698,7 @@ async function createOwnedApp(
       .parse(request.body);
     const prepared = attachments.prepare(body.text, body.attachments);
     return reply.code(202).send(
-      supervisor.start(body.conversationId, body.text, {
+      await supervisor.start(body.conversationId, body.text, {
         prepared,
         attachments: prepared.attachments,
       }),

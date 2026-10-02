@@ -83,21 +83,13 @@ test("the display index rebuilds from durable history and receipts without modif
   try {
     const id = f.conversation.id,
       c = await f.sessions.get(id);
-    const receipt = f.sessions.accept(id, "Accepted input", "run");
-    await c.commit(
-      (tx) =>
-        tx.appendEntry(c.id, {
-          kind: "biologue.import.user",
-          model: [{ role: "user", content: receipt.text, timestamp: Date.now() }],
-          data: JSON.parse(JSON.stringify({ display: receipt })),
-        }),
-      ctx,
-    );
+    const receipt = await f.sessions.accept(id, "Accepted input", "run");
+    await f.sessions.restore(receipt);
     await append(f.sessions, id, "Canonical response");
-    const pending = f.sessions.accept(id, "Unsent correction", "run");
+    const pending = await f.sessions.accept(id, "Unsent correction", "run");
     const before = (await f.sessions.page(id)).items;
     const raw = await f.sessions.history(id);
-    f.store.db.exec("DELETE FROM chat_messages; DELETE FROM chat_delivered;");
+    f.store.db.exec("DELETE FROM chat_messages;");
     f.sessions.unbind();
     const reopened = new ConversationSessions(f.store, f.events);
     reopened.bind(f.harness);
@@ -105,7 +97,7 @@ test("the display index rebuilds from durable history and receipts without modif
     const values = (items: Message[]) => items.map(({ sequence: _s, ...m }) => m);
     assert.deepEqual(values(after), values(before));
     assert.deepEqual(
-      reopened.pending(id).map((m) => m.id),
+      (await reopened.pending(id)).map((m) => m.id),
       [pending.id],
     );
     assert.deepEqual(await reopened.history(id), raw);
@@ -121,7 +113,7 @@ test("history forks inherit only the selected prefix and keep the source and pen
     const id = f.conversation.id;
     const ancestor = await append(f.sessions, id, "Shared ancestor");
     await append(f.sessions, id, "Source response");
-    f.sessions.accept(id, "Pending correction", "run");
+    await f.sessions.accept(id, "Pending correction", "run");
     const child = f.context.createConversation("Branch");
     await f.sessions.fork(id, child.id, String(ancestor.id));
     await append(f.sessions, child.id, "Child response");
@@ -133,8 +125,8 @@ test("history forks inherit only the selected prefix and keep the source and pen
       (await f.sessions.page(id)).items.map((m) => m.text),
       ["Shared ancestor", "Source response", "Pending correction"],
     );
-    assert.equal(f.sessions.pending(child.id).length, 0);
-    assert.equal(f.sessions.pending(id).length, 1);
+    assert.equal((await f.sessions.pending(child.id)).length, 0);
+    assert.equal((await f.sessions.pending(id)).length, 1);
   } finally {
     await f.close();
   }
@@ -187,7 +179,7 @@ test("concurrent correction restoration commits one entry despite repeated displ
   const f = await fixture();
   const put = f.store.put.bind(f.store);
   try {
-    const input = f.sessions.accept(
+    const input = await f.sessions.accept(
       f.conversation.id,
       "Donor is the corrected experimental unit",
       "stopped-run",
@@ -213,7 +205,7 @@ test("concurrent correction restoration commits one entry despite repeated displ
         timestamp: Date.parse(input.createdAt),
       },
     ]);
-    assert.equal(f.sessions.pending(input.conversationId).length, 0);
+    assert.equal((await f.sessions.pending(input.conversationId)).length, 0);
     assert.equal((await f.sessions.page(input.conversationId)).items[0].id, input.id);
   } finally {
     f.store.put = put;

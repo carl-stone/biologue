@@ -3,10 +3,9 @@ import { readFileSync } from "node:fs";
 import { stripFrontmatter, type PromptTemplate } from "@earendil-works/pi-coding-agent";
 import { validateToolArguments, type ToolCall } from "@earendil-works/pi-ai";
 import type { Context, JsonValue } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   defineExtension,
-  defineTask,
   defineTool,
   section,
   AgentDoc,
@@ -39,8 +38,6 @@ const { expandPromptTemplate } = (await import(
   new URL("./core/prompt-templates.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href
 )) as { expandPromptTemplate: (text: string, templates: PromptTemplate[]) => string };
 type Invocation = { writes: { kind: string; data: JsonValue }[] };
-type NestedInput = { name: string; args: JsonObject; callId: string };
-type NestedState = { phase: "call" } | { phase: "execute" };
 
 /** Adapts Pi's tool-only extensions to durable tasks. No Agent or AgentSession is constructed. */
 export class DurableTools {
@@ -54,7 +51,6 @@ export class DurableTools {
   private sections: Record<string, string> = {};
   private dirty = true;
   private stopped = false;
-  private nested;
   constructor(
     private input: {
       project: string;
@@ -105,81 +101,6 @@ export class DurableTools {
         const invocation = this.invocation.getStore();
         if (!invocation) throw new Error("Tool bookkeeping requires an active durable invocation.");
         invocation.writes.push({ kind, data: json(data) });
-      },
-    });
-    // The call phase stores intent before invoking an external effect. An interrupted
-    // execute checkpoint returns uncertainty rather than invoking the tool again.
-    this.nested = defineTask<NestedInput, NestedState, ToolExecutionResult>({
-      name: `biologue.nested-tool:${input.run.conversationId}`,
-      version: 1,
-      initial: () => ({ phase: "call" }),
-      phases: {
-        call: async (task, runtime, context) => {
-          await runtime.commit(
-            () => ({ status: "running", checkpoint: { phase: "execute" } }),
-            context,
-          );
-          const api = {
-            ...runtime,
-            taskId: task.id,
-            conversationId: runtime.conversationId,
-            callId: task.input.callId,
-            env: undefined,
-            output: () => {},
-            diagnostic: () => {},
-            details: async () => {},
-            commit: <T>(
-              change: (tx: import("@earendil-works/pi-durable").Tx) => T | Promise<T>,
-              ctx: Context,
-            ) => {
-              let result: T;
-              return runtime
-                .commit(async (tx) => {
-                  result = await change(tx);
-                  return undefined;
-                }, ctx)
-                .then(() => result!);
-            },
-          } as unknown as ToolExecutionApi;
-          const result = await this.invoke(task.input.name, task.input.args, api, context);
-          await runtime.commit(async (tx) => {
-            await tx.appendEntry(runtime.conversationId, {
-              kind: "biologue.nested-result",
-              data: json({
-                callId: task.input.callId,
-                name: task.input.name,
-                result,
-              }) as unknown as JsonValue,
-            });
-            return { status: "terminal", outcome: { status: "completed", result: json(result) } };
-          }, context);
-        },
-        execute: async (task, runtime, context) => {
-          await runtime.commit(
-            () => ({
-              status: "terminal",
-              outcome: {
-                status: "completed",
-                result: {
-                  isError: true,
-                  content: [
-                    {
-                      type: "text",
-                      text: `Interrupted ${task.input.name}: effects are unknown. Review recorded executions and current state before retrying.`,
-                    },
-                  ],
-                },
-              },
-            }),
-            context,
-          );
-        },
-      },
-      abort: async (_task, runtime, context) => {
-        await runtime.commit(
-          () => ({ status: "terminal", outcome: { status: "aborted" } }),
-          context,
-        );
       },
     });
     this.publish();
@@ -282,7 +203,6 @@ export class DurableTools {
       defineExtension({
         name: this.name,
         tools,
-        tasks: [this.nested],
         sections: [
           section(
             "project_instructions",
@@ -348,8 +268,7 @@ export class DurableTools {
       throw new Error(`Tool ${name} is unavailable.`);
     let params: unknown;
     try {
-      const call: ToolCall = { type: "toolCall", id: api.callId, name, arguments: args };
-      params = validateToolArguments(definition, call);
+      params = args; // Native ToolTask already validated the top-level call.
       await this.emit(
         "tool_call",
         { type: "tool_call", toolName: name, toolCallId: api.callId, input: params },
@@ -399,37 +318,28 @@ export class DurableTools {
         tools: nestedTools,
         executeTool: async (toolName: string, raw: unknown, opts?: { signal?: AbortSignal }) => {
           const callId = `${api.callId}/${++nestedNumber}`;
-          const taskId = await api.createTask(
-            this.nested,
-            { name: toolName, args: json(raw) as JsonObject, callId },
-            { ownership: { kind: "task", taskId: api.taskId } },
-            context,
-          );
-          const abort = () => {
-            void this.input.harness.abortTask(taskId, BACKGROUND_CONTEXT).catch(this.input.onError);
+          const definition = this.definition(toolName);
+          if (!definition || !nestedTools.some((t) => t.name === toolName))
+            throw new Error(`Tool ${toolName} is unavailable.`);
+          const call: ToolCall = {
+            type: "toolCall",
+            id: callId,
+            name: toolName,
+            arguments: json(raw) as JsonObject,
           };
-          opts?.signal?.addEventListener("abort", abort, { once: true });
-          if (opts?.signal?.aborted) abort();
-          try {
-            const task = await api.waitForTask(taskId, context);
-            const outcome = task.state.outcome;
-            const result =
-              outcome.status === "completed"
-                ? outcome.result
-                : {
-                    isError: true,
-                    content: [
-                      { type: "text" as const, text: `Nested tool ${toolName} ${outcome.status}.` },
-                    ],
-                  };
-            return {
-              toolCall: { type: "toolCall", id: callId, name: toolName, arguments: raw },
-              result,
-              isError: result.isError ?? false,
-            };
-          } finally {
-            opts?.signal?.removeEventListener("abort", abort);
-          }
+          // Pi's unsafe code-mode ToolTask owns the whole plan. It will never
+          // replay this JavaScript or any of its nested scientific effects.
+          const args = validateToolArguments(definition, call);
+          const result = await this.invoke(
+            toolName,
+            args as JsonObject,
+            { ...api, callId },
+            withAbortSignal(
+              opts?.signal ? AbortSignal.any([signal, opts.signal]) : signal,
+              context,
+            ),
+          );
+          return { toolCall: call, result, isError: result.isError ?? false };
         },
       } as unknown as ExtensionToolContext;
       const invocation: Invocation = { writes: [] };

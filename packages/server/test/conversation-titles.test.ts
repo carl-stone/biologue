@@ -25,7 +25,6 @@ test("automatic titles update periodically, deduplicate requests, and respect ma
         createdAt: new Date().toISOString(),
       };
       messages.push(message);
-      store.put("input-receipt", message.id, message);
     }
     input("Compare the matched donors.");
     let calls = 0;

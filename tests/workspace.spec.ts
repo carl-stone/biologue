@@ -16,7 +16,9 @@ test("a scientist can run code, reuse objects, inspect data, and retain context 
   await page
     .getByRole("textbox", { name: "Console code", exact: true })
     .fill("print(len(measurements))");
+  const consoleCount = await page.locator(".execution").count();
   await page.getByRole("button", { name: "Run console code" }).click();
+  await expect(page.locator(".execution")).toHaveCount(consoleCount + 1);
   await expect(page.locator(".execution").last().locator(".output-text")).toHaveText("6\n");
   await expect(page.locator(".object code", { hasText: "measurements" })).toBeVisible({
     timeout: 15000,

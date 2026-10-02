@@ -11,6 +11,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AgentRun, AgentQuestion } from "@biologue/protocol";
 import { deferred, fixture, scriptedModel } from "./helpers/pi-fixture.ts";
+import { RunsDoc } from "../src/durable-state.ts";
 import { PiAdapter } from "../src/pi.ts";
 
 async function eventually<T>(
@@ -149,7 +150,16 @@ test(
     const killed = await crash("provider");
     const model = await scriptedModel();
     model.faux.setResponses([fauxAssistantMessage("Recovered response.")]);
-    const f = await fixture({ root: killed.root, model });
+    const f = await fixture({
+      root: killed.root,
+      model,
+      beforeInitialize: (_pi, store) => {
+        // Native state is authoritative even if every app run/chat projection is lost.
+        store.db.exec(
+          "DELETE FROM records WHERE kind IN ('run', 'durable-index', 'durable-display'); DELETE FROM chat_messages;",
+        );
+      },
+    });
     try {
       const run = await eventually(
         () => f.store.get<AgentRun>("run", killed.run.id)!,
@@ -181,6 +191,58 @@ test("a live storage owner blocks another harness and orderly shutdown releases 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test(
+  "shutdown drains native input acceptance and resumes it once on reopening",
+  { timeout: 30_000 },
+  async () => {
+    const f = await fixture();
+    const root = f.root;
+    const conversation = await f.sessions.get(f.conversationId);
+    const commit = conversation.commit.bind(conversation);
+    const entered = deferred(),
+      release = deferred();
+    conversation.commit = async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return commit(...args);
+    };
+    let reopened: Awaited<ReturnType<typeof fixture>> | undefined;
+    try {
+      const accepting = f.supervisor.start(f.conversationId, "Accepted during shutdown");
+      await entered.promise;
+      const closing = f.supervisor.close();
+      await assert.rejects(f.supervisor.start(f.conversationId, "Too late"), /shutting down/);
+      release.resolve();
+      const run = await accepting;
+      await closing;
+      assert.equal(f.requests.length, 0);
+      await f.close(false);
+      const model = await scriptedModel();
+      model.faux.setResponses([fauxAssistantMessage("Accepted input recovered")]);
+      reopened = await fixture({ root, model });
+      const result = await eventually(
+        () => reopened!.store.get<AgentRun>("run", run.id)!,
+        (r) => !!r.finishedAt,
+      );
+      assert.equal(result.status, "completed", result.error);
+      assert.equal(model.requests.length, 1);
+      assert.equal(
+        (await reopened.sessions.page(run.conversationId)).items.filter((m) => m.role === "user")
+          .length,
+        1,
+      );
+    } finally {
+      release.resolve();
+      conversation.commit = commit;
+      if (reopened) await reopened.close();
+      else {
+        await f.close(false);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  },
+);
 for (const scenario of ["provider", "question"])
   test(
     `orderly shutdown suspends pending ${scenario} work and reopening resumes the same run`,
@@ -210,7 +272,7 @@ for (const scenario of ["provider", "question"])
               { stopReason: "toolUse" },
             ),
           ]);
-        const run = f.supervisor.start(f.conversationId, "Continue the investigation.");
+        const run = await f.supervisor.start(f.conversationId, "Continue the investigation.");
         const question =
           scenario === "question"
             ? (
@@ -329,11 +391,15 @@ test(
     const opening = fixture({
       root: killed.root,
       model,
-      beforeInitialize: (pi, store, context) => {
-        store.put("run", first.id, {
-          ...first,
-          settings: { ...first.settings!, model: "removed-model" },
-        });
+      beforeInitialize: async (pi, _store, context, harness) => {
+        await harness.commit(async (tx) => {
+          const state = await tx.doc(
+            RunsDoc,
+            Number(first.piSessionId) as import("@earendil-works/pi-durable").ConversationId,
+          );
+          state.runs.find((saved) => saved.run.id === first.id)!.run.settings!.model =
+            "removed-model";
+        }, ctx);
         context.update(
           "Newest correction: the biological unit is the donor.",
           context.get().version,
@@ -441,7 +507,7 @@ test(
       assert.match(JSON.stringify(inputs[1].content), /Startup correction: use donor as the unit/);
       const initial = model.requests[0].messages.find((m) => m.role === "user")!;
       assert.match(JSON.stringify(initial.content), /Continue the scientific investigation/);
-      assert.equal(f.sessions.pending(run.conversationId).length, 0);
+      assert.equal((await f.sessions.pending(run.conversationId)).length, 0);
     } finally {
       await f.close();
     }

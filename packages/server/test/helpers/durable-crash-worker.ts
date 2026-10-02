@@ -125,14 +125,26 @@ if (scenario.startsWith("summary")) {
         });
   f.faux.setResponses([fauxAssistantMessage(call, { stopReason: "toolUse" })]);
 }
-f.supervisor.start(
+await f.supervisor.start(
   f.conversationId,
   "Continue the scientific investigation.",
   scenario.startsWith("summary") ? { kind: "compaction" } : undefined,
 );
 if (scenario === "startup") {
   const run = f.store.list<AgentRun>("run").find((r) => r.status === "running")!;
+  const accepted = new Promise<void>((resolve) => {
+    const detach = f.events.subscribe((event) => {
+      if (
+        event.type === "message" &&
+        event.message.text === "Startup correction: use donor as the unit."
+      ) {
+        detach();
+        resolve();
+      }
+    });
+  });
   void f.supervisor.steer(run.id, "Startup correction: use donor as the unit.", "followUp");
+  await accepted;
   send({ kind: "startup-inputs-accepted" });
 }
 if (scenario === "providers") {
@@ -140,6 +152,6 @@ if (scenario === "providers") {
   f.context.updateConversation(c.id, {
     settings: f.store.get<Conversation>("conversation", f.conversationId)!.settings,
   });
-  f.supervisor.start(c.id, "Continue the second investigation.");
+  await f.supervisor.start(c.id, "Continue the second investigation.");
 }
 setInterval(() => {}, 1000);

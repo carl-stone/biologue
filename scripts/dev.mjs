@@ -90,8 +90,10 @@ function start(command, args) {
   });
   return child;
 }
-process.once("SIGINT", () => stop());
-process.once("SIGTERM", () => stop());
+// The runner can signal the whole process group while our parent also forwards
+// the signal. Keep handling duplicates until the application has drained.
+process.on("SIGINT", () => stop());
+process.on("SIGTERM", () => stop());
 if (!process.env.JUPYTER_URL) {
   const python = resolve(
     process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python",

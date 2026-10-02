@@ -4,6 +4,8 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Store } from "../src/store.ts";
 import { Events } from "../src/events.ts";
 import { Permissions } from "../src/permissions.ts";
+import { InputsDoc, RunsDoc } from "../src/durable-state.ts";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { fixture } from "./helpers/pi-fixture.ts";
 
 const timeout = { timeout: 20_000 };
@@ -51,37 +53,49 @@ test("failed permission writes reject all waiters, including aborts, and never g
   }
 });
 
-for (const kind of ["run-input", "run"]) {
-  test(
-    `failed ${kind} startup writes retain the input without reserving the conversation`,
-    timeout,
-    async () => {
-      const f = await fixture();
-      const put = f.store.put.bind(f.store);
-      try {
-        f.store.put = (target, id, value) => {
-          if (target === kind) throw new Error("Startup write failed");
-          return put(target, id, value);
-        };
-        assert.throws(
-          () => f.supervisor.start(f.conversationId, "Retain the matched control."),
-          /Startup write failed/,
-        );
-        assert.equal(f.requests.length, 0);
-        assert.equal(f.store.list("run").length, 0);
-        assert.equal(f.store.list("run-input").length, 0);
-        assert.match(f.sessions.pending(f.conversationId)[0].text, /matched control/);
-        f.store.put = put;
-        f.faux.setResponses([fauxAssistantMessage("The earlier input is available.")]);
-        assert.equal((await f.run("Continue.")).status, "completed");
-        assert.match(JSON.stringify(f.requests.at(-1)), /matched control/);
-      } finally {
-        f.store.put = put;
-        await f.close();
-      }
-    },
-  );
-}
+test(
+  "native startup commits input and run metadata together and rejects failed admission",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const conversation = await f.sessions.get(f.conversationId);
+    const commit = conversation.commit.bind(conversation);
+    try {
+      conversation.commit = async () => {
+        throw new Error("Native commit failed");
+      };
+      await assert.rejects(
+        f.supervisor.start(f.conversationId, "Retain the matched control."),
+        /Native commit failed/,
+      );
+      assert.equal(f.supervisor.isActive(), false);
+      assert.equal(f.requests.length, 0);
+      conversation.commit = commit;
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
+      let atomic = false;
+      const detach = f.supervisor.harness.subscribeCommits((publication) => {
+        const kinds = publication.changes
+          .filter((c) => c.type === "document")
+          .map((c) => c.record.kind);
+        if (kinds.includes(InputsDoc.definition.kind) && kinds.includes(RunsDoc.definition.kind))
+          atomic = true;
+      });
+      f.faux.setResponses([fauxAssistantMessage("The matched control is recorded.")]);
+      assert.equal((await f.run("Retain the matched control.")).status, "completed");
+      detach();
+      assert.ok(atomic);
+      assert.equal(f.store.list("input-receipt").length, 0);
+      assert.equal(f.store.list("run-input").length, 0);
+      assert.equal(
+        (await f.supervisor.harness.snapshot(InputsDoc, conversation.id, ctx))!.receipts.length,
+        1,
+      );
+    } finally {
+      conversation.commit = commit;
+      await f.close();
+    }
+  },
+);
 
 test(
   "disposal and publication failures cannot strand an agent run or reject its background task",
@@ -140,7 +154,7 @@ test(
       ]);
       const requested = f.requested(),
         finished = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Consider an action.");
+      const run = await f.supervisor.start(f.conversationId, "Consider an action.");
       await requested;
       let runWriteFailed = false;
       f.store.put = (kind, id, value) => {

@@ -145,8 +145,10 @@ and executable extensions require an explicit host integration.
 ## State and recovery
 
 Back up the entire project state directory. Application records live in
-`biologue.sqlite`; canonical conversation history, submissions, task checkpoints,
-and usage live in `pi/durable.sqlite`. Include WAL files and artifact payloads
+`biologue.sqlite`; canonical conversation history, accepted inputs, run metadata,
+submissions, task checkpoints, and usage live in `pi/durable.sqlite`. Chat rows
+and run records in the application database are rebuildable display caches.
+Include WAL files and artifact payloads
 in a live backup, or stop the app before copying. Branches inherit a selected
 history prefix while retaining the project's shared files and live kernels.
 Pi Durable is pinned to 1.0.0, whose API is experimental; upgrades require
@@ -165,7 +167,9 @@ input is admitted before startup corrections; correction admissions follow recei
 order and retain request identity across restarts. Queue clearing shares the
 admission lock. Manual compaction admission and its run
 identity commit together, and restoring an unsent correction is idempotent even
-if the display index fails. Interrupted scientific executions are marked abandoned.
+if the display index fails. Native code-mode tool tasks own their entire plan,
+including nested calls; there is no separate nested-task scheduler or replay journal.
+Interrupted scientific executions are marked abandoned.
 Interrupted tools, including calls that were waiting for
 approval, settle as unknown effects and are never replayed automatically. A surviving Jupyter session can be reattached; restarting
 the managed launcher restarts Jupyter and clears live objects. Cancellation with

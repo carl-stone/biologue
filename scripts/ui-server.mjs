@@ -19,7 +19,13 @@ const child = spawn(process.execPath, ["scripts/dev.mjs"], {
     JUPYTER_URL: "",
   },
 });
-for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => child.kill("SIGTERM"));
+let stopping = false;
+for (const signal of ["SIGINT", "SIGTERM"])
+  process.on(signal, () => {
+    if (stopping) return;
+    stopping = true;
+    child.kill("SIGTERM");
+  });
 child.on("exit", (code) => {
   rmSync(project, { recursive: true, force: true });
   process.exit(code || 0);

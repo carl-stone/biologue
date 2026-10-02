@@ -57,17 +57,11 @@ export class ContextService {
     id: string,
     messages: Message[],
     generate: (messages: Message[]) => Promise<string>,
+    count = messages.filter((message) => message.role === "user").length,
   ) {
     if (this.closed || this.titleJobs.has(id)) return;
     const previous = this.store.get<Conversation>("conversation", id)!;
     if (previous.titleMode !== "automatic") return;
-    const count = Number(
-      this.store.db
-        .prepare(
-          "SELECT count(*) AS count FROM records WHERE kind = 'input-receipt' AND json_extract(value, '$.conversationId') = ?",
-        )
-        .get(id)!.count,
-    );
     if (previous.titledThrough && count < previous.titledThrough + 4) return;
     const job = (async () => {
       try {

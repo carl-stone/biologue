@@ -70,7 +70,12 @@ export async function fixture(
     settings?: Settings;
     cancellationTimeoutMs?: number;
     model?: Awaited<ReturnType<typeof scriptedModel>>;
-    beforeInitialize?: (pi: PiAdapter, store: Store, context: ContextService) => void;
+    beforeInitialize?: (
+      pi: PiAdapter,
+      store: Store,
+      context: ContextService,
+      harness: import("@earendil-works/pi-durable").Harness,
+    ) => void | Promise<void>;
   } = {},
 ) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), "biologue-session-"));
@@ -113,8 +118,9 @@ export async function fixture(
     collaboratorPrompt,
     sessions,
   );
-  options.beforeInitialize?.(pi, store, context);
-  await supervisor.initialize();
+  const opened = await pi.openHarness();
+  await options.beforeInitialize?.(pi, store, context, opened.harness);
+  await supervisor.initialize(opened);
   const conversationId = store.list<Conversation>("conversation")[0].id;
   const observed: AppEvent[] = [];
   events.subscribe((event) => observed.push(event));
@@ -158,9 +164,9 @@ export async function fixture(
     finished,
     requested,
     ...model,
-    run: (text: string) => {
+    run: async (text: string) => {
       const done = finished();
-      supervisor.start(conversationId, text);
+      await supervisor.start(conversationId, text);
       return done;
     },
     close: async (remove = true) => {

@@ -58,7 +58,7 @@ for (const includeCode of [true, false])
         ]);
         const requested = f.requested();
         const finished = f.finished();
-        const run = f.supervisor.start(f.conversationId, "Inspect the value.");
+        const run = await f.supervisor.start(f.conversationId, "Inspect the value.");
         const request = await requested;
         assert.equal(f.calls.length, 0);
         assert.equal(request.code, doc.content);
@@ -102,7 +102,7 @@ test("declined and cancelled Pi tool requests cannot execute", timeout, async ()
       ]);
       const requested = f.requested();
       const finished = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Consider an action.");
+      const run = await f.supervisor.start(f.conversationId, "Consider an action.");
       const request = await requested;
       if (cancel) await f.supervisor.cancel(run.id);
       else f.permissions.decide(request.id, false);
@@ -144,7 +144,7 @@ test(
       ]);
       const requested = f.requested();
       const finished = f.finished();
-      f.supervisor.start(f.conversationId, "Run the current revision.");
+      await f.supervisor.start(f.conversationId, "Run the current revision.");
       const request = await requested;
       assert.equal(request.code, doc.content);
       f.documents.edit(doc.path, "x = 3\n\n", doc.version);
@@ -176,7 +176,7 @@ test("document identity is checked again after the approval wait", timeout, asyn
     ]);
     const requested = f.requested(),
       finished = f.finished();
-    f.supervisor.start(f.conversationId, "Run the script.");
+    await f.supervisor.start(f.conversationId, "Run the script.");
     const permission = await requested;
     f.documents.edit(document.path, "x = 99", document.version);
     f.permissions.decide(permission.id, true);
@@ -313,7 +313,7 @@ for (const cancel of [false, true])
           },
         ]);
         const finished = f.finished();
-        const run = f.supervisor.start(f.conversationId, "We have six independent samples.");
+        const run = await f.supervisor.start(f.conversationId, "We have six independent samples.");
         await entered.promise;
         await f.supervisor.steer(
           run.id,
@@ -336,7 +336,7 @@ for (const cancel of [false, true])
         f.faux.setResponses([fauxAssistantMessage("The sampling correction is available.")]);
         assert.equal((await f.run("Use the corrected experimental unit.")).status, "completed");
         assert.match(textOf(f.requests.at(-1)!), /six aliquots from one donor/);
-        assert.equal(f.sessions.pending(f.conversationId).length, 0);
+        assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
         assert.equal(
           (await f.sessions.page(f.conversationId, 200)).items.filter((message) =>
             message.text.startsWith("Correction:"),
@@ -352,14 +352,14 @@ for (const cancel of [false, true])
 test("accepted messages survive before admission to the durable harness", timeout, async () => {
   const f = await fixture();
   try {
-    const receipt = f.sessions.accept(
+    const receipt = await f.sessions.accept(
       f.conversationId,
       "The baseline is a paired sample.",
       randomUUID(),
     );
     const reopened = new ConversationSessions(f.store, f.events);
     reopened.bind(f.supervisor.harness);
-    assert.equal(reopened.pending(f.conversationId)[0].id, receipt.id);
+    assert.equal((await reopened.pending(f.conversationId))[0].id, receipt.id);
     f.faux.setResponses([fauxAssistantMessage("The prior input is available.")]);
     assert.equal((await f.run("Continue.")).status, "completed");
     assert.match(JSON.stringify(f.requests.at(-1)), /paired sample/);
@@ -953,7 +953,7 @@ test(
         fauxAssistantMessage("Repeated correction received."),
       ]);
       const finished = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Discuss the observation.");
+      const run = await f.supervisor.start(f.conversationId, "Discuss the observation.");
       await entered.promise;
       await f.supervisor.steer(run.id, "Keep the donor pairing.");
       await f.supervisor.steer(run.id, "Keep the donor pairing.");
@@ -965,7 +965,7 @@ test(
       assert.equal(corrections.length, 2);
       assert.notEqual(corrections[0].id, corrections[1].id);
       assert.ok(corrections.every((message) => message.delivery === "delivered"));
-      assert.equal(f.sessions.pending(f.conversationId).length, 0);
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
       assert.ok(
         f.requests.slice(1).every((request) => textOf(request).includes("Keep the donor pairing.")),
       );
@@ -1007,7 +1007,7 @@ test(
       ]);
       const requested = f.requested();
       const finished = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Start the computation.");
+      const run = await f.supervisor.start(f.conversationId, "Start the computation.");
       f.permissions.decide((await requested).id, true);
       await started.promise;
       await f.supervisor.cancel(run.id);
@@ -1046,7 +1046,7 @@ test(
     try {
       f.faux.setResponses([call("inspect_environment", { language: "python" })]);
       const finished = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Inspect the environment.");
+      const run = await f.supervisor.start(f.conversationId, "Inspect the environment.");
       await started.promise;
       await f.supervisor.cancel(run.id);
       assert.equal((await finished).status, "cancelled");
@@ -1132,7 +1132,10 @@ test(
     };
     try {
       const finished = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Do not lose this new scientific question.");
+      const run = await f.supervisor.start(
+        f.conversationId,
+        "Do not lose this new scientific question.",
+      );
       await entered.promise;
       const cancelled = f.supervisor.cancel(run.id);
       release.resolve();
@@ -1140,9 +1143,9 @@ test(
       assert.equal((await finished).status, "cancelled");
       assert.equal(f.requests.length, 0, "Cancellation prevents a model turn after preflight");
       assert.ok(
-        f.sessions
-          .pending(f.conversationId)
-          .some((message) => message.text === "Do not lose this new scientific question."),
+        (await f.sessions.pending(f.conversationId)).some(
+          (message) => message.text === "Do not lose this new scientific question.",
+        ),
       );
     } finally {
       release.resolve();
@@ -1179,7 +1182,7 @@ test(
         fauxAssistantMessage("The original observations and donor correction remain distinct."),
       ]);
       const done = f.finished();
-      f.supervisor.start(f.conversationId, "", { kind: "compaction" });
+      await f.supervisor.start(f.conversationId, "", { kind: "compaction" });
       const run = await done;
       assert.equal(run.status, "completed", run.error);
       assert.equal(f.requests.length, 1);
@@ -1278,7 +1281,7 @@ test(
         return events;
       };
       const done = f.finished();
-      f.supervisor.start(f.conversationId, "", { kind: "compaction" });
+      await f.supervisor.start(f.conversationId, "", { kind: "compaction" });
       const run = await done;
       assert.equal(run.status, "completed", run.error);
       assert.equal(f.faux.state.callCount, 2);
@@ -1333,7 +1336,7 @@ test(
         ),
       ]);
       const done = f.finished();
-      f.supervisor.start(f.conversationId, "", { kind: "compaction" });
+      await f.supervisor.start(f.conversationId, "", { kind: "compaction" });
       const run = await done;
       assert.equal(run.status, "completed", run.error);
       assert.match(JSON.stringify(f.requests[0]), /artifact-123/);
@@ -1375,7 +1378,7 @@ for (const mode of ["steer", "followUp"] as const)
           fauxAssistantMessage("All inputs received"),
         ]);
         const done = f.finished();
-        const run = f.supervisor.start(f.conversationId, "Original scientific request");
+        const run = await f.supervisor.start(f.conversationId, "Original scientific request");
         await entered.promise;
         const first = f.supervisor.steer(run.id, "First startup correction", mode);
         const second = f.supervisor.steer(run.id, "Second startup correction", mode);
@@ -1408,7 +1411,7 @@ test(
   async () => {
     const f = await fixture();
     try {
-      const receipt = f.sessions.accept(
+      const receipt = await f.sessions.accept(
         f.conversationId,
         "Preserved donor correction",
         "stopped-run",
@@ -1423,18 +1426,10 @@ test(
         }
         return put(kind, id, value);
       };
-      await conversation.commit(
-        (tx) =>
-          tx.appendEntry(conversation.id, {
-            kind: "biologue.import.user",
-            model: [{ role: "user", content: receipt.text, timestamp: Date.now() }],
-            data: JSON.parse(JSON.stringify({ display: receipt })),
-          }),
-        durableContext,
-      );
+      await f.sessions.restore(receipt);
       f.store.put = put;
       assert.ok(injected);
-      assert.equal(f.sessions.pending(f.conversationId).length, 1);
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
       f.faux.setResponses([fauxAssistantMessage("Correction understood")]);
       const result = await f.run("Continue with the corrected unit");
       assert.equal(result.status, "completed", result.error);
@@ -1514,7 +1509,7 @@ test(
         fauxAssistantMessage("A cleared correction must not be requested"),
       ]);
       const done = f.finished();
-      const run = f.supervisor.start(f.conversationId, "Original scientific request");
+      const run = await f.supervisor.start(f.conversationId, "Original scientific request");
       await authenticating.promise;
       const steered = f.supervisor.steer(run.id, "Correction withdrawn during startup", "followUp");
       const clear = f.supervisor.clearQueue(run.id);
@@ -1531,7 +1526,7 @@ test(
       await steered;
       assert.equal((await done).status, "completed");
       assert.equal(f.requests.length, 1);
-      assert.equal(f.sessions.pending(f.conversationId).length, 0);
+      assert.equal((await f.sessions.pending(f.conversationId)).length, 0);
       assert.deepEqual(
         (await f.sessions.page(f.conversationId)).items
           .filter((m) => m.role === "user")

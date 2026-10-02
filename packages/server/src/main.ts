@@ -20,8 +20,11 @@ if (process.env.BIOLOGUE_SOCKET) {
   await app.listen({ path });
   chmodSync(path, 0o600);
 } else await app.listen({ host: "127.0.0.1", port: Number(process.env.BIOLOGUE_PORT || 4317) });
+let closing = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const)
-  process.once(signal, async () => {
+  process.on(signal, async () => {
+    if (closing) return;
+    closing = true;
     await app.close();
     process.exit(0);
   });
