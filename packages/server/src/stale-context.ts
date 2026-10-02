@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
 import type { ContextIssue, Execution, ExecutionContextCheck, Language } from "@biologue/protocol";
 import type { CodeEffects } from "./code-effects.ts";
 import type { Store } from "./store.ts";
@@ -102,7 +102,7 @@ export class StaleContext {
     return row ? JSON.parse(row.effects as string) : undefined;
   }
   /** Only model-context tool results establish observations, not tool start or UI reads. */
-  observeContext(conversationId: string, messages: AgentMessage[]) {
+  observeContext(conversationId: string, messages: readonly Message[]) {
     this.begin(conversationId);
     for (const message of messages) {
       if (message.role !== "toolResult" || message.isError) continue;

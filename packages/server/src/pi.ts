@@ -3,21 +3,17 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ModelThinkingLevel as ThinkingLevel } from "@earendil-works/pi-ai";
 import {
-  createAgentSession,
   createCodemodeExtension,
   createToolSearchExtension,
   createMcpExtension,
   DefaultResourceLoader,
   ModelRuntime,
   SettingsManager,
-  type AgentSession,
-  type SessionManager,
   type Skill,
   type ToolDefinition,
   type ExtensionUIContext,
-  type ExtensionFactory,
   type McpServerEntry,
 } from "@earendil-works/pi-coding-agent";
 import type {
@@ -29,7 +25,6 @@ import type {
 } from "@biologue/protocol";
 
 export { scientificRetention } from "../../pi-science/index.ts";
-import { createScientificExtension } from "../../pi-science/index.ts";
 
 export interface PiOptions {
   project: string;
@@ -40,26 +35,52 @@ export interface PiOptions {
   modelRuntime?: ModelRuntime;
   settingsManager?: SettingsManager;
 }
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import {
+  createRegistry,
+  Harness,
+  type Conversation,
+  type Registry,
+  type HarnessSettings,
+} from "@earendil-works/pi-durable";
+import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { acquireDurableOwner } from "./durable-owner.ts";
+import { DurableTools } from "./durable-tools.ts";
+import type { ConversationSessions } from "./conversation-sessions.ts";
+import type { Permissions } from "./permissions.ts";
+import type { AgentRun } from "@biologue/protocol";
+
 export interface CreateScientificSession {
-  manager: SessionManager;
-  prompt: string;
-  research: ResearchContext;
+  harness: Harness;
+  registry: Registry;
+  conversation: Conversation;
+  sessions: ConversationSessions;
+  run: AgentRun;
+  permissions: Permissions;
   tools: (skills: Skill[]) => ToolDefinition[];
-  attributeMessage: (message: AgentMessage) => AgentMessage;
-  onContext: (messages: AgentMessage[]) => void;
   onError: (error: Error) => void;
-  settings?: AgentSettings;
-  ui?: ExtensionUIContext;
-  extensions?: ExtensionFactory[];
+  ui: ExtensionUIContext;
+  uiForCall: (callId: string) => ExtensionUIContext;
+  signal: AbortSignal;
 }
 
-/** AgentSession owns the loop, history projection, retries, queues and compaction. */
+/** Model credentials and resource loading remain Pi utilities; Pi Durable owns execution. */
 export class PiAdapter {
   provider?: string;
   modelId?: string;
   private runtime?: Promise<ModelRuntime>;
   private agentDir: string;
   private settings: SettingsManager;
+  private releaseOwner?: () => void;
+  private requestGuards = new WeakMap<object, () => void>();
+  guardRequest(messages: readonly import("@earendil-works/pi-ai").Message[], check: () => void) {
+    for (const message of messages) this.requestGuards.set(message, check);
+  }
+  releaseHarness() {
+    this.releaseOwner?.();
+    this.releaseOwner = undefined;
+  }
   constructor(private options: PiOptions) {
     this.agentDir = join(options.stateDir, "pi");
     this.settings =
@@ -84,6 +105,7 @@ export class PiAdapter {
     return (this.runtime ??= ModelRuntime.create({
       authPath: join(this.options.authDir ?? this.agentDir, "auth.json"),
       modelsPath: join(this.agentDir, "models.json"),
+      refreshOnCreate: false,
     }));
   }
   async models(all = false): Promise<AgentModel[]> {
@@ -129,6 +151,9 @@ export class PiAdapter {
       followUpMode: this.settings.getFollowUpMode(),
     };
   }
+  retryPolicy() {
+    return this.settings.getRetrySettings();
+  }
   async configurePreferences(value: ReturnType<PiAdapter["preferences"]>) {
     this.settings.setCompactionEnabled(value.autoCompact);
     this.settings.setRetryEnabled(value.autoRetry);
@@ -171,7 +196,12 @@ export class PiAdapter {
     const config = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { mcpServers: {} };
     return Object.entries(config.mcpServers ?? {}).map(([name, value]) => ({
       name,
-      config: value as McpServerEntry["config"],
+      config: {
+        ...(value as McpServerEntry["config"]),
+        ...((value as { exposure?: string }).exposure === "codemode-deferred"
+          ? { exposure: "deferred" as const }
+          : {}),
+      },
       source: path,
       scope: "global",
     }));
@@ -237,33 +267,73 @@ export class PiAdapter {
       .map((block) => block.text)
       .join("");
   }
-  async create(input: CreateScientificSession): Promise<AgentSession> {
-    const provider = input.settings?.provider ?? this.provider;
-    const modelId = input.settings?.model ?? this.modelId;
-    if (!provider || !modelId)
-      throw new Error(
-        "Configure BIOLOGUE_PROVIDER and BIOLOGUE_MODEL, or defaultProvider and defaultModel in Pi settings, to enable the collaborator.",
+  async openHarness() {
+    const registry = createRegistry();
+    const settings = this.settings;
+    const policy: HarnessSettings = {
+      get compaction() {
+        return { ...settings.getCompactionSettings(), backgroundTokens: 0 };
+      },
+      get retry() {
+        return settings.getRetrySettings();
+      },
+      get steeringMode() {
+        return settings.getSteeringMode();
+      },
+      get followUpMode() {
+        return settings.getFollowUpMode();
+      },
+      toolExecution: "sequential",
+    };
+    mkdirSync(this.agentDir, { recursive: true });
+    const release = acquireDurableOwner(join(this.agentDir, "durable-owner.sqlite"));
+    this.releaseOwner = release;
+    let storage: SqliteStorage | undefined;
+    try {
+      const database = await openNodeSqliteDatabase(join(this.agentDir, "durable.sqlite"));
+      await database.exec("PRAGMA synchronous=FULL");
+      storage = await SqliteStorage.open(database);
+      const runtime = await this.modelRuntime();
+      // Pi reports hook exceptions and can continue. Block provider dispatch after
+      // scientific context/provenance failures, even if a hook was reported and swallowed.
+      const models = new Proxy(runtime, {
+        get: (target, key) => {
+          const value = Reflect.get(target, key);
+          if (key === "streamSimple")
+            return (...args: Parameters<ModelRuntime["streamSimple"]>) => {
+              for (const message of args[1].messages) this.requestGuards.get(message)?.();
+              return target.streamSimple(...args);
+            };
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const harness = await Harness.open(
+        storage,
+        { models, registry, settings: policy },
+        BACKGROUND_CONTEXT,
       );
-    await this.settings.flush();
+      return { harness, registry };
+    } catch (error) {
+      await storage?.close(BACKGROUND_CONTEXT);
+      release();
+      this.releaseOwner = undefined;
+      throw error;
+    }
+  }
+  async create(input: CreateScientificSession): Promise<DurableTools> {
     const runtime = await this.modelRuntime();
-    const model = runtime.getModel(provider, modelId);
-    if (!model)
-      throw new Error(`Model ${provider}/${modelId} is not in the configured Pi catalog.`);
     const loader = new DefaultResourceLoader({
       cwd: this.options.project,
       agentDir: this.agentDir,
       settingsManager: this.settings,
       noExtensions: true,
       noThemes: true,
-      noContextFiles: false,
       additionalExtensionPaths: [
         join(createRequire(import.meta.url).resolve("pi-ask-user/package.json"), "..", "index.ts"),
       ],
       additionalPromptTemplatePaths: [
         fileURLToPath(new URL("../../pi-science/prompts", import.meta.url)),
       ],
-      systemPromptOverride: () => input.prompt,
-      appendSystemPromptOverride: () => [],
       extensionFactories: [
         { name: "codemode", factory: createCodemodeExtension({ mode: "on", models: false }) },
         { name: "tool-search", factory: createToolSearchExtension() },
@@ -272,73 +342,23 @@ export class PiAdapter {
           factory: createMcpExtension({
             loadConfig: () => ({ servers: this.mcpServers(), errors: [] }),
             logPath: join(this.agentDir, "mcp.log"),
-            openUrl: (url) => input.ui?.notify(`Sign in: ${url}`, "info"),
+            openUrl: (url) => input.ui.notify(`Sign in: ${url}`, "info"),
             updateConfig: (entry, patch) =>
               this.saveMcpServer(entry.name, { ...entry.config, ...patch }),
-          }),
-        },
-        ...(input.extensions ?? []),
-        {
-          name: "biologue-science",
-          factory: createScientificExtension({
-            ...input,
-            stream: (...args) => session.agent.streamFunction(...args),
-            retrySettings: this.settings.getRetrySettings(),
           }),
         },
       ],
     });
     await loader.reload();
-    const tools = input.tools(loader.getSkills().skills);
-    const { session, extensionsResult } = await createAgentSession({
-      cwd: this.options.project,
-      agentDir: this.agentDir,
-      model,
-      thinkingLevel:
-        (input.settings?.thinking as ThinkingLevel | undefined) ??
-        this.settings.getDefaultThinkingLevel() ??
-        "medium",
-      modelRuntime: runtime,
-      settingsManager: this.settings,
-      sessionManager: input.manager,
-      resourceLoader: loader,
-      // Omit the allowlist so dynamically registered MCP tools can be called. Deny
-      // every stock filesystem/shell tool; scientific operations use our tools only.
-      noTools: "builtin",
-      excludeTools: ["bash", "powershell", "edit", "write", "grep", "find", "ls"],
-      customTools: tools,
+    return new DurableTools({
+      ...input,
+      loader,
+      models: runtime,
+      project: this.options.project,
+      tools: input.tools(loader.getSkills().skills),
     });
-    try {
-      if (extensionsResult.errors.length)
-        throw new Error(
-          `Biologue's Pi extension failed to load: ${extensionsResult.errors.map((error) => error.error).join("; ")}`,
-        );
-      session.agent.toolExecution = "sequential";
-      session.setActiveToolsByName([
-        ...tools.map((tool) => tool.name),
-        "ask_user",
-        "codemode",
-        "tool_search",
-      ]);
-      await session.bindExtensions({
-        uiContext: input.ui,
-        mode: "rpc",
-        onError: (error) =>
-          input.onError(new Error(`Biologue's Pi integration (${error.event}): ${error.error}`)),
-      });
-      return session;
-    } catch (error) {
-      await this.dispose(session);
-      throw error;
-    }
   }
-  async dispose(session: AgentSession) {
-    try {
-      // AgentSession.dispose() only removes listeners. Native MCP transports own
-      // resources until the SDK's session_shutdown lifecycle event has finished.
-      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-    } finally {
-      session.dispose();
-    }
+  async dispose(session: DurableTools) {
+    await session.stop();
   }
 }

@@ -58,12 +58,12 @@ Playwright starts its own application, Jupyter, and Vite ports with a temporary
 project. Screenshots and traces go in ignored `test-results/`; retain them when
 investigating a failure rather than committing them as review history.
 
-Pi regression tests use real AgentSession instances with scripted providers and
+Pi regression tests use the real Pi Durable harness with scripted providers and
 make no external model calls. When upgrading Pi, run the full core suite; a
-focused session-lifecycle check is:
+focused recovery and lifecycle check is:
 
 ```bash
-npx tsx --test packages/server/test/supervisor.test.ts
+npx tsx --test packages/server/test/supervisor.test.ts packages/server/test/durable-recovery.test.ts
 ```
 
 These checks establish software behavior. Scientist-led review must separately
@@ -144,16 +144,25 @@ and executable extensions require an explicit host integration.
 
 ## State and recovery
 
-Back up the entire project state directory: SQLite alone does not contain the
-canonical Pi transcripts or artifact payloads. Branching a conversation copies
-history while retaining the project's shared files and live kernels.
+Back up the entire project state directory. Application records live in
+`biologue.sqlite`; canonical conversation history, submissions, task checkpoints,
+and usage live in `pi/durable.sqlite`. Include WAL files and artifact payloads
+in a live backup, or stop the app before copying. Branches inherit a selected
+history prefix while retaining the project's shared files and live kernels.
+Pi Durable is pinned to 1.0.0, whose API is experimental; upgrades require
+review of stored task definitions and the recovery suite. Only one application
+process may own a project harness at a time. Its ownership record is reclaimed
+when the owning process is dead on the same host.
 
 Documents synchronize to the server's versioned working buffers; saving writes
 them to project files. Execution captures exact source independently of later
 edits. All human, agent, and inspection code goes through ExecutionService.
 
-Unfinished runs and executions are marked abandoned on server restart and never
-replayed automatically. A surviving Jupyter session can be reattached; restarting
+Active durable runs resume after their scientific extensions and tools are
+restored. Accepted inputs are deduplicated by receipt ID; queued corrections
+remain available. Unfinished pre-Durable runs and scientific executions are
+marked abandoned. Interrupted tools, including calls that were waiting for
+approval, settle as unknown effects and are never replayed automatically. A surviving Jupyter session can be reattached; restarting
 the managed launcher restarts Jupyter and clears live objects. Cancellation with
 an uncertain outcome gates further dispatch until the kernel is reconciled.
 Recorded source and outputs do not capture a complete reproducible environment.

@@ -1,5 +1,5 @@
 import { projectRoutes } from "./projects.ts";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -21,6 +21,7 @@ import { EnvironmentService } from "./environment.ts";
 import { adapters } from "./adapters.ts";
 import { ProviderAuth } from "./provider-auth.ts";
 import { Attachments } from "./attachments.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 export interface AppOptions {
   project: string;
@@ -46,6 +47,26 @@ export async function createApp(options: AppOptions) {
   )
     throw new Error("externalOrigin must be an HTTPS origin without a path.");
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 6_000_000 });
+  const pi =
+    options.pi ?? new PiAdapter({ project: resolve(options.project), stateDir: options.stateDir });
+  // Claim ownership before application services reconcile unfinished executions.
+  const opened = await pi.openHarness();
+  try {
+    return await createOwnedApp(options, externalOrigin, app, pi, opened);
+  } catch (error) {
+    await opened.harness.close(BACKGROUND_CONTEXT);
+    pi.releaseHarness();
+    throw error;
+  }
+}
+
+async function createOwnedApp(
+  options: AppOptions,
+  externalOrigin: URL | undefined,
+  app: FastifyInstance,
+  pi: PiAdapter,
+  opened: Awaited<ReturnType<PiAdapter["openHarness"]>>,
+) {
   const events = new Events();
   const store = new Store(resolve(options.stateDir, "biologue.sqlite"));
   const documents = new Documents(options.project, store, events, true);
@@ -63,7 +84,6 @@ export async function createApp(options: AppOptions) {
   const environment = new EnvironmentService(execution, events);
   const permissions = new Permissions(store, events);
   const sessions = new ConversationSessions(documents.root, options.stateDir, store, events);
-  const pi = options.pi ?? new PiAdapter({ project: documents.root, stateDir: options.stateDir });
   const auth = new ProviderAuth(pi);
   const attachments = new Attachments(store, documents);
   const supervisor = new Supervisor(
@@ -77,6 +97,19 @@ export async function createApp(options: AppOptions) {
     readFileSync(resolve(options.repository, "prompts/collaborator.md"), "utf8"),
     sessions,
   );
+  try {
+    await supervisor.initialize(opened);
+  } catch (error) {
+    environment.close();
+    auth.close();
+    await execution.close();
+    if (kernel instanceof JupyterKernels) kernel.dispose();
+    documents.close();
+    context.close();
+    store.close();
+    await app.close();
+    throw error;
+  }
   const streams = new Set<ServerResponse>();
   const allowedOrigins = new Set([
     "http://127.0.0.1:5173",
@@ -384,7 +417,7 @@ export async function createApp(options: AppOptions) {
   });
   app.get("/api/conversations/search", async (request) => {
     const { q } = z.object({ q: z.string().min(1).max(200) }).parse(request.query);
-    return { ids: sessions.search(q) };
+    return { ids: await sessions.search(q) };
   });
   app.post("/api/conversations/:id/fork", async (request) => {
     const id = conversationId(request.params);
@@ -393,19 +426,13 @@ export async function createApp(options: AppOptions) {
     const body = z.object({ entryId: z.string().min(1).max(100).optional() }).parse(request.body);
     const parent = store.get<Conversation>("conversation", id);
     if (!parent) throw Object.assign(new Error("Conversation not found."), { statusCode: 404 });
-    const leaf = body.entryId ?? sessions.get(id).getLeafId();
-    if (
-      !leaf ||
-      !sessions
-        .get(id)
-        .getBranch()
-        .some((entry) => entry.id === leaf)
-    )
+    const leaf = body.entryId ?? String((await sessions.leaf(id)) ?? "");
+    if (!leaf || !(await sessions.history(id)).some((entry) => String(entry.id) === leaf))
       throw Object.assign(new Error("Choose a delivered message to branch from."), {
         statusCode: 400,
       });
     const child = context.createConversation(`${parent.title.slice(0, 100)} (branch)`);
-    sessions.fork(id, child.id, leaf);
+    await sessions.fork(id, child.id, leaf);
     return context.updateConversation(child.id, { parentId: id, settings: parent.settings });
   });
   app.get("/api/conversations/:id/export", async (request, reply) => {
@@ -414,8 +441,7 @@ export async function createApp(options: AppOptions) {
     if (!conversation) return reply.code(404).send({ error: "Conversation not found." });
     const text =
       `# ${conversation.title}\n\n` +
-      sessions
-        .export(id)
+      (await sessions.export(id))
         .map(
           (message) =>
             `## ${message.role === "user" ? "You" : "Biologue"}\n\n${message.text}${message.attachments?.length ? "\n\nAttachments: " + message.attachments.map((item) => item.name).join(", ") : ""}`,
@@ -471,7 +497,10 @@ export async function createApp(options: AppOptions) {
     ),
   );
   app.get("/api/agent/resources", async () => pi.resources());
-  const mcpExposure = z.enum(["direct", "codemode", "codemode-deferred", "deferred", "hidden"]);
+  const mcpExposure = z.union([
+    z.enum(["direct", "codemode", "deferred", "hidden"]),
+    z.literal("codemode-deferred").transform(() => "deferred" as const),
+  ]);
   const mcpCommon = {
     enabled: z.boolean().optional(),
     exposure: mcpExposure.optional(),

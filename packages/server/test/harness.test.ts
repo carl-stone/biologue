@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, contentText } from "@earendil-works/pi-ai";
 import type { AgentQuestion, AgentSettings } from "@biologue/protocol";
@@ -41,6 +41,9 @@ test(
       assert.deepEqual(record.document, { path: document.path, version: document.version });
       assert.equal(record.toolCallId, request.toolCallId);
       assert.ok(result.usage);
+      assert.equal(result.usage.context?.contextWindow, 100_000);
+      assert.ok(result.usage.context!.tokens! > 0);
+      assert.equal(result.usage.subscription, false);
       const catalog = JSON.stringify(f.requests[0]);
       assert.doesNotMatch(catalog, /"name":"(?:bash|powershell|write)"/);
     } finally {
@@ -156,19 +159,19 @@ test(
         attachments: prepared.attachments,
       });
       assert.equal((await done).status, "completed");
-      const original = f.sessions.export(f.conversationId);
+      const original = await f.sessions.export(f.conversationId);
       assert.equal(original[0].attachments?.[0].document?.version, 2);
-      const leaf = f.sessions.get(f.conversationId).getLeafId();
+      const leaf = await f.sessions.leaf(f.conversationId);
       const child = f.context.createConversation("Branch");
-      f.sessions.fork(f.conversationId, child.id, original[0].entryId);
+      await f.sessions.fork(f.conversationId, child.id, original[0].entryId);
       assert.equal(
-        f.sessions.get(f.conversationId).getLeafId(),
+        await f.sessions.leaf(f.conversationId),
         leaf,
         "Branching never rewinds the source session",
       );
-      assert.equal(f.sessions.export(child.id).length, 1);
-      assert.equal(f.sessions.export(child.id)[0].attachments?.[0].id, file.id);
-      assert.ok(f.sessions.search("attached snapshot").includes(f.conversationId));
+      assert.equal((await f.sessions.export(child.id)).length, 1);
+      assert.equal((await f.sessions.export(child.id))[0].attachments?.[0].id, file.id);
+      assert.ok((await f.sessions.search("attached snapshot")).includes(f.conversationId));
     } finally {
       await f.close();
     }
@@ -347,9 +350,9 @@ test(
         "First, correct the comparison.",
         "Afterwards, review assumptions.",
       ]);
-      const messages = f.sessions
-        .export(f.conversationId)
-        .filter((message) => message.role === "user");
+      const messages = (await f.sessions.export(f.conversationId)).filter(
+        (message) => message.role === "user",
+      );
       assert.equal(messages.find((message) => message.text.startsWith("First,"))?.queue, "steer");
       assert.equal(
         messages.find((message) => message.text.startsWith("Afterwards,"))?.queue,
@@ -394,3 +397,72 @@ input.on("line", line => {
     await f.close();
   }
 });
+
+test(
+  "native prompt arguments and skill contents reach durable model context while chat retains the command",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      mkdirSync(join(f.root, ".pi", "prompts"), { recursive: true });
+      mkdirSync(join(f.root, ".pi", "skills", "units"), { recursive: true });
+      writeFileSync(
+        join(f.root, ".pi", "prompts", "compare.md"),
+        "---\ndescription: Compare selected samples\n---\nCompare $1 against ${2:-matched controls}; retain $ARGUMENTS.",
+      );
+      writeFileSync(
+        join(f.root, ".pi", "skills", "units", "SKILL.md"),
+        "---\nname: units\ndescription: Verify the independent unit\n---\nTreat donor as the independent unit. Never equate wells with replicates.",
+      );
+      f.faux.setResponses([
+        fauxAssistantMessage("Comparison recorded."),
+        fauxAssistantMessage("The donor distinction is retained."),
+      ]);
+      assert.equal((await f.run('/compare "treated donors"')).status, "completed");
+      assert.match(
+        JSON.stringify(f.requests[0]),
+        /Compare treated donors against matched controls/,
+      );
+      assert.equal((await f.run("/skill:units Check the design")).status, "completed");
+      assert.match(JSON.stringify(f.requests.at(-1)), /Never equate wells with replicates/);
+      assert.ok(
+        (await f.sessions.page(f.conversationId)).items.some(
+          (m) => m.text === '/compare "treated donors"',
+        ),
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "Stop cancels MCP discovery before model admission and releases the conversation",
+  timeout,
+  async () => {
+    const f = await fixture();
+    const connected = deferred();
+    const server = createServer((_request, _reply) => connected.resolve());
+    server.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    try {
+      f.pi.saveMcpServer("hanging", {
+        url: `http://127.0.0.1:${(server.address() as { port: number }).port}/mcp`,
+        exposure: "direct",
+      });
+      const done = f.finished();
+      const run = f.supervisor.start(f.conversationId, "Read the connected tools.");
+      await connected.promise;
+      await f.supervisor.cancel(run.id);
+      assert.equal((await done).status, "cancelled");
+      assert.equal(f.supervisor.isActive(), false);
+      assert.equal(f.faux.state.callCount, 0);
+      assert.equal(f.calls.length, 0);
+      assert.equal(f.sessions.pending(f.conversationId).length, 1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await f.close();
+    }
+  },
+);

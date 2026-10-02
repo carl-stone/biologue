@@ -93,17 +93,14 @@ test(
     try {
       f.pi.create = async (input) => {
         const session = await create(input);
-        const dispose = session.dispose.bind(session);
-        session.clearQueue = () => {
-          throw new Error("Queue cleanup failed");
-        };
-        session.dispose = () => {
-          dispose();
+        const dispose = session.stop.bind(session);
+        session.stop = async () => {
+          await dispose();
           throw new Error("Disposal failed");
         };
         return session;
       };
-      f.sessions.publishMessages = () => {
+      f.sessions.publishMessages = async () => {
         throw new Error("Projection unavailable");
       };
       f.faux.setResponses([fauxAssistantMessage("Retained in Pi.")]);
@@ -111,7 +108,6 @@ test(
       assert.equal(failed.status, "failed");
       assert.equal(failed.endReason, "integration_error");
       assert.match(failed.error!, /Projection unavailable/);
-      assert.match(failed.error!, /Queue cleanup failed/);
       assert.match(failed.error!, /Disposal failed/);
       f.pi.create = create;
       f.sessions.publishMessages = publish;
@@ -197,6 +193,40 @@ test(
       assert.equal((await f.run("Continue.")).status, "completed");
     } finally {
       f.store.put = put;
+      await f.close();
+    }
+  },
+);
+
+test(
+  "failed model-context provenance stops provider dispatch and scientific tools",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      f.faux.setResponses([
+        fauxAssistantMessage(
+          fauxToolCall("execute_code", {
+            language: "python",
+            code: "must_not_dispatch()",
+            reason: "Test a failed context record",
+          }),
+          { stopReason: "toolUse" },
+        ),
+      ]);
+      const put = f.store.put.bind(f.store);
+      f.store.put = (kind, id, value) => {
+        if (kind === "run-request") throw new Error("Context storage unavailable");
+        return put(kind, id, value);
+      };
+      const run = await f.run("Inspect the shared object.");
+      assert.equal(run.status, "failed");
+      assert.equal(run.endReason, "integration_error");
+      assert.match(run.error!, /Context storage unavailable/);
+      assert.equal(f.faux.state.callCount, 0);
+      assert.equal(f.calls.length, 0);
+      assert.equal(f.permissions.list().length, 0);
+    } finally {
       await f.close();
     }
   },

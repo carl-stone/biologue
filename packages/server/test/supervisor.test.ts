@@ -15,6 +15,19 @@ import { collaboratorPrompt, deferred, fixture } from "./helpers/pi-fixture.ts";
 import { scientificRetention } from "../src/pi.ts";
 import { ConversationSessions } from "../src/conversation-sessions.ts";
 import { digest } from "../src/documents.ts";
+import { BACKGROUND_CONTEXT as durableContext } from "@earendil-works/chord/context";
+import type { Conversation as DurableConversation } from "@earendil-works/pi-durable";
+import type { Message as PiMessage } from "@earendil-works/pi-ai";
+async function appendMessage(conversation: DurableConversation, message: PiMessage) {
+  return conversation.commit(
+    (tx) =>
+      tx.appendEntry(conversation.id, {
+        kind: message.role === "assistant" ? "pi.assistant" : "pi.user",
+        model: [message],
+      }),
+    durableContext,
+  );
+}
 import { workspaceTools } from "../src/workspace-tools.ts";
 
 const timeout = { timeout: 20_000 };
@@ -24,10 +37,10 @@ const toolResults = (request: Context) =>
 const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) =>
   fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 
-// All of these use PiAdapter.create -> createAgentSession; only the provider and kernel are scripted.
+// All of these use the actual Pi Durable harness; only the provider and kernel are scripted.
 for (const includeCode of [true, false])
   test(
-    `AgentSession preserves approval, unsaved source identity, streaming and canonical history (${includeCode ? "provided code" : "document reference"})`,
+    `Pi Durable preserves approval, unsaved source identity, streaming and canonical history (${includeCode ? "provided code" : "document reference"})`,
     timeout,
     async () => {
       const f = await fixture();
@@ -61,11 +74,11 @@ for (const includeCode of [true, false])
         assert.equal(readFileSync(join(f.root, "analysis.py"), "utf8"), "x = 1");
         assert.ok(f.observed.some((event) => event.type === "agent-delta"));
         assert.deepEqual(
-          f.sessions.page(f.conversationId, 200).items.map((message) => message.delivery),
+          (await f.sessions.page(f.conversationId, 200)).items.map((message) => message.delivery),
           ["delivered", "delivered"],
         );
-        assert.equal(f.sessions.page(f.conversationId, 200).items[1].runId, run.id);
-        assert.ok(existsSync(f.sessions.get(f.conversationId).getSessionFile()!));
+        assert.equal((await f.sessions.page(f.conversationId, 200)).items[1].runId, run.id);
+        assert.ok(existsSync(join(f.stateDir, "pi", "durable.sqlite")));
         assert.equal(f.store.list("transcript").length, 0);
         assert.equal(f.store.list("message").length, 0);
         assert.ok(f.store.list("run-request").length >= 2);
@@ -187,13 +200,13 @@ test(
       f.context.update("Function was not measured.", 0);
       f.faux.setResponses([fauxAssistantMessage("Which observation do you want to explain?")]);
       assert.equal((await f.run("The shape looks different.")).status, "completed");
-      const before = f.sessions.page(f.conversationId, 200).items;
+      const before = (await f.sessions.page(f.conversationId, 200)).items;
       const root = f.root;
-      const sessionId = f.sessions.get(f.conversationId).getSessionId();
+      const sessionId = (await f.sessions.get(f.conversationId)).id;
       await f.close(false);
       f = await fixture({ root });
-      assert.equal(f.sessions.get(f.conversationId).getSessionId(), sessionId);
-      assert.deepEqual(f.sessions.page(f.conversationId, 200).items, before);
+      assert.equal((await f.sessions.get(f.conversationId)).id, sessionId);
+      assert.deepEqual((await f.sessions.page(f.conversationId, 200)).items, before);
       f.context.update(
         "Correction: function was measured separately. Shape and function are different observations.",
         1,
@@ -212,7 +225,7 @@ test(
       );
       assert.match(textOf(request), /The shape looks different/);
       assert.match(textOf(request), /Which observation/);
-      assert.equal(f.sessions.page(f.conversationId, 200).items.length, 4);
+      assert.equal((await f.sessions.page(f.conversationId, 200)).items.length, 4);
     } finally {
       await f.close();
     }
@@ -234,7 +247,7 @@ test(
       const run = await f.run("Continue the discussion.");
       assert.equal(run.status, "completed", run.error);
       assert.equal(f.faux.state.callCount, 2);
-      assert.match(f.sessions.page(f.conversationId, 200).items.at(-1)!.text, /Recovered/);
+      assert.match((await f.sessions.page(f.conversationId, 200)).items.at(-1)!.text, /Recovered/);
       assert.equal(
         f.observed.filter((event) => event.type === "agent-run" && event.run.finishedAt).length,
         1,
@@ -263,7 +276,7 @@ test(
   },
 );
 
-test("AgentSession can finish after more than twelve tool turns", timeout, async () => {
+test("Pi Durable can finish after more than twelve tool turns", timeout, async () => {
   const f = await fixture();
   try {
     f.faux.setResponses([
@@ -273,7 +286,7 @@ test("AgentSession can finish after more than twelve tool turns", timeout, async
     const run = await f.run("Review the available files.");
     assert.equal(run.status, "completed", run.error);
     assert.equal(f.faux.state.callCount, 15);
-    assert.match(f.sessions.page(f.conversationId, 200).items.at(-1)!.text, /fourteen/);
+    assert.match((await f.sessions.page(f.conversationId, 200)).items.at(-1)!.text, /fourteen/);
   } finally {
     await f.close();
   }
@@ -306,25 +319,28 @@ for (const cancel of [false, true])
           run.id,
           "Correction: those are six aliquots from one donor, not six independent donors.",
         );
-        assert.equal(f.sessions.page(f.conversationId, 200).items.at(-1)!.delivery, "pending");
+        assert.equal(
+          (await f.sessions.page(f.conversationId, 200)).items.at(-1)!.delivery,
+          "pending",
+        );
         if (cancel) await f.supervisor.cancel(run.id);
         else release.resolve();
         assert.equal((await finished).status, cancel ? "cancelled" : "failed");
         const root = f.root;
         await f.close(false);
         f = await fixture({ root });
-        const recovered = f.sessions
-          .page(f.conversationId, 200)
-          .items.filter((message) => message.text.startsWith("Correction:"));
+        const recovered = (await f.sessions.page(f.conversationId, 200)).items.filter((message) =>
+          message.text.startsWith("Correction:"),
+        );
         assert.equal(recovered.length, 1);
         f.faux.setResponses([fauxAssistantMessage("The sampling correction is available.")]);
         assert.equal((await f.run("Use the corrected experimental unit.")).status, "completed");
         assert.match(textOf(f.requests.at(-1)!), /six aliquots from one donor/);
         assert.equal(f.sessions.pending(f.conversationId).length, 0);
         assert.equal(
-          f.sessions
-            .page(f.conversationId, 200)
-            .items.filter((message) => message.text.startsWith("Correction:")).length,
+          (await f.sessions.page(f.conversationId, 200)).items.filter((message) =>
+            message.text.startsWith("Correction:"),
+          ).length,
           1,
         );
       } finally {
@@ -333,27 +349,25 @@ for (const cancel of [false, true])
     },
   );
 
-test(
-  "accepted messages survive a crash before Pi first flushes its new session",
-  timeout,
-  async () => {
-    const f = await fixture();
-    try {
-      const manager = f.sessions.get(f.conversationId);
-      f.sessions.accept(f.conversationId, "The baseline is a paired sample.", randomUUID());
-      assert.equal(existsSync(manager.getSessionFile()!), false);
-      const reopened = new ConversationSessions(f.root, f.stateDir, f.store, f.events);
-      assert.equal(reopened.pending(f.conversationId)[0].text, "The baseline is a paired sample.");
-      reopened.restorePending(f.conversationId, "");
-      assert.match(
-        JSON.stringify(reopened.get(f.conversationId).buildSessionContext()),
-        /paired sample/,
-      );
-    } finally {
-      await f.close();
-    }
-  },
-);
+test("accepted messages survive before admission to the durable harness", timeout, async () => {
+  const f = await fixture();
+  try {
+    const receipt = f.sessions.accept(
+      f.conversationId,
+      "The baseline is a paired sample.",
+      randomUUID(),
+    );
+    const reopened = new ConversationSessions(f.root, f.stateDir, f.store, f.events);
+    reopened.bind(f.supervisor.harness);
+    assert.equal(reopened.pending(f.conversationId)[0].id, receipt.id);
+    f.faux.setResponses([fauxAssistantMessage("The prior input is available.")]);
+    assert.equal((await f.run("Continue.")).status, "completed");
+    assert.match(JSON.stringify(f.requests.at(-1)), /paired sample/);
+    reopened.unbind();
+  } finally {
+    await f.close();
+  }
+});
 
 test(
   "legacy transcripts and display-only corrections migrate without duplicate chat or tool replay",
@@ -390,16 +404,20 @@ test(
       assert.equal((await f.run("Continue carefully.")).status, "completed");
       const request = textOf(f.requests.at(-1)!);
       assert.match(request, /formerly stranded/);
-      assert.doesNotMatch(request, /never_replay/);
+      assert.match(
+        request,
+        /never_replay/,
+        "Exact legacy code remains recorded, accompanied by uncertainty.",
+      );
       assert.match(request, /effects are unknown/);
       assert.equal(f.calls.length, 0);
-      const messages = f.sessions.page(f.conversationId, 200).items;
+      const messages = (await f.sessions.page(f.conversationId, 200)).items;
       assert.equal(messages.filter((message) => message.id === first.id).length, 1);
       assert.equal(messages.filter((message) => message.id === correction.id).length, 1);
       const root = f.root;
       await f.close(false);
       f = await fixture({ root });
-      assert.deepEqual(f.sessions.page(f.conversationId, 200).items, messages);
+      assert.deepEqual((await f.sessions.page(f.conversationId, 200)).items, messages);
     } finally {
       await f.close();
     }
@@ -437,7 +455,7 @@ test("kernel failures become Pi tool errors with recorded evidence", timeout, as
 });
 
 test(
-  "AgentSession receives pre-execution warnings, retains observations across runs, and can refresh or acknowledge",
+  "Pi Durable receives pre-execution warnings, retains observations across runs, and can refresh or acknowledge",
   timeout,
   async () => {
     const sent: string[] = [];
@@ -902,17 +920,22 @@ test(
     });
     try {
       f.context.update("Scientist correction: the independent unit is the donor.", 0);
-      const manager = f.sessions.get(f.conversationId);
-      manager.appendMessage({
+      const manager = await f.sessions.get(f.conversationId);
+      await appendMessage(manager, {
         role: "user",
         content: "Historical observation: organoid shape changed. ".repeat(600),
         timestamp: Date.now() - 1000,
+      });
+      await appendMessage(manager, {
+        role: "user",
+        content: "Recent question: preserve the unresolved functional interpretation. ".repeat(100),
+        timestamp: Date.now() - 950,
       });
       const old = fauxAssistantMessage("Working interpretation: function is unknown.", {
         timestamp: Date.now() - 900,
       });
       old.usage = { ...old.usage, input: 9000, totalTokens: 9010 };
-      manager.appendMessage(old);
+      await appendMessage(manager, old);
       f.faux.setResponses([
         fauxAssistantMessage(
           "Observed shape change; function unmeasured. Scientist corrected the unit to donor. Interpretation unresolved.",
@@ -929,15 +952,17 @@ test(
       assert.ok(summaryRequests.length);
       for (const request of summaryRequests)
         assert.equal(textOf(request).split(scientificRetention.split("\n")[0]).length - 1, 1);
-      assert.ok(manager.getEntries().some((entry) => entry.type === "compaction"));
       assert.ok(
-        manager
-          .getEntries()
-          .some(
-            (entry) =>
-              entry.type === "message" &&
-              JSON.stringify(entry.message).includes("Historical observation"),
-          ),
+        (await f.sessions.history(f.conversationId)).some(
+          (entry) => entry.kind === "pi.compaction",
+        ),
+      );
+      assert.ok(
+        (await f.sessions.history(f.conversationId)).some(
+          (entry) =>
+            entry.model !== undefined &&
+            JSON.stringify(entry.model).includes("Historical observation"),
+        ),
       );
       const conversationRequests = f.requests.filter((request) =>
         request.messages.some(
@@ -949,9 +974,9 @@ test(
       for (const request of conversationRequests)
         assert.match(textOf(request), /independent unit is the donor/);
       assert.ok(
-        f.sessions
-          .page(f.conversationId, 200)
-          .items.some((message) => message.text.startsWith("Historical observation")),
+        (await f.sessions.page(f.conversationId, 200)).items.some((message) =>
+          message.text.startsWith("Historical observation"),
+        ),
       );
       f.context.update("Correction after compaction: donor pairing must be preserved.", 1);
       f.faux.setResponses([
@@ -989,9 +1014,9 @@ test(
       await f.supervisor.steer(run.id, "Keep the donor pairing.");
       release.resolve();
       assert.equal((await finished).status, "completed");
-      const corrections = f.sessions
-        .page(f.conversationId, 200)
-        .items.filter((message) => message.text === "Keep the donor pairing.");
+      const corrections = (await f.sessions.page(f.conversationId, 200)).items.filter(
+        (message) => message.text === "Keep the donor pairing.",
+      );
       assert.equal(corrections.length, 2);
       assert.notEqual(corrections[0].id, corrections[1].id);
       assert.ok(corrections.every((message) => message.delivery === "delivered"));
@@ -1006,7 +1031,7 @@ test(
 );
 
 test(
-  "cancelling AgentSession interrupts its running computation through ExecutionService",
+  "cancelling Pi Durable interrupts its running computation through ExecutionService",
   timeout,
   async () => {
     const started = deferred();
@@ -1054,7 +1079,7 @@ test(
 );
 
 test(
-  "AgentSession cancellation settles even when kernel execution and interrupt never respond",
+  "Pi Durable cancellation settles even when kernel execution and interrupt never respond",
   timeout,
   async () => {
     const started = deferred();
@@ -1100,19 +1125,23 @@ test(
       settings: { compaction: { enabled: true, reserveTokens: 95_000, keepRecentTokens: 100 } },
     });
     try {
-      const manager = f.sessions.get(f.conversationId);
-      manager.appendMessage({
+      const manager = await f.sessions.get(f.conversationId);
+      await appendMessage(manager, {
         role: "user",
         content: "Keep the matched control. ".repeat(1500),
         timestamp: Date.now() - 1000,
+      });
+      await appendMessage(manager, {
+        role: "user",
+        content: "Recent question: the matched control is still required. ".repeat(100),
+        timestamp: Date.now() - 950,
       });
       const old = fauxAssistantMessage("The interpretation remains unresolved.", {
         timestamp: Date.now() - 900,
       });
       old.usage = { ...old.usage, input: 9000, totalTokens: 9010 };
-      manager.appendMessage(old);
+      await appendMessage(manager, old);
       f.faux.setResponses([
-        fauxAssistantMessage("A response before compaction."),
         fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid test credentials" }),
       ]);
       const run = await f.run("Continue the investigation.");
@@ -1120,15 +1149,19 @@ test(
       assert.match(run.error!, /Scientific context compaction failed/);
       assert.equal(
         f.faux.state.callCount,
-        2,
-        "Only the original response and the failed scientific summary; no generic fallback",
+        1,
+        "Only the failed scientific summary; no generic fallback or subsequent generation",
       );
       assert.ok(textOf(f.requests.at(-1)!).includes(scientificRetention.split("\n")[0]));
-      assert.ok(!manager.getEntries().some((entry) => entry.type === "compaction"));
       assert.ok(
-        f.sessions
-          .page(f.conversationId, 200)
-          .items.some((message) => message.text.startsWith("Keep the matched control")),
+        !(await f.sessions.history(f.conversationId)).some(
+          (entry) => entry.kind === "pi.compaction",
+        ),
+      );
+      assert.ok(
+        (await f.sessions.page(f.conversationId, 200)).items.some((message) =>
+          message.text.startsWith("Keep the matched control"),
+        ),
       );
     } finally {
       await f.close();
@@ -1174,71 +1207,44 @@ test(
 );
 
 test(
-  "Pi's split-turn compaction also receives scientific retention policy and current notes",
+  "manual durable compaction receives scientific policy, current notes and retains original evidence",
   timeout,
   async () => {
-    const f = await fixture({ settings: { compaction: { keepRecentTokens: 100 } } });
+    const f = await fixture({
+      settings: { compaction: { enabled: false, keepRecentTokens: 100 } },
+    });
     try {
       f.context.update("Scientist correction: samples share one donor.", 0);
-      const manager = f.sessions.get(f.conversationId);
-      manager.appendMessage({
+      const conversation = await f.sessions.get(f.conversationId);
+      await appendMessage(conversation, {
         role: "user",
-        content: "An earlier observation.",
-        timestamp: Date.now() - 4000,
+        content: "Original donor observations. ".repeat(100),
+        timestamp: Date.now() - 3000,
       });
-      manager.appendMessage(
-        fauxAssistantMessage("An earlier interpretation.", { timestamp: Date.now() - 3000 }),
+      await appendMessage(
+        conversation,
+        fauxAssistantMessage("Interpretation unresolved. ".repeat(100)),
       );
-      manager.appendMessage({
+      await appendMessage(conversation, {
         role: "user",
-        content: "Current experimental context. ".repeat(500),
-        timestamp: Date.now() - 2000,
+        content: "Recent question.",
+        timestamp: Date.now(),
       });
-      manager.appendMessage(
-        fauxAssistantMessage("Unresolved current interpretation. ".repeat(200), {
-          timestamp: Date.now() - 1000,
-        }),
+      f.faux.setResponses([
+        fauxAssistantMessage("The original observations and donor correction remain distinct."),
+      ]);
+      const done = f.finished();
+      f.supervisor.start(f.conversationId, "", { kind: "compaction" });
+      const run = await done;
+      assert.equal(run.status, "completed", run.error);
+      assert.equal(f.requests.length, 1);
+      assert.match(textOf(f.requests[0]), /samples share one donor/);
+      assert.equal(textOf(f.requests[0]).split(scientificRetention.split("\n")[0]).length - 1, 1);
+      const history = await f.sessions.history(f.conversationId);
+      assert.ok(history.some((e) => e.kind === "pi.compaction"));
+      assert.ok(
+        history.some((e) => JSON.stringify(e.model).includes("Original donor observations")),
       );
-      const run = {
-        id: randomUUID(),
-        conversationId: f.conversationId,
-        status: "running" as const,
-        startedAt: new Date().toISOString(),
-        contextVersion: 1,
-      };
-      const session = await f.pi.create({
-        manager,
-        prompt: "Elicit scientific context.",
-        research: f.context.get(),
-        tools: (skills) => workspaceTools(run, f.documents, f.execution, f.permissions, skills),
-        attributeMessage: (message) => message,
-        onContext: () => {},
-        onError: (error) => {
-          throw error;
-        },
-      });
-      try {
-        f.faux.setResponses([
-          fauxAssistantMessage("Prior observation and interpretation remain distinct."),
-          fauxAssistantMessage("Current donor relationship is a scientist-provided correction."),
-        ]);
-        await session.compact("Retain the paired-control decision.");
-        assert.equal(f.requests.length, 2);
-        for (const request of f.requests) {
-          assert.equal(textOf(request).split(scientificRetention.split("\n")[0]).length - 1, 1);
-          assert.match(textOf(request), /samples share one donor/);
-        }
-        assert.match(textOf(f.requests[0]), /Retain the paired-control decision/);
-        assert.ok(
-          textOf(f.requests[1]).includes("# Conversation"),
-          "The second request summarizes the split turn",
-        );
-        const compacted = manager.getEntries().find((entry) => entry.type === "compaction")!;
-        assert.equal(compacted.type, "compaction");
-        assert.match(compacted.summary, /Turn Context/);
-      } finally {
-        session.dispose();
-      }
     } finally {
       await f.close();
     }
@@ -1275,6 +1281,119 @@ test(
       assert.ok(f.documents.listWorking().includes("saved.py"));
       assert.throws(() => f.documents.edit(doc.path, "x = 99", doc.version), /saved as saved.py/);
       assert.equal(f.documents.open("saved.py").content, doc.content);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "scientific summaries retry transient errors and include every attempt in durable usage",
+  timeout,
+  async () => {
+    const f = await fixture({
+      settings: {
+        compaction: { enabled: false, keepRecentTokens: 100 },
+        retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+      },
+    });
+    try {
+      const c = await f.sessions.get(f.conversationId);
+      await appendMessage(c, {
+        role: "user",
+        content: "Historical measurements remain uncertain. ".repeat(400),
+        timestamp: Date.now() - 1000,
+      });
+      await appendMessage(c, {
+        role: "user",
+        content: "Recent question: retain the matched control. ".repeat(100),
+        timestamp: Date.now() - 500,
+      });
+      const failure = fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "503 Service Unavailable",
+      });
+      const success = fauxAssistantMessage(
+        "Measured effect uncertain; the matched control is retained.",
+      );
+      for (const response of [failure, success])
+        response.usage = {
+          ...response.usage,
+          input: 20,
+          output: 5,
+          totalTokens: 25,
+          cost: { ...response.usage.cost, total: 0.1 },
+        };
+      f.faux.setResponses([failure, success]);
+      const responses: import("@earendil-works/pi-ai").AssistantMessage[] = [];
+      const stream = f.options.modelRuntime.streamSimple.bind(f.options.modelRuntime);
+      f.options.modelRuntime.streamSimple = (...args) => {
+        const events = stream(...args);
+        void events.result().then((response) => responses.push(response));
+        return events;
+      };
+      const done = f.finished();
+      f.supervisor.start(f.conversationId, "", { kind: "compaction" });
+      const run = await done;
+      assert.equal(run.status, "completed", run.error);
+      assert.equal(f.faux.state.callCount, 2);
+      assert.equal(responses.length, 2);
+      assert.equal(
+        run.usage?.tokens.total,
+        responses.reduce((n, r) => n + r.usage.totalTokens, 0),
+      );
+      assert.equal(
+        run.usage?.cost,
+        responses.reduce((n, r) => n + r.usage.cost.total, 0),
+      );
+      assert.ok(
+        f.requests.every((r) =>
+          r.messages.some(
+            (m) => m.role === "system" && m.sections?.scientific_retention === scientificRetention,
+          ),
+        ),
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "scientific compaction retains raw image evidence without sending base64 as scientific observations",
+  timeout,
+  async () => {
+    const f = await fixture({
+      settings: { compaction: { enabled: false, keepRecentTokens: 100 } },
+    });
+    try {
+      const c = await f.sessions.get(f.conversationId);
+      const image = "encoded-image-evidence".repeat(1000);
+      await appendMessage(c, {
+        role: "user",
+        content: [
+          { type: "text", text: "Figure source: artifact-123; morphology is unverified." },
+          { type: "image", data: image, mimeType: "image/png" },
+        ],
+        timestamp: Date.now() - 1000,
+      });
+      await appendMessage(c, {
+        role: "user",
+        content: "Recent question: function remains unresolved. ".repeat(100),
+        timestamp: Date.now() - 500,
+      });
+      f.faux.setResponses([
+        fauxAssistantMessage(
+          "Figure artifact-123 remains an unverified source; function is unresolved.",
+        ),
+      ]);
+      const done = f.finished();
+      f.supervisor.start(f.conversationId, "", { kind: "compaction" });
+      const run = await done;
+      assert.equal(run.status, "completed", run.error);
+      assert.match(JSON.stringify(f.requests[0]), /artifact-123/);
+      assert.doesNotMatch(JSON.stringify(f.requests[0]), /encoded-image-evidence/);
+      assert.ok(JSON.stringify(await f.sessions.history(f.conversationId)).includes(image));
     } finally {
       await f.close();
     }

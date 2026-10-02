@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type { ExtensionUIContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
 import type { AgentQuestion, AgentRun } from "@biologue/protocol";
 import type { Store } from "./store.ts";
@@ -34,7 +34,8 @@ export class ExtensionDialogs {
   cancelRun(runId: string) {
     for (const item of this.pending.values()) if (item.question.runId === runId) item.finish();
   }
-  context(run: AgentRun): ExtensionUIContext {
+  context(run: AgentRun, callId?: string): ExtensionUIContext {
+    let index = 0;
     const ask = (
       kind: AgentQuestion["kind"],
       title: string,
@@ -44,8 +45,18 @@ export class ExtensionDialogs {
     ) =>
       new Promise<string | undefined>((resolve) => {
         if (opts?.signal?.aborted) return resolve(undefined);
-        const question = {
-          id: randomUUID(),
+        const hash =
+          callId &&
+          createHash("sha256")
+            .update(JSON.stringify([run.id, callId, ++index]))
+            .digest("hex");
+        const id = hash
+          ? `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`
+          : randomUUID();
+        const saved = this.store.get<AgentQuestion & { answer?: string }>("question-answer", id);
+        if (saved) return resolve(saved.answer);
+        const question = this.store.get<AgentQuestion>("question-pending", id) ?? {
+          id,
           runId: run.id,
           conversationId: run.conversationId,
           kind,
@@ -53,6 +64,9 @@ export class ExtensionDialogs {
           options,
           placeholder,
         };
+        // Stable per-call IDs let a safely replayed ask_user consume an already
+        // committed answer, or redisplay the same unanswered question after restart.
+        this.store.put("question-pending", id, question);
         let timer: NodeJS.Timeout | undefined;
         const cancel = () => finish();
         const finish = (answer?: string) => {
