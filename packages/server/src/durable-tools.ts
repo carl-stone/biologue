@@ -34,6 +34,7 @@ import type { Permissions } from "./permissions.ts";
 import type { ExtensionDialogs } from "./extension-ui.ts";
 import { NativeMcp, type NativeTool } from "./native-mcp.ts";
 import { expandPrompt } from "./prompt-expansion.ts";
+import { expectedDiagnosticError, inspectDurable, type Diagnostics } from "./diagnostics.ts";
 
 const CodeStore = defineDoc({
   kind: "biologue.codemode-store",
@@ -69,6 +70,7 @@ export class DurableTools {
       dialogs: ExtensionDialogs;
       signal: AbortSignal;
       mcp: NativeMcp;
+      diagnostics?: Diagnostics;
     },
   ) {
     this.name = `biologue-tools:${input.run.conversationId}`;
@@ -101,8 +103,137 @@ export class DurableTools {
       this.askTool(),
       this.codeTool(),
       this.searchTool(),
+      ...(this.input.diagnostics ? [this.diagnosticsTool()] : []),
       ...this.mcp.tools(this.approve),
-    ];
+    ].map((tool) => this.instrument(tool));
+  }
+  private instrument(tool: NativeTool): NativeTool {
+    const diagnostics = this.input.diagnostics;
+    if (!diagnostics) return tool;
+    return {
+      ...tool,
+      execute: async (args, api, context) => {
+        const started = performance.now();
+        const scope = {
+          runId: this.input.run.id,
+          conversationId: this.input.run.conversationId,
+          nativeConversationId: String(api.conversationId),
+          taskId: String(api.taskId),
+          toolCallId: api.callId,
+        };
+        const data = {
+          tool: tool.name,
+          parentCallId: api.callId.includes("/")
+            ? api.callId.slice(0, api.callId.lastIndexOf("/"))
+            : undefined,
+          argumentKeys: args && typeof args === "object" ? Object.keys(args) : [],
+          replay: tool.replay ?? "unsafe",
+        };
+        diagnostics.record({ ...scope, component: "tool", event: "tool.started", data });
+        try {
+          const result = await tool.execute(args, api, context);
+          const resultError = result.isError
+            ? result.content
+                ?.filter((b) => b.type === "text")
+                .map((b) => b.text)
+                .join("\n")
+            : undefined;
+          diagnostics.record({
+            ...scope,
+            component: "tool",
+            event: "tool.finished",
+            level: result.isError ? "error" : "info",
+            actionable:
+              !!result.isError && !expectedDiagnosticError(resultError, context.abortSignal),
+            error: resultError,
+            executionId: (result.details as { executionId?: string } | undefined)?.executionId,
+            data: {
+              ...data,
+              durationMs: performance.now() - started,
+              isError: !!result.isError,
+              contentTypes: result.content?.map((b) => b.type),
+              outputCharacters: result.content?.reduce(
+                (n, b) => n + (b.type === "text" ? b.text.length : 0),
+                0,
+              ),
+              executionId: (result.details as { executionId?: string } | undefined)?.executionId,
+            },
+          });
+          return result;
+        } catch (error) {
+          const expected = expectedDiagnosticError(error, context.abortSignal);
+          diagnostics.record({
+            ...scope,
+            component: "tool",
+            event: "tool.failed",
+            level: expected ? "info" : "error",
+            actionable: !expected,
+            error,
+            data: { ...data, durationMs: performance.now() - started, expected },
+          });
+          throw error;
+        }
+      },
+    };
+  }
+  private diagnosticsTool() {
+    return defineTool({
+      name: "read_diagnostics",
+      replay: "safe",
+      description:
+        "Read this project's diagnostic events, recurring issue candidates, or native Durable live task status. Events default to the current run. Metadata links to recorded executions and native history; no code is executed.",
+      parameters: Type.Object({
+        kind: Type.Union([Type.Literal("events"), Type.Literal("issues"), Type.Literal("live")]),
+        runId: Type.Optional(Type.String()),
+        fingerprint: Type.Optional(Type.String()),
+        after: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+      }),
+      execute: async ({ kind, runId, fingerprint, after, limit }) => {
+        const diagnostics = this.input.diagnostics!;
+        let result: unknown;
+        if (kind === "live") result = await inspectDurable(this.input.harness);
+        else {
+          const page =
+            kind === "issues"
+              ? diagnostics.issues({ after, limit: limit ?? 5 })
+              : diagnostics.events({
+                  runId: runId ?? this.input.run.id,
+                  fingerprint,
+                  after,
+                  limit: limit ?? 5,
+                });
+          const items = page.items.map((item) => {
+            const event = "sample" in item ? item.sample : item;
+            const summary = {
+              ...event,
+              error: event.error && {
+                name: event.error.name,
+                message: event.error.message.slice(0, 2000),
+                code: event.error.code,
+              },
+            };
+            if (JSON.stringify(summary).length > 6000)
+              summary.data = { omitted: "Retrieve detailed metadata through the diagnostic API." };
+            return "sample" in item ? { ...item, sample: summary } : summary;
+          });
+          let count = items.length;
+          while (count > 1 && JSON.stringify(items.slice(0, count)).length > 14_000) count--;
+          const last = items[count - 1];
+          result = {
+            ...page,
+            items: items.slice(0, count),
+            next:
+              count < items.length && last
+                ? "latestEventId" in last
+                  ? last.latestEventId
+                  : last.id
+                : page.next,
+          };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      },
+    });
   }
   private publish() {
     if (this.stopped) return;

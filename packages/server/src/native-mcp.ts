@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-mcp/oauth";
 import type { McpServerEntry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
+import type { Diagnostics } from "./diagnostics.ts";
 
 export type NativeTool = ToolRegistration & {
   exposure?: "direct" | "codemode" | "deferred" | "hidden";
@@ -120,6 +121,7 @@ export class NativeMcp {
       project: string;
       stateDir: string;
       models: ModelRuntime;
+      diagnostics?: Diagnostics;
     },
   ) {
     validateMcpServerNames(input.entries.map((entry) => entry.name));
@@ -145,6 +147,14 @@ export class NativeMcp {
     const opening = this.open(server).catch((error) => {
       if (server.opening !== opening) return;
       server.error = error instanceof Error ? error.message : String(error);
+      this.input.diagnostics?.record({
+        component: "mcp",
+        event: "connection.failed",
+        level: "error",
+        actionable: !server.login && !this.closed,
+        error,
+        data: { server: server.entry.name },
+      });
       if (!server.login) server.opening = undefined;
       if (!this.closed) this.notify(`${server.entry.name}: ${server.error}`, "warning");
     });
@@ -213,6 +223,16 @@ export class NativeMcp {
       requestTimeoutMs: (config.timeout ?? 60) * 1000,
       roots: [{ uri: pathToFileURL(this.input.project).href, name: "project" }],
     });
+    client.onError((error) =>
+      this.input.diagnostics?.record({
+        component: "mcp",
+        event: "protocol.failed",
+        level: "error",
+        actionable: !this.closed,
+        error,
+        data: { server: server.entry.name },
+      }),
+    );
     server.client = client;
     let transport;
     if ("url" in config) {
@@ -335,6 +355,13 @@ export class NativeMcp {
                   }
                 })
                 .catch((cause) => {
+                  this.input.diagnostics?.record({
+                    component: "mcp",
+                    event: "login.failed",
+                    level: "warning",
+                    error: cause,
+                    data: { server: server.entry.name, closing: this.closed },
+                  });
                   if (!this.closed)
                     this.notify(
                       `MCP sign-in failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -380,15 +407,36 @@ export class NativeMcp {
       await client.connect(transport);
       await this.refresh(server);
       server.error = undefined;
+      this.input.diagnostics?.record({
+        component: "mcp",
+        event: "connection.ready",
+        data: { server: server.entry.name, tools: server.tools.length },
+      });
     } catch (error) {
       if (!server.login) await client.close();
       throw error;
     }
     client.onClose(() => {
       if (server.client === client && !this.closed) server.opening = undefined;
+      this.input.diagnostics?.record({
+        component: "mcp",
+        event: "connection.closed",
+        level: this.closed ? "info" : "warning",
+        data: { server: server.entry.name, expected: this.closed },
+      });
     });
     client.onNotification("notifications/tools/list_changed", () => {
-      void this.refresh(server).catch((error) => this.notify(String(error), "warning"));
+      void this.refresh(server).catch((error) => {
+        this.input.diagnostics?.record({
+          component: "mcp",
+          event: "tools.refresh_failed",
+          level: "error",
+          actionable: !this.closed,
+          error,
+          data: { server: server.entry.name },
+        });
+        this.notify(String(error), "warning");
+      });
     });
   }
   private async refresh(server: Server) {
@@ -425,7 +473,19 @@ export class NativeMcp {
           const result = await server.client!.callTool(tool.name, args as Record<string, unknown>, {
             signal: context.abortSignal,
             onProgress: (progress) => {
-              void api.details(JSON.parse(JSON.stringify(progress)), context).catch(() => {});
+              void api.details(JSON.parse(JSON.stringify(progress)), context).catch((error) =>
+                this.input.diagnostics?.record({
+                  component: "mcp",
+                  event: "tool.progress_failed",
+                  level: context.abortSignal?.aborted ? "info" : "error",
+                  actionable: !context.abortSignal?.aborted,
+                  error,
+                  nativeConversationId: String(api.conversationId),
+                  taskId: String(api.taskId),
+                  toolCallId: api.callId,
+                  data: { server: entry.name, tool: name },
+                }),
+              );
             },
           });
           return {

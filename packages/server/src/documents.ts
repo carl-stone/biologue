@@ -16,6 +16,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 import type { Document } from "@biologue/protocol";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 
 export const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 export class Conflict extends Error {
@@ -35,6 +36,7 @@ export class Documents {
     private store: Store,
     private events: Events,
     private watchFiles = false,
+    private diagnostics?: Diagnostics,
   ) {
     this.root = realpathSync(root);
   }
@@ -106,14 +108,29 @@ export class Documents {
             if (dirname(resolve(this.root, doc.path)) !== directory) continue;
             try {
               this.open(doc.path);
-            } catch {
+            } catch (error) {
+              this.diagnostics?.record({
+                component: "document",
+                event: "watch.refresh_failed",
+                level: "warning",
+                error,
+                data: { path: doc.path },
+              });
               /* A later open reports unreadable files; retain the working document. */
             }
           }
         }, 75),
       );
     });
-    watcher.on("error", () => {
+    watcher.on("error", (error) => {
+      this.diagnostics?.record({
+        component: "document",
+        event: "watch.failed",
+        level: "error",
+        actionable: true,
+        error,
+        data: { directory },
+      });
       watcher.close();
       this.watchers.delete(directory);
     });

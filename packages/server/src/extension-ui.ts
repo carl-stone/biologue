@@ -3,6 +3,7 @@ import type { AgentQuestion, AgentRun } from "@biologue/protocol";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 import { Conflict } from "./documents.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 
 /** Browser questions bound to native Durable tool call identities. */
 export class ExtensionDialogs {
@@ -13,6 +14,7 @@ export class ExtensionDialogs {
   constructor(
     private store: Store,
     private events: Events,
+    private diagnostics?: Diagnostics,
   ) {}
   list() {
     return [...this.pending.values()].map((item) => item.question);
@@ -86,6 +88,15 @@ export class ExtensionDialogs {
     try {
       this.store.put("run", run.id, run);
     } catch (error) {
+      this.diagnostics?.record({
+        component: "agent",
+        event: "notice.display_failed",
+        level: "error",
+        actionable: true,
+        error,
+        runId: run.id,
+        conversationId: run.conversationId,
+      });
       console.error("Run notice display failed", error);
     }
     this.events.emit({ type: "agent-run", run: { ...run } });

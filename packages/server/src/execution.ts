@@ -4,6 +4,7 @@ import type { Events } from "./events.ts";
 import type { Store } from "./store.ts";
 import { digest } from "./documents.ts";
 import { ExecutionRepository, summarize } from "./execution-repository.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 import type { OutputService, KernelOutput } from "./outputs.ts";
 export type { KernelOutput } from "./outputs.ts";
 
@@ -42,6 +43,7 @@ type Job = {
   abort: AbortController;
   settled: boolean;
   dispatched: boolean;
+  outputCount: number;
   promise: Promise<Execution>;
   resolve: (record: Execution) => void;
   reject: (error: Error) => void;
@@ -65,6 +67,7 @@ export class ExecutionService {
     private kernel: KernelBackend,
     readonly outputs: OutputService,
     private cancellationTimeoutMs = 2000,
+    private diagnostics?: Diagnostics,
   ) {
     this.repository = new ExecutionRepository(store);
     for (const record of this.repository.unfinished())
@@ -118,6 +121,7 @@ export class ExecutionService {
       reject,
       settled: false,
       dispatched: false,
+      outputCount: 0,
       beforeDispatch: setup
         ? () => {
             const configured = this.get(setup.id);
@@ -155,6 +159,13 @@ export class ExecutionService {
   private async reconcile(language: Language) {
     const record = this.uncertain.get(language);
     if (!record) return;
+    this.diagnostics?.record({
+      component: "kernel",
+      event: "reconciliation.started",
+      executionId: record.id,
+      runId: record.runId,
+      data: { language },
+    });
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -171,6 +182,24 @@ export class ExecutionService {
       // Persist recovery before allowing another dispatch; the original outcome stays unknown.
       this.repository.update({ ...record, kernelUncertain: false });
       this.uncertain.delete(language);
+      this.diagnostics?.record({
+        component: "kernel",
+        event: "reconciliation.finished",
+        executionId: record.id,
+        runId: record.runId,
+        data: { language, ready: true },
+      });
+    } catch (error) {
+      this.diagnostics?.record({
+        component: "kernel",
+        event: "reconciliation.failed",
+        level: "warning",
+        error,
+        executionId: record.id,
+        runId: record.runId,
+        data: { language },
+      });
+      throw error;
     } finally {
       abort.abort();
       if (timer) clearTimeout(timer);
@@ -182,9 +211,27 @@ export class ExecutionService {
     job.record.finishedAt = new Date().toISOString();
     try {
       this.outputs.complete(job.record);
+      this.diagnostics?.record({
+        component: "kernel",
+        event: "execution.outputs",
+        executionId: job.record.id,
+        runId: job.record.runId,
+        conversationId: job.record.conversationId,
+        data: { count: job.outputCount },
+      });
       this.publish(job.record);
       job.resolve(structuredClone(job.record));
     } catch (cause) {
+      this.diagnostics?.record({
+        component: "kernel",
+        event: "capture.failed",
+        level: "error",
+        actionable: true,
+        error: cause,
+        executionId: job.record.id,
+        runId: job.record.runId,
+        conversationId: job.record.conversationId,
+      });
       const error = new Error(
         `Could not record execution ${job.record.id}: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
@@ -224,11 +271,32 @@ export class ExecutionService {
         (value) => {
           if (job.settled || captureError) return;
           try {
-            this.outputs.append(record, value);
+            job.outputCount = this.outputs.append(record, value).sequence + 1;
           } catch (error) {
             captureError = error;
+            this.diagnostics?.record({
+              component: "kernel",
+              event: "output.failed",
+              level: "error",
+              actionable: true,
+              error,
+              executionId: record.id,
+              runId: record.runId,
+              conversationId: record.conversationId,
+            });
             // Jupyter callbacks are not guaranteed to propagate failures to future.done.
-            void this.kernel.interrupt(language).catch(() => {});
+            void this.kernel.interrupt(language).catch((error) =>
+              this.diagnostics?.record({
+                component: "kernel",
+                event: "interrupt.failed",
+                level: "error",
+                actionable: true,
+                error,
+                executionId: record.id,
+                runId: record.runId,
+                data: { language },
+              }),
+            );
           }
         },
         (identity) => {
@@ -237,6 +305,15 @@ export class ExecutionService {
             Object.assign(record, identity);
             job.beforeDispatch?.();
             job.dispatched = true;
+            this.diagnostics?.record({
+              component: "kernel",
+              event: "execution.dispatched",
+              executionId: record.id,
+              runId: record.runId,
+              conversationId: record.conversationId,
+              toolCallId: record.toolCallId,
+              data: { ...identity, language, waitMs: Date.now() - Date.parse(record.createdAt) },
+            });
             this.publish(record);
           } else throw new Error("Execution was cancelled before kernel dispatch.");
         },
@@ -251,6 +328,22 @@ export class ExecutionService {
       }
     } catch (error) {
       if (!job.settled) {
+        this.diagnostics?.record({
+          component: "kernel",
+          event: "execution.exception",
+          error,
+          level: abort.signal.aborted ? "info" : "error",
+          actionable: !abort.signal.aborted && record.actor !== "human",
+          executionId: record.id,
+          runId: record.runId,
+          conversationId: record.conversationId,
+          data: {
+            language,
+            actor: record.actor,
+            purpose: record.purpose,
+            dispatched: job.dispatched,
+          },
+        });
         record.status = abort.signal.aborted
           ? job.dispatched
             ? "interrupted"
@@ -284,11 +377,29 @@ export class ExecutionService {
     }
   }
   private async stop(job: Job) {
+    this.diagnostics?.record({
+      component: "kernel",
+      event: "interrupt.requested",
+      executionId: job.record.id,
+      runId: job.record.runId,
+      data: { language: job.record.language, dispatched: job.dispatched },
+    });
     job.abort.abort();
     // Interrupt acknowledgement is not confirmation that execution ended.
     void Promise.resolve()
       .then(() => this.kernel.interrupt(job.record.language))
-      .catch(() => {});
+      .catch((error) =>
+        this.diagnostics?.record({
+          component: "kernel",
+          event: "interrupt.failed",
+          level: "error",
+          actionable: true,
+          error,
+          executionId: job.record.id,
+          runId: job.record.runId,
+          data: { language: job.record.language },
+        }),
+      );
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -309,7 +420,17 @@ export class ExecutionService {
       this.finish(job);
       try {
         this.kernel.abandon?.(record.language);
-      } catch {
+      } catch (error) {
+        this.diagnostics?.record({
+          component: "kernel",
+          event: "abandon.failed",
+          level: "error",
+          actionable: true,
+          error,
+          executionId: record.id,
+          runId: record.runId,
+          data: { language: record.language },
+        });
         /* Quarantine still prevents dispatch. */
       }
       if (this.active.get(record.language) === job) this.active.delete(record.language);
@@ -344,7 +465,21 @@ export class ExecutionService {
     }
     const interrupts = [...this.active.values()].map(async (job) => {
       job.abort.abort();
-      await this.kernel.interrupt(job.record.language);
+      try {
+        await this.kernel.interrupt(job.record.language);
+      } catch (error) {
+        this.diagnostics?.record({
+          component: "kernel",
+          event: "interrupt.failed",
+          level: "error",
+          actionable: true,
+          error,
+          executionId: job.record.id,
+          runId: job.record.runId,
+          data: { language: job.record.language, shutdown: true },
+        });
+        throw error;
+      }
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

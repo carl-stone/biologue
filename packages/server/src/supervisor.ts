@@ -37,6 +37,7 @@ import type { DurableTools } from "./durable-tools.ts";
 import { ConversationSessions } from "./conversation-sessions.ts";
 import { RunsDoc, type StoredRun } from "./durable-state.ts";
 import { workspaceTools } from "./workspace-tools.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 
 function contextUsage(messages: readonly PiMessage[], contextWindow: number) {
   let index = messages.length - 1;
@@ -68,6 +69,7 @@ type ActiveRun = {
   streamedText?: number;
   controller: AbortController;
   stopping?: Promise<void>;
+  requests: Map<string, number>;
 };
 
 /** Workbench integration; Pi Durable owns scheduling, admission, compaction and recovery. */
@@ -89,13 +91,15 @@ export class Supervisor {
     private pi: PiAdapter,
     private prompt: string,
     readonly sessions: ConversationSessions,
+    private diagnostics: Diagnostics | undefined = pi.diagnostics,
   ) {
-    this.dialogs = new ExtensionDialogs(store, events);
+    this.dialogs = new ExtensionDialogs(store, events, diagnostics);
   }
   async initialize(opened?: Awaited<ReturnType<PiAdapter["openHarness"]>>) {
     opened ??= await this.pi.openHarness();
     this.harness = opened.harness;
     this.registry = opened.registry;
+    await this.diagnostics?.watchHarness(this.harness);
     this.sessions.bind(this.harness);
     const recovering: StoredRun[] = [];
     this.store.db.prepare("DELETE FROM records WHERE kind='run'").run();
@@ -108,6 +112,15 @@ export class Supervisor {
           try {
             this.store.put("run", saved.run.id, saved.run);
           } catch (error) {
+            this.diagnostics?.record({
+              component: "agent",
+              event: "recovery.display_failed",
+              level: "error",
+              actionable: true,
+              error,
+              runId: saved.run.id,
+              conversationId: saved.run.conversationId,
+            });
             console.error("Recovered run display failed", error);
           }
           if (!saved.run.finishedAt) {
@@ -180,6 +193,14 @@ export class Supervisor {
         try {
           this.context.firstTitle(conversationId, text);
         } catch (error) {
+          this.diagnostics?.record({
+            component: "agent",
+            event: "title.failed",
+            level: "warning",
+            error,
+            runId: run.id,
+            conversationId,
+          });
           console.error("Initial conversation title failed", error);
         }
       } else {
@@ -214,7 +235,15 @@ export class Supervisor {
       submissions: Promise.resolve(),
       completion: Promise.resolve(),
       controller: new AbortController(),
+      requests: new Map(),
     };
+    this.diagnostics?.record({
+      component: "agent",
+      event: recovery ? "run.recovered" : "run.started",
+      runId: run.id,
+      conversationId: run.conversationId,
+      data: { kind: run.kind, settings: run.settings },
+    });
     this.active.set(run.id, active);
     active.completion = Promise.resolve().then(() => this.perform(active, input, recovery));
   }
@@ -265,7 +294,8 @@ export class Supervisor {
           ],
           hooks: [
             hook(GenerationTask, {
-              beforeRequest: ({ messages }) => {
+              beforeRequest: ({ messages }, api) => {
+                active.requests.set(String(api.taskId), performance.now());
                 // A recovered generation has a pinned request. Apply the user's
                 // current notes without modifying its recorded history.
                 const notes = this.context.get().text;
@@ -287,7 +317,45 @@ export class Supervisor {
                           timestamp: Date.now(),
                         },
                       ];
+                this.diagnostics?.record({
+                  component: "model",
+                  event: "request.started",
+                  runId: run.id,
+                  conversationId: run.conversationId,
+                  nativeConversationId: String(api.conversationId),
+                  taskId: String(api.taskId),
+                  data: {
+                    provider: model.provider,
+                    model: model.id,
+                    messages: request.length,
+                    estimatedInputTokens: request.reduce((n, m) => n + estimateMessageTokens(m), 0),
+                    contextVersion: this.context.get().version,
+                  },
+                });
                 return { messages: request };
+              },
+              afterResponse: (message, api) => {
+                const started = active.requests.get(String(api.taskId));
+                active.requests.delete(String(api.taskId));
+                this.diagnostics?.record({
+                  component: "model",
+                  event: "request.finished",
+                  runId: run.id,
+                  conversationId: run.conversationId,
+                  nativeConversationId: String(api.conversationId),
+                  taskId: String(api.taskId),
+                  level: message.stopReason === "error" ? "error" : "info",
+                  actionable: message.stopReason === "error",
+                  error: message.errorMessage,
+                  data: {
+                    provider: message.provider,
+                    model: message.model,
+                    stopReason: message.stopReason,
+                    durationMs: started === undefined ? undefined : performance.now() - started,
+                    usage: message.usage,
+                    toolCalls: message.content.filter((b) => b.type === "toolCall").length,
+                  },
+                });
               },
             }),
           ],
@@ -434,6 +502,17 @@ export class Supervisor {
         run.endReason = "response";
       }
     } catch (error) {
+      this.diagnostics?.record({
+        component: "agent",
+        event: "run.exception",
+        runId: run.id,
+        conversationId: run.conversationId,
+        nativeConversationId: run.piSessionId,
+        level: this.closing || cancelled() ? "info" : "error",
+        actionable: !this.closing && !cancelled(),
+        error,
+        data: { closing: this.closing, cancelled: cancelled() },
+      });
       if (!this.closing && !cancelled()) {
         run.status = "failed";
         run.endReason = active.integrationError
@@ -509,7 +588,16 @@ export class Supervisor {
               (messages) => this.pi.conversationTitle(messages),
               await this.sessions.inputCount(run.conversationId),
             );
-          } catch {
+          } catch (error) {
+            this.diagnostics?.record({
+              component: "agent",
+              event: "title.failed",
+              level: "warning",
+              error,
+              runId: run.id,
+              conversationId: run.conversationId,
+              data: { phase: "refresh" },
+            });
             /* Display titles do not affect execution. */
           }
       } else this.active.delete(run.id);
@@ -518,6 +606,11 @@ export class Supervisor {
   private consume(active: ActiveRun, events: readonly AgentEvent[]) {
     const run = active.run;
     for (const event of events) {
+      this.diagnostics?.agentEvent(event, {
+        runId: run.id,
+        conversationId: run.conversationId,
+        nativeConversationId: run.piSessionId,
+      });
       if (event.type === "message_start" && event.message.role === "assistant")
         active.streamedText = 0;
       if (event.type === "message_update")
@@ -626,6 +719,17 @@ export class Supervisor {
     );
   }
   private failure(active: ActiveRun, operation: string, cause: unknown) {
+    this.diagnostics?.record({
+      component: "agent",
+      event: "integration.failed",
+      level: "error",
+      actionable: true,
+      error: cause,
+      runId: active.run.id,
+      conversationId: active.run.conversationId,
+      nativeConversationId: active.run.piSessionId,
+      data: { operation },
+    });
     const message = `${operation}: ${cause instanceof Error ? cause.message : String(cause)}`;
     active.integrationError ??= new Error(message);
     active.run.error = active.run.error ? `${active.run.error}\n${message}` : message;
@@ -653,6 +757,15 @@ export class Supervisor {
     try {
       this.store.put("run", active.run.id, active.run);
     } catch (error) {
+      this.diagnostics?.record({
+        component: "agent",
+        event: "run.display_failed",
+        level: "error",
+        actionable: true,
+        error,
+        runId: active.run.id,
+        conversationId: active.run.conversationId,
+      });
       console.error("Agent run display failed", error);
       try {
         this.store.put("run", active.run.id, active.run);
@@ -683,6 +796,12 @@ export class Supervisor {
     const active = this.active.get(id);
     if (!active) return;
     active.run.status = "cancelled";
+    this.diagnostics?.record({
+      component: "agent",
+      event: "run.cancel_requested",
+      runId: id,
+      conversationId: active.run.conversationId,
+    });
     active.run.endReason = "cancelled";
     const stopped = this.stop(active);
     await this.record(active);

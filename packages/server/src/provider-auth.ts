@@ -56,6 +56,11 @@ export class ProviderAuth {
       answer: undefined as ((value: string) => void) | undefined,
     };
     this.flows.set(id, flow);
+    this.pi.diagnostics?.record({
+      component: "provider",
+      event: "login.started",
+      data: { id, provider, type },
+    });
     void runtime
       .login(provider, type, {
         signal: abort.signal,
@@ -107,9 +112,21 @@ export class ProviderAuth {
         if (view.status === "pending") {
           view.status = "complete";
           view.message = "Connected";
+          this.pi.diagnostics?.record({
+            component: "provider",
+            event: "login.finished",
+            data: { id, provider, type },
+          });
         }
       })
-      .catch(() => {
+      .catch((error) => {
+        this.pi.diagnostics?.record({
+          component: "provider",
+          event: "login.failed",
+          level: "warning",
+          error,
+          data: { id, provider, type, cancelled: abort.signal.aborted },
+        });
         if (view.status === "pending") {
           view.status = "failed";
           view.message = "Sign-in failed. Check the provider details and try again.";

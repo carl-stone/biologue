@@ -281,6 +281,7 @@ flowchart TB
     SQLite[("SQLite<br/>Revisions · run display cache<br/>Permissions<br/>Execution source and metadata<br/>Output references")]
     History[("Pi Durable SQLite<br/>History · submissions · pending input<br/>Display metadata · latest run<br/>Task checkpoints · usage")]
     Blobs[("Artifact store<br/>Immutable output payloads<br/>Content hashes")]
+    Diagnostics[("Developer diagnostics SQLite<br/>Correlated events · failures · timings")]
     Projection["Rebuildable conversation display index"]
     Chat["1 · Conversation display"]
     Readers["Workbench and agent tools<br/>Exact source and artifacts"]
@@ -293,6 +294,8 @@ flowchart TB
     History -->|"History and pending input"| Projection
     Outputs --> SQLite
     Outputs --> Blobs
+    Domain -->|"Diagnostic metadata"| Diagnostics
+    Pi -->|"Native events and task watches"| Diagnostics
     Projection -->|"Selected conversation"| Chat
     SQLite -->|"Records and references"| Readers
     Blobs -->|"Exact captured payloads"| Readers
@@ -305,7 +308,7 @@ flowchart TB
     classDef planned fill:#FFF7ED,stroke:#C2410C,color:#7C2D12,stroke-width:2px,stroke-dasharray:6 4
     class Documents,Domain,Outputs,Projection app
     class Pi pi
-    class Files,SQLite,History,Blobs storage
+    class Files,SQLite,History,Blobs,Diagnostics storage
     class Chat,Readers workbench
     class Tasks planned
 ```
@@ -342,6 +345,14 @@ runtime state. Historical source and captured outputs remain available through
 the same execution and artifact services used by the workbench.
 
 ## Implementation anchors
+
+Developer diagnostics use a separate, bounded SQLite event log. Correlation IDs
+link runs, native Durable tasks, tool calls and kernel executions. The log owns
+telemetry only and never controls task or execution recovery. Native watches and
+hooks supply agent diagnostics; Biologue records its integration and service
+failures. Read-only APIs, an offline CLI and an agent tool expose events, failure
+groups and native inspection for automated triage. Canonical content stays in its
+existing stores. See [developer and agent diagnostics](docs/diagnostics.md).
 
 These entry points connect the diagrams to the code. They identify ownership,
 without prescribing internal class structure or API details.

@@ -22,6 +22,7 @@
     "start": "node packages/server/dist/server.mjs",
     "serve": "node scripts/dev.mjs --production",
     "login:codex": "node scripts/login-codex.mjs",
+    "diagnostics": "tsx scripts/diagnostics.ts",
     "desktop": "tauri dev",
     "desktop:build": "tauri build"
   },

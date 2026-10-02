@@ -13,6 +13,7 @@ import { JupyterKernels } from "../../src/kernels.ts";
 import { ExecutionService } from "../../src/execution.ts";
 import { adapters } from "../../src/adapters.ts";
 import { PiAdapter } from "../../src/pi.ts";
+import { Diagnostics } from "../../src/diagnostics.ts";
 import { scriptedModel } from "../helpers/pi-fixture.ts";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type {
@@ -56,7 +57,8 @@ test(
       ],
       { env: { ...process.env, JUPYTER_TOKEN: token }, stdio: "ignore" },
     );
-    const kernel = new JupyterKernels(root, url, token);
+    const diagnostics = new Diagnostics(join(root, ".biologue/kernel-diagnostics.sqlite"));
+    const kernel = new JupyterKernels(root, url, token, undefined, diagnostics);
     let instance: Awaited<ReturnType<typeof createApp>> | undefined;
     try {
       let ready = false;
@@ -587,7 +589,7 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
         await other.app.close();
       }
       kernel.dispose();
-      const reconnect = new JupyterKernels(root, url, token);
+      const reconnect = new JupyterKernels(root, url, token, undefined, diagnostics);
       try {
         const reconnectedService = new ExecutionService(
           instance.store,
@@ -676,9 +678,17 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
         payload: { language: "python", code: "print('untrusted')" },
       });
       assert.equal(noHeader.statusCode, 403);
+      const connections = diagnostics.events({ event: "connection.ready" }).items;
+      assert.ok(connections.some((event) => event.data?.language === "python"));
+      assert.ok(connections.some((event) => event.data?.reused === true));
+      if (process.env.BIOLOGUE_TEST_R === "1")
+        assert.ok(connections.some((event) => event.data?.language === "r"));
+      assert.ok(diagnostics.events({ event: "kernel.status" }).items.length);
+      assert.doesNotMatch(JSON.stringify(diagnostics.events({ limit: 1000 })), new RegExp(token));
     } finally {
       kernel.dispose();
       await instance?.app.close();
+      await diagnostics.close();
       jupyter.kill("SIGTERM");
       await Promise.race([
         once(jupyter, "exit"),

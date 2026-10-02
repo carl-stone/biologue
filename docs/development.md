@@ -109,6 +109,9 @@ Jupyter to be running; `npm run serve` manages Jupyter unless `JUPYTER_URL` is s
 
 ## Pi and model providers
 
+Persistent event logs, native task inspection and the automated-triage interface
+are documented in [developer and agent diagnostics](diagnostics.md).
+
 Pi Durable is the application's harness. It owns conversations, submissions,
 generation, tool tasks, retries, compaction, recovery, and usage. Register new
 agent capabilities through its native extensions, tools, hooks, and documents.

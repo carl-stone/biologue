@@ -13,5 +13,11 @@
     "types": ["node", "vite/client"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["packages/**/*.ts", "packages/**/*.tsx", "playwright.config.ts", "tests/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "playwright.config.ts",
+    "tests/**/*.ts",
+    "scripts/diagnostics.ts"
+  ]
 }

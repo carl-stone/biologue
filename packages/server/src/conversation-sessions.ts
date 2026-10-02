@@ -16,6 +16,7 @@ import {
 import type { Conversation, Message, Page, Attachment } from "@biologue/protocol";
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 import {
   InputsDoc,
   MessageDisplay,
@@ -54,6 +55,7 @@ export class ConversationSessions {
   constructor(
     private store: Store,
     private events: Events,
+    private diagnostics?: Diagnostics,
   ) {
     store.db.exec(`CREATE TABLE IF NOT EXISTS chat_messages (
       position INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, id TEXT NOT NULL,
@@ -92,6 +94,13 @@ export class ConversationSessions {
           if (id) this.indexEntry(id, entry, displays.get(entry.id));
         }
       } catch (error) {
+        this.diagnostics?.record({
+          component: "conversation",
+          event: "projection.failed",
+          level: "error",
+          actionable: true,
+          error,
+        });
         // The transcript is already safe; rebuild the projection on its next read.
         for (const id of this.ids.values()) this.store.delete("durable-index", id);
         console.error("Durable conversation projection failed", error);
@@ -200,6 +209,15 @@ export class ConversationSessions {
       this.put(message);
     } catch (error) {
       // Native acceptance has committed. A display cache cannot revoke it.
+      this.diagnostics?.record({
+        component: "conversation",
+        event: "input.display_failed",
+        level: "error",
+        actionable: true,
+        error,
+        conversationId: id,
+        runId,
+      });
       console.error("Accepted input display failed", error);
     }
     this.events.emit({ type: "message", message });
@@ -543,6 +561,14 @@ export class ConversationSessions {
     try {
       await this.synchronize(id);
     } catch (error) {
+      this.diagnostics?.record({
+        component: "conversation",
+        event: "display.failed",
+        level: "error",
+        actionable: true,
+        error,
+        conversationId: id,
+      });
       console.error("Durable conversation display failed", error);
     }
   }

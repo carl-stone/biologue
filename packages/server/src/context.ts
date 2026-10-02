@@ -3,6 +3,7 @@ import type { Conversation, ResearchContext, Message } from "@biologue/protocol"
 import type { Store } from "./store.ts";
 import type { Events } from "./events.ts";
 import { Conflict } from "./documents.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 
 export class ContextService {
   private titleJobs = new Map<string, Promise<void>>();
@@ -10,6 +11,7 @@ export class ContextService {
   constructor(
     private store: Store,
     private events: Events,
+    private diagnostics?: Diagnostics,
   ) {
     if (!store.get("context", "project"))
       store.put<ResearchContext>("context", "project", {
@@ -75,7 +77,14 @@ export class ContextService {
         // A manual rename always wins over an in-flight suggestion.
         if (current.titleMode === "automatic")
           this.publishTitle({ ...current, title, titledThrough: count });
-      } catch {
+      } catch (error) {
+        this.diagnostics?.record({
+          component: "agent",
+          event: "title.failed",
+          level: "warning",
+          error,
+          conversationId: id,
+        });
         /* Naming must never fail the conversation. Keep the useful initial title. */
       }
     })().finally(() => this.titleJobs.delete(id));

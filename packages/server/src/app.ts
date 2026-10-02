@@ -22,6 +22,9 @@ import { adapters } from "./adapters.ts";
 import { ProviderAuth } from "./provider-auth.ts";
 import { Attachments } from "./attachments.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { Diagnostics } from "./diagnostics.ts";
+import { diagnosticRoutes } from "./diagnostics-api.ts";
+import serverPackage from "../package.json" with { type: "json" };
 
 export interface AppOptions {
   project: string;
@@ -47,16 +50,67 @@ export async function createApp(options: AppOptions) {
   )
     throw new Error("externalOrigin must be an HTTPS origin without a path.");
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 6_000_000 });
-  const pi =
-    options.pi ?? new PiAdapter({ project: resolve(options.project), stateDir: options.stateDir });
+  const retention = z
+    .object({
+      retentionDays: z.coerce.number().int().min(1).max(3650).default(90),
+      maxEvents: z.coerce.number().int().min(1000).max(10_000_000).default(250_000),
+    })
+    .parse({
+      retentionDays: process.env.BIOLOGUE_DIAGNOSTIC_RETENTION_DAYS,
+      maxEvents: process.env.BIOLOGUE_DIAGNOSTIC_MAX_EVENTS,
+    });
+  const diagnostics = new Diagnostics(resolve(options.stateDir, "diagnostics.sqlite"), retention);
+  diagnostics.record({
+    component: "app",
+    event: "app.starting",
+    data: {
+      project: resolve(options.project),
+      node: process.version,
+      platform: process.platform,
+      pid: process.pid,
+      revision: process.env.BIOLOGUE_BUILD_REVISION,
+      applicationVersion: serverPackage.version,
+      piDurableVersion: serverPackage.dependencies["@earendil-works/pi-durable"],
+    },
+  });
   // Claim ownership before application services reconcile unfinished executions.
-  const opened = await pi.openHarness();
+  let pi: PiAdapter;
+  let opened: Awaited<ReturnType<PiAdapter["openHarness"]>>;
   try {
-    return await createOwnedApp(options, externalOrigin, app, pi, opened);
+    pi =
+      options.pi ??
+      new PiAdapter({ project: resolve(options.project), stateDir: options.stateDir });
+    pi.diagnostics = diagnostics;
+    opened = await pi.openHarness();
   } catch (error) {
-    await opened.harness.close(BACKGROUND_CONTEXT);
-    await pi.closeConnections();
-    pi.releaseHarness();
+    diagnostics.record({
+      component: "app",
+      event: "app.start_failed",
+      level: "error",
+      actionable: true,
+      error,
+    });
+    await diagnostics.close();
+    await app.close();
+    throw error;
+  }
+  try {
+    return await createOwnedApp(options, externalOrigin, app, pi, opened, diagnostics);
+  } catch (error) {
+    diagnostics.record({
+      component: "app",
+      event: "app.start_failed",
+      level: "error",
+      actionable: true,
+      error,
+    });
+    try {
+      await opened.harness.close(BACKGROUND_CONTEXT);
+      await pi.closeConnections();
+    } finally {
+      pi.releaseHarness();
+      await diagnostics.close();
+    }
     throw error;
   }
 }
@@ -67,11 +121,22 @@ async function createOwnedApp(
   app: FastifyInstance,
   pi: PiAdapter,
   opened: Awaited<ReturnType<PiAdapter["openHarness"]>>,
+  diagnostics: Diagnostics,
 ) {
-  const events = new Events();
+  const events = new Events((error) => {
+    diagnostics.record({
+      component: "app",
+      event: "event_subscriber.failed",
+      level: "error",
+      actionable: true,
+      error,
+    });
+    console.error("Event subscriber failed", error);
+  });
+  const stopDiagnostics = events.subscribe((event) => diagnostics.observe(event));
   const store = new Store(resolve(options.stateDir, "biologue.sqlite"));
-  const documents = new Documents(options.project, store, events, true);
-  const context = new ContextService(store, events);
+  const documents = new Documents(options.project, store, events, true, diagnostics);
+  const context = new ContextService(store, events, diagnostics);
   const kernel =
     options.kernel ??
     new JupyterKernels(
@@ -79,12 +144,13 @@ async function createOwnedApp(
       options.jupyterUrl ?? "http://127.0.0.1:8889/",
       options.jupyterToken ?? "",
       options.jupyterRoot,
+      diagnostics,
     );
   const outputs = new OutputService(store, events, resolve(options.stateDir, "artifacts"));
-  const execution = new ExecutionService(store, events, kernel, outputs);
+  const execution = new ExecutionService(store, events, kernel, outputs, undefined, diagnostics);
   const environment = new EnvironmentService(execution, events);
   const permissions = new Permissions(store, events);
-  const sessions = new ConversationSessions(store, events);
+  const sessions = new ConversationSessions(store, events, diagnostics);
   const auth = new ProviderAuth(pi);
   const attachments = new Attachments(store, documents);
   const supervisor = new Supervisor(
@@ -151,13 +217,60 @@ async function createOwnedApp(
       return reply.code(403).send({ error: "Missing workbench request header." });
   });
   if (options.projects) projectRoutes(app, options, store);
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
+    const statusCode =
+      error instanceof z.ZodError
+        ? 400
+        : ((error as Error & { statusCode?: number; code?: string }).statusCode ??
+          ((error as { code?: string }).code === "ENOENT" ? 404 : 500));
+    diagnostics.record({
+      component: "http",
+      event: "request.failed",
+      level: statusCode >= 500 ? "error" : "warning",
+      actionable: statusCode >= 500,
+      error,
+      requestId: request.id,
+      data: { method: request.method, route: request.routeOptions.url, statusCode },
+    });
     if (error instanceof z.ZodError) return reply.code(400).send({ error: z.prettifyError(error) });
     const failure = error as Error & { statusCode?: number; code?: string };
     return reply
       .code(failure.statusCode ?? (failure.code === "ENOENT" ? 404 : 500))
       .send({ error: failure.message });
   });
+  app.addHook("onResponse", async (request, reply) => {
+    const route = request.routeOptions.url;
+    if (
+      !route?.startsWith("/api/") ||
+      route.startsWith("/api/diagnostics") ||
+      route === "/api/events"
+    )
+      return;
+    if (
+      ["GET", "HEAD"].includes(request.method) &&
+      reply.statusCode < 400 &&
+      reply.elapsedTime < 2000
+    )
+      return;
+    diagnostics.record({
+      component: "http",
+      event: "request.finished",
+      requestId: request.id,
+      level:
+        reply.statusCode >= 500
+          ? "error"
+          : reply.statusCode >= 400 || reply.elapsedTime >= 2000
+            ? "warning"
+            : "info",
+      data: {
+        method: request.method,
+        route,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime,
+      },
+    });
+  });
+  diagnosticRoutes(app, diagnostics, supervisor, execution, store);
   const snapshot = (): Snapshot => {
     const history = execution.repository.list(100);
     return {
@@ -761,6 +874,7 @@ async function createOwnedApp(
     for (const stream of streams) stream.end();
   });
   app.addHook("onClose", async () => {
+    diagnostics.record({ component: "app", event: "app.stopping" });
     environment.close();
     auth.close();
     documents.close();
@@ -768,12 +882,25 @@ async function createOwnedApp(
     try {
       const results = await Promise.allSettled([supervisor.close(), execution.close()]);
       const failed = results.find((result) => result.status === "rejected");
-      if (failed?.status === "rejected") throw failed.reason;
+      if (failed?.status === "rejected") {
+        diagnostics.record({
+          component: "app",
+          event: "app.stop_failed",
+          level: "error",
+          actionable: true,
+          error: failed.reason,
+        });
+        throw failed.reason;
+      }
     } finally {
       if (kernel instanceof JupyterKernels) kernel.dispose();
       store.close();
+      diagnostics.record({ component: "app", event: "app.stopped" });
+      stopDiagnostics();
+      await diagnostics.close();
     }
   });
+  diagnostics.record({ component: "app", event: "app.ready" });
   return {
     app,
     outputs,
@@ -785,5 +912,6 @@ async function createOwnedApp(
     permissions,
     supervisor,
     sessions,
+    diagnostics,
   };
 }

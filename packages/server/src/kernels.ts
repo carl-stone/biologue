@@ -12,6 +12,7 @@ import type { Language, SessionInfo } from "@biologue/protocol";
 import { adapters } from "./adapters.ts";
 import { digest } from "./documents.ts";
 import type { KernelBackend, KernelOutput } from "./execution.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 
 export class JupyterKernels implements KernelBackend {
   private kernelManager?: KernelManager;
@@ -26,6 +27,7 @@ export class JupyterKernels implements KernelBackend {
     private baseUrl: string,
     token: string,
     private root = project,
+    private diagnostics?: Diagnostics,
   ) {
     this.settings = ServerConnection.makeSettings({
       baseUrl,
@@ -55,11 +57,26 @@ export class JupyterKernels implements KernelBackend {
     this.pending.set(language, promise);
     try {
       return await promise;
+    } catch (error) {
+      this.diagnostics?.record({
+        component: "kernel",
+        event: "connection.failed",
+        level: "error",
+        actionable: true,
+        error,
+        data: { language },
+      });
+      throw error;
     } finally {
       this.pending.delete(language);
     }
   }
   private async connect(language: Language) {
+    this.diagnostics?.record({
+      component: "kernel",
+      event: "connection.started",
+      data: { language },
+    });
     try {
       const response = await fetch(
         new URL("api/status", this.baseUrl.endsWith("/") ? this.baseUrl : this.baseUrl + "/"),
@@ -69,9 +86,10 @@ export class JupyterKernels implements KernelBackend {
         },
       );
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    } catch {
+    } catch (error) {
       throw new Error(
         "Cannot reach Jupyter. Start the managed runtime with npm run dev, or check JUPYTER_URL and JUPYTER_TOKEN.",
+        { cause: error },
       );
     }
     if (!this.sessionManager) {
@@ -99,14 +117,32 @@ export class JupyterKernels implements KernelBackend {
         });
     if (!session.kernel) throw new Error("Jupyter created a session without a kernel.");
     await session.kernel.info;
+    this.diagnostics?.record({
+      component: "kernel",
+      event: "connection.ready",
+      data: { language, sessionId: session.id, kernelId: session.kernel.id, reused: !!existing },
+    });
     this.generations.set(language, randomUUID());
     session.kernel.statusChanged.connect((_kernel, status) => {
+      this.diagnostics?.record({
+        component: "kernel",
+        event: "kernel.status",
+        level: status === "dead" ? "error" : "info",
+        actionable: status === "dead",
+        data: { language, kernelId: _kernel.id, status },
+      });
       // Jupyter may reuse kernel.id on restart. A transport gap is also uncertain:
       // another client could have executed while this application was disconnected.
       if (["starting", "restarting", "autorestarting", "dead"].includes(status))
         this.generations.set(language, randomUUID());
     });
     session.kernel.connectionStatusChanged.connect((_kernel, status) => {
+      this.diagnostics?.record({
+        component: "kernel",
+        event: "transport.status",
+        level: status === "disconnected" ? "warning" : "info",
+        data: { language, kernelId: _kernel.id, status },
+      });
       if (status === "disconnected") this.generations.set(language, randomUUID());
     });
     this.connections.set(language, session);
