@@ -32,7 +32,7 @@ in one Node application; Jupyter and its kernels run separately.
 flowchart TB
     Workbench["1 · Workbench and project<br/>Chat · code · scientist's context"]
     Agents["2 · Agents and workflows<br/>Run supervision · Pi Durable conversations"]
-    Execution["3 · Shared scientific execution<br/>Recorded code · queues"]
+    Execution["3 · Shared R/Python execution<br/>Recorded code · queues"]
     Evidence["4 · Evidence and persistence<br/>History · source · captured outputs"]
     Models["Model providers"]
     Runtime["Jupyter<br/>Separate Python and R kernels"]
@@ -40,7 +40,7 @@ flowchart TB
 
     Workbench -->|"Ask, steer, stop"| Agents
     Workbench -->|"Run or inspect"| Execution
-    Agents -->|"Authorized scientific actions"| Execution
+    Agents -->|"Authorized code and inspection"| Execution
     Agents <--> Models
     Execution <--> Runtime
     Execution -->|"Source and captured results"| Evidence
@@ -126,9 +126,8 @@ services, with the application API listening locally by default.
 ## 2. Agents and workflows
 
 Pi Durable owns the model loop, task checkpoints, input admission, recovery,
-and canonical conversation history. Biologue supplies authorization, scientific
-context, browser projections, and connections to the shared project. The accepted multi-agent target extends the working run
-lifecycle into one service used by both delegation and workflows.
+and canonical conversation history. Biologue supplies authorization, project
+context, browser projections, and connections to the shared project. Future delegation and workflows use native Durable tasks and conversations.
 
 ```mermaid
 %%{init: {"theme":"base","htmlLabels":false,"markdownAutoWrap":false,"themeVariables":{"fontFamily":"Arial, sans-serif","lineColor":"#475569","edgeLabelBackground":"#FFFFFF"},"flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":30,"rankSpacing":40,"wrappingWidth":240,"minNodeWidth":200}}}%%
@@ -136,22 +135,22 @@ flowchart TB
     UI["1 · Conversation input<br/>Start · steer · stop"]
     Workflow["PLANNED<br/>Workflow supervisor<br/>Dependencies · scientist review"]
     Delegate["PLANNED<br/>Pi agent delegation tools"]
-    subgraph Runs["Shared agent-run service"]
-        Lifecycle["Run lifecycle<br/>Input receipts · progress<br/>Settled outcomes"]
-        Tasks["PLANNED<br/>Durable task ownership<br/>Parent / child · workflow steps"]
+    subgraph Runs["Workbench integration"]
+        Lifecycle["Workbench bridge<br/>Pending input · progress<br/>Displayed outcomes"]
+        Tasks["PLANNED<br/>Delegation and workflows<br/>Integrate native tasks"]
     end
     Context["1 · Selected context<br/>Notes · instructions · skills"]
     Pi["Pi Durable Harness<br/>Tasks · recovery · tools<br/>Retries · compaction"]
     Models["Model providers"]
     Tools["Authorized tools<br/>Workspace · MCP<br/>Questions · orchestration"]
     Project["1 · Shared project workspace"]
-    Execution["3 · Shared scientific execution"]
+    Execution["3 · Shared R/Python execution"]
     Evidence["4 · History and evidence"]
 
     UI --> Lifecycle
     Workflow <-.->|"Launch · await · cancel"| Tasks
     Delegate <-.->|"Same task interface"| Tasks
-    Tasks -.-> Lifecycle
+    Tasks -.-> Pi
     Lifecycle -->|"Submit, steer, abort tasks"| Pi
     Context --> Pi
     Pi <--> Models
@@ -174,7 +173,7 @@ flowchart TB
     style Runs fill:#F8FAFC,stroke:#64748B,color:#1E293B
 ```
 
-Run supervision, steering, cancellation, durable input receipts, permissions,
+Run supervision, steering, cancellation, pending input metadata, permissions,
 and Pi Durable conversations are implemented. Supervisor restores project context
 and tool definitions for every active run before enabling scheduling.
 Pi Durable owns task lifetimes and nested code-mode calls. Delegation and workflow
@@ -182,19 +181,19 @@ coordination remain planned; their children will use separate durable conversati
 and the same Biologue services. Pi resources, MCP, questions, and code mode
 are connected through native tools and extensions; no AgentSession or second agent loop runs.
 
-Task lifetime belongs to the shared service, independently of a parent's active
-model turn. Both callers use a common request containing parent or workflow
-identity, input and selected context, research-context version, model
-configuration, permission scope, and expected result. Results include lifecycle
-status, findings, and evidence references. Cancellation propagates to descendants;
-restart recovery records uncertainty and never automatically replays scientific
-code. A workflow manages dependencies and scientist input without requiring a
-parent conversational agent to stay active. It initially lives in the Node
-application, with a service boundary that permits a separate process later.
+Task lifetime, parent/child ownership, and cancellation belong to Pi Durable.
+Future delegation and workflows should compose its tasks and conversations,
+keeping their application state in native documents. They do not require an
+additional lifecycle service or task journal.
 
 Biologue's permission service gates workspace edits and analysis execution
 according to the scientist's selected mode. Inspection is recorded and directly
 available. MCP tools use the same permission system unless declared read-only.
+Connections are shared within a project. Direct tools connect during setup;
+other servers connect on discovery or resource access. Code mode uses loaded
+tools, so workspace-only scripts leave unused MCP servers stopped. Stopping a
+response cancels its calls; project shutdown and configuration changes close
+connections.
 Pi's built-in shell and file-writing tools are excluded. Code mode orchestrates
 tools; it does not supply a second scientific runtime. Child permissions must
 stay within their caller's authorization.
@@ -206,7 +205,7 @@ The default agent is a coding assistant. Project instructions, skills, and
 user-authored notes supply domain-specific behavior. Pi Durable provides standard
 compaction; Biologue does not impose a scientific summary policy.
 
-## 3. Shared scientific execution
+## 3. Shared R/Python execution
 
 Every request to execute scientific code or inspect live kernel objects,
 including automatic environment refreshes, enters ExecutionService. Human and
@@ -219,13 +218,12 @@ flowchart TB
     Human["1 · Human code and inspection"]
     Agent["2 · Authorized agent code and inspection"]
     Refresh["Automatic environment refresh"]
-    Execution["ExecutionService<br/>Exact code · one queue per language<br/>Dispatch checks · capture results"]
+    Execution["ExecutionService<br/>Exact code · one queue per language<br/>Readiness · interrupt · capture results"]
     Client["Jupyter kernel client<br/>Sessions · messages · interrupt"]
     Jupyter["Jupyter Server"]
     Python["Python session · ipykernel<br/>Shared live objects"]
     R["R session · Ark<br/>Shared live objects"]
     Outputs["4 · OutputService<br/>Captured results<br/>Immutable artifacts"]
-    Provenance["PLANNED<br/>Complete runtime and<br/>environment provenance"]
 
     Human --> Execution
     Agent --> Execution
@@ -235,7 +233,6 @@ flowchart TB
     Jupyter <--> Python
     Jupyter <--> R
     Execution -->|"Captured outputs"| Outputs
-    Provenance -.-> Execution
 
     classDef workbench fill:#E6FFFB,stroke:#0F766E,color:#134E4A
     classDef app fill:#EFF6FF,stroke:#2563EB,color:#172554
@@ -244,7 +241,6 @@ flowchart TB
     class Human workbench
     class Agent,Refresh,Execution,Client,Outputs app
     class Jupyter,Python,R runtime
-    class Provenance planned
 ```
 
 Code and source identity are captured before queuing and remain immutable.
@@ -252,24 +248,21 @@ Editing a file later cannot change what an execution record says ran. Language
 adapters generate inspection requests and decode results; ExecutionService calls
 the kernel client for both ordinary code and those requests.
 
-Immediately before dispatch, agent analysis is checked against recorded activity
-since that conversation's observations. A relevant change can return a
-"not executed" result for inspection, revision, or explicit acknowledgment.
-The check uses static code analysis and observation receipts, not deep copies of
-scientific objects. Acknowledgment is separate from execution permission, and
-absence of a warning does not establish unchanged inputs.
+Execution verifies a referenced working document has not changed, honors
+cancellation, and reconciles uncertain kernel state before dispatch. It does not
+analyze code dependencies, track what objects the agent has observed, or impose
+a mandatory scientific review. Project instructions and skills supply any
+domain-specific behavior.
 
 Cancellation and shutdown cover every actor. If kernel completion cannot be
 confirmed, the outcome stays uncertain and that language's session must pass a
 readiness check before dispatching further execution. Nothing is automatically
-replayed. Agents can reason concurrently, but scientific operations remain
+replayed. Agents can reason concurrently, but kernel operations remain
 serialized within each language's queue.
 
-Execution provenance already includes exact source, actor, relevant document
-revision, kernel identity, status, and output references. Complete environment
-provenance remains planned: package versions, external inputs, randomness, and
-external service responses are not comprehensively captured today. Recorded
-history does not restore live R or Python objects.
+Execution records include exact source, actor, relevant document revision,
+kernel identity, status, and output references. Recorded history does not restore
+live R or Python objects.
 
 ## 4. Evidence and persistence
 
@@ -285,8 +278,8 @@ flowchart TB
     Pi["2 · Pi Durable Harness"]
     Outputs["OutputService<br/>Captured events and display views"]
     Files[("Project files<br/>Scripts · data · reports")]
-    SQLite[("SQLite<br/>Revisions · input receipts<br/>Runs · permissions<br/>Execution source and metadata<br/>Output references")]
-    History[("Pi Durable SQLite<br/>Canonical history · inbox<br/>Task checkpoints · usage")]
+    SQLite[("SQLite<br/>Revisions · run display cache<br/>Permissions<br/>Execution source and metadata<br/>Output references")]
+    History[("Pi Durable SQLite<br/>History · submissions · pending input<br/>Display metadata · latest run<br/>Task checkpoints · usage")]
     Blobs[("Artifact store<br/>Immutable output payloads<br/>Content hashes")]
     Projection["Rebuildable conversation display index"]
     Chat["1 · Conversation display"]
@@ -297,8 +290,7 @@ flowchart TB
     Documents <--> SQLite
     Domain <--> SQLite
     Pi <--> History
-    History --> Projection
-    SQLite -->|"Pending input receipts"| Projection
+    History -->|"History and pending input"| Projection
     Outputs --> SQLite
     Outputs --> Blobs
     Projection -->|"Selected conversation"| Chat
@@ -318,8 +310,8 @@ flowchart TB
     class Tasks planned
 ```
 
-Accepted scientist input is recorded before Pi consumes it. Durable receipts
-preserve queued corrections across cancellation or restart; the conversation
+Accepted user input is recorded before Pi consumes it. Pending native documents
+preserve queued inputs across cancellation or restart; the conversation
 display is derived from Pi history plus pending inputs. The display index can be
 rebuilt without changing canonical history. Conversation branching inherits
 a selected history prefix; branches continue using the same project files and live kernels.
@@ -335,25 +327,28 @@ tools retrieve the same recorded evidence without rerunning code.
 The project state directory holds application SQLite, Pi Durable SQLite, and
 artifact blobs; back up the entire directory. There is no legacy-chat import.
 Each conversation keeps its latest run state rather than a growing run archive.
-The application retains original message display metadata and pending content;
+Pending input state contains only unsent or queued messages. On delivery, the
+original text and attachments move to metadata keyed by the native entry;
+expanded content stays in native history. Regular queue and chat reads do not
+scan old submission records. The application retains no parallel receipt archive.
+
 Durable owns delivered model content and task history. The durable database uses SQLite
 WAL with synchronous FULL and a process ownership record that prevents concurrent
 harness writers. Shutdown suspends work; explicit Stop aborts it. On restart,
-unfinished model requests can resume, while interrupted scientific tools settle
+unfinished model requests can resume, while interrupted kernel tools settle
 with unknown effects and are never replayed automatically. Browser questions
 retain stable IDs and consume committed answers when safely replayed. Live kernel objects are separate
-runtime state. Historical evidence keeps its original source and observation
-checkpoint when another agent retrieves it. Successful computation, receipt
-delivery, and scientific understanding are distinct claims.
+runtime state. Historical source and captured outputs remain available through
+the same execution and artifact services used by the workbench.
 
 ## Implementation anchors
 
 These entry points connect the diagrams to the code. They identify ownership,
 without prescribing internal class structure or API details.
 
-| View                            | Main implementation anchors                                                                                                                                                                                                                                                                                |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 · Workbench and project       | [Workbench](packages/workbench/src/App.tsx), [API composition](packages/server/src/app.ts), [documents](packages/server/src/documents.ts), [editor synchronization](packages/workbench/src/document-sync.ts), [context](packages/server/src/context.ts), [attachments](packages/server/src/attachments.ts) |
-| 2 · Agents and workflows        | [Supervisor](packages/server/src/supervisor.ts), [Pi adapter](packages/server/src/pi.ts), [permissions](packages/server/src/permissions.ts), [workspace tools](packages/server/src/workspace-tools.ts)                                                                                                     |
-| 3 · Shared scientific execution | [ExecutionService](packages/server/src/execution.ts), [kernel client](packages/server/src/kernels.ts), [language adapters](packages/server/src/adapters.ts), [context checks](packages/server/src/stale-context.ts), [environment refresh](packages/server/src/environment.ts)                             |
-| 4 · Evidence and persistence    | [Conversation sessions](packages/server/src/conversation-sessions.ts), [execution repository](packages/server/src/execution-repository.ts), [outputs](packages/server/src/outputs.ts), [SQLite store](packages/server/src/store.ts)                                                                        |
+| View                          | Main implementation anchors                                                                                                                                                                                                                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 · Workbench and project     | [Workbench](packages/workbench/src/App.tsx), [API composition](packages/server/src/app.ts), [documents](packages/server/src/documents.ts), [editor synchronization](packages/workbench/src/document-sync.ts), [context](packages/server/src/context.ts), [attachments](packages/server/src/attachments.ts) |
+| 2 · Agents and workflows      | [Supervisor](packages/server/src/supervisor.ts), [Pi adapter](packages/server/src/pi.ts), [permissions](packages/server/src/permissions.ts), [workspace tools](packages/server/src/workspace-tools.ts)                                                                                                     |
+| 3 · Shared R/Python execution | [ExecutionService](packages/server/src/execution.ts), [kernel client](packages/server/src/kernels.ts), [language adapters](packages/server/src/adapters.ts), [environment refresh](packages/server/src/environment.ts)                                                                                     |
+| 4 · Evidence and persistence  | [Conversation sessions](packages/server/src/conversation-sessions.ts), [execution repository](packages/server/src/execution-repository.ts), [outputs](packages/server/src/outputs.ts), [SQLite store](packages/server/src/store.ts)                                                                        |

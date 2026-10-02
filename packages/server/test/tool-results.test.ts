@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ContextIssue, Execution, Output } from "@biologue/protocol";
+import type { Execution, Output } from "@biologue/protocol";
 import { Store } from "../src/store.ts";
 import { Events } from "../src/events.ts";
 import { OutputService } from "../src/outputs.ts";
@@ -36,56 +36,6 @@ function fixture() {
     },
   };
 }
-
-test("warnings group shared evidence and keep control metadata out of model text", () => {
-  const f = fixture();
-  try {
-    const change = randomUUID(),
-      observation = randomUUID();
-    f.record.status = "not_executed";
-    f.record.error = "A redundant internal status message";
-    f.record.contextCheck = {
-      disposition: "review",
-      through: 42,
-      epoch: "internal-generation",
-      notes: ["generic policy"],
-      issues: [
-        ...["A", "B", "C"].map((object): ContextIssue => ({
-          id: randomUUID(),
-          object,
-          kind: "possible_change",
-          message: "internal explanation",
-          executionId: change,
-          observedExecutionId: observation,
-          codePreview: "A = B = C = 42",
-          actor: "human",
-          status: "succeeded",
-        })),
-        ...["D", "E"].map((object): ContextIssue => ({
-          id: randomUUID(),
-          object,
-          kind: "unknown",
-          message: "Alias analysis limit reached.",
-        })),
-      ],
-    };
-    const text = executionText(f.record, f.outputs);
-    assert.match(text, /^Not run/);
-    assert.match(text, /A, B, C: may have changed/);
-    assert.match(text, /D, E: Alias analysis limit reached\./);
-    for (const value of [f.record.id, change, observation, "A = B = C = 42"])
-      assert.equal(text.split(value).length - 1, 1, `Repeated ${value}`);
-    assert.doesNotMatch(text, /internal|generic policy|contextCheck|disposition|executed/);
-    assert.ok(text.length < 600);
-    assert.equal(
-      f.record.contextCheck.issues.length,
-      5,
-      "Presentation must not change acknowledgment evidence",
-    );
-  } finally {
-    f.close();
-  }
-});
 
 test("successful results carry output once; large output and source pages remain retrievable", () => {
   const f = fixture();
@@ -119,7 +69,7 @@ test("successful results carry output once; large output and source pages remain
   }
 });
 
-test("inspection content and observation receipts cover exactly the delivered preview", () => {
+test("inspection previews remain bounded and expose continuation hints", () => {
   const f = fixture();
   try {
     f.record.purpose = "inspection";
@@ -135,10 +85,10 @@ test("inspection content and observation receipts cover exactly the delivered pr
     const text = result.content[0].text;
     assert.equal(text.match(/^"A\d+"/gm)?.length, 100);
     assert.match(text, /More: inspect_environment offset=100/);
-    assert.equal(result.details!.biologueObservation!.names.length, 100);
+    assert.deepEqual(result.details, { executionId: f.record.id });
     assert.doesNotMatch(text, /biologueObservation|mimeTypes|totalOutputs/);
     const selected = inspectionResult(f.record, f.outputs, ["A119"]);
-    assert.deepEqual(selected.details!.biologueObservation!.names, ["A119"]);
+
     assert.match(selected.content[0].text, /"A119" \(int\): 119/);
     assert.doesNotMatch(selected.content[0].text, /Showing|truncated/);
   } finally {
@@ -173,7 +123,7 @@ test("artifact text selects one representation and pages it without data loss", 
   assert.match(artifactText(output, 0), /application\/vnd.example\+json\n\{"value":42\}/);
 });
 
-test("skipped bindings receive no observation receipt and kernel pages keep their offset", () => {
+test("skipped bindings remain visible and kernel pages keep their offset", () => {
   const f = fixture();
   try {
     f.record.purpose = "inspection";
@@ -182,7 +132,7 @@ test("skipped bindings receive no observation receipt and kernel pages keep thei
       kind: "stream",
       text: JSON.stringify({
         rows: [
-          { name: "lazy", type: "active binding", preview: "<not evaluated>", observed: false },
+          { name: "lazy", type: "active binding", preview: "<not evaluated>" },
           { name: "A", type: "int", preview: "42" },
         ],
         next: 102,
@@ -190,7 +140,7 @@ test("skipped bindings receive no observation receipt and kernel pages keep thei
     });
     f.outputs.complete(f.record);
     const result = inspectionResult(f.record, f.outputs, undefined, 100);
-    assert.deepEqual(result.details!.biologueObservation!.names, ["A"]);
+    assert.deepEqual(result.details, { executionId: f.record.id });
     assert.match(result.content[0].text, /lazy.*not evaluated/);
     assert.match(result.content[0].text, /offset=102/);
   } finally {

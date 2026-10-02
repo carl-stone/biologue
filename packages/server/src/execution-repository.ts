@@ -12,14 +12,6 @@ export function summarize({ code, ...record }: Execution): ExecutionSummary {
   };
 }
 
-/** Detailed warnings are fetched with the execution, not repeated in SSE/history snapshots. */
-export function displaySummary({
-  contextCheck: _check,
-  ...record
-}: ExecutionSummary): ExecutionSummary {
-  return record;
-}
-
 /** Source is immutable; status updates never rewrite code or output payloads. */
 export class ExecutionRepository {
   constructor(private store: Store) {
@@ -93,7 +85,7 @@ export class ExecutionRepository {
       .all(before ?? null, ...values, limit + 1);
     const page = rows.slice(0, limit);
     return {
-      items: page.map((row) => displaySummary(JSON.parse(row.value as string))).reverse(),
+      items: page.map((row) => JSON.parse(row.value as string)).reverse(),
       next: rows.length > limit ? (page.at(-1)!.id as string) : undefined,
     };
   }
@@ -113,25 +105,5 @@ export class ExecutionRepository {
       )
       .all()
       .map((row) => JSON.parse(row.value as string));
-  }
-  /** One legacy execution at a time; migrate payloads before removing the old record. */
-  migrate(
-    migrateOutputs: (
-      record: Execution & { outputs: import("@biologue/protocol").Output[] },
-    ) => void,
-  ) {
-    while (true) {
-      const row = this.store.db
-        .prepare("SELECT id, value FROM records WHERE kind='execution' ORDER BY rowid LIMIT 1")
-        .get();
-      if (!row) break;
-      const old = JSON.parse(row.value as string);
-      const { outputs, ...source } = old;
-      const record = { ...source, ...summarize(source) };
-      // Re-entry after a crash is safe: source and raw output IDs are immutable.
-      if (!this.get(record.id)) this.create(record);
-      migrateOutputs(old);
-      this.store.delete("execution", record.id);
-    }
   }
 }

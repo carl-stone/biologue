@@ -55,6 +55,7 @@ export async function createApp(options: AppOptions) {
     return await createOwnedApp(options, externalOrigin, app, pi, opened);
   } catch (error) {
     await opened.harness.close(BACKGROUND_CONTEXT);
+    await pi.closeConnections();
     pi.releaseHarness();
     throw error;
   }
@@ -613,6 +614,7 @@ async function createOwnedApp(
       config.oauth.clientSecret = saved;
     }
     pi.saveMcpServer(name, config);
+    await pi.closeConnections();
     return { ok: true };
   });
   app.get("/api/agent/providers", async () => auth.providers());

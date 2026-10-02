@@ -9,6 +9,7 @@ import { Store } from "../src/store.ts";
 import { Events } from "../src/events.ts";
 import { Documents, digest } from "../src/documents.ts";
 import { ContextService } from "../src/context.ts";
+import { ExecutionRepository } from "../src/execution-repository.ts";
 import { ExecutionService, type KernelBackend } from "../src/execution.ts";
 import { Permissions } from "../src/permissions.ts";
 import { setTimeout as delay } from "node:timers/promises";
@@ -256,16 +257,16 @@ test("cancelling an agent during session setup prevents its scientific code from
 test("unfinished work is marked abandoned after restart and never replayed", () => {
   const f = fixture();
   try {
-    f.store.put("execution", "old", {
+    new ExecutionRepository(f.store).create({
       id: "old",
       code: "unknown side effects",
       codeHash: "hash",
+      codePreview: "unknown side effects",
       language: "python",
       actor: "human",
       purpose: "analysis",
       status: "running",
       createdAt: new Date().toISOString(),
-      outputs: [],
     });
     const kernel = new ControlledKernel();
     const service = new ExecutionService(
@@ -626,51 +627,6 @@ test("a disconnected kernel cannot write late output after shutdown has abandone
     release();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(service.outputs.count(record.id), 0);
-  } finally {
-    f.close();
-  }
-});
-
-test("legacy executions migrate incrementally with their source, artifact IDs and inspection results intact", async () => {
-  const f = fixture();
-  try {
-    const id = "legacy-execution";
-    const output: Output = {
-      id: "44444444-4444-4444-8444-444444444444",
-      executionId: id,
-      sequence: 0,
-      kind: "stream",
-      text: '[{"name":"sample","type":"int","preview":"1"}]',
-    };
-    f.store.put("execution", id, {
-      id,
-      language: "python",
-      actor: "human",
-      purpose: "inspection",
-      code: "inspect exact source",
-      codeHash: digest("inspect exact source"),
-      status: "succeeded",
-      createdAt: "2026-09-01",
-      outputs: [output],
-    });
-    const outputs = new OutputService(f.store, f.events, join(f.root, "artifacts"));
-    writeFileSync(join(f.root, "artifacts", output.id + ".json"), JSON.stringify(output));
-    const service = new ExecutionService(f.store, f.events, new ControlledKernel(), outputs);
-    assert.equal(service.get(id)?.code, "inspect exact source");
-    assert.equal(service.get(id)?.inspection, "environment");
-    assert.deepEqual(outputs.get(output.id), output);
-    assert.equal(outputs.result(id)?.kind, "environment");
-    assert.equal(f.store.get("execution", id), undefined);
-    assert.throws(() => readFileSync(join(f.root, "artifacts", output.id + ".json")), /ENOENT/);
-    // Opening the already migrated schema must not replay code or duplicate outputs.
-    new ExecutionService(
-      f.store,
-      f.events,
-      new ControlledKernel(),
-      new OutputService(f.store, f.events, join(f.root, "artifacts")),
-    );
-    assert.equal(outputs.count(id), 1);
-    assert.equal(outputs.visible({ executionId: id }).items[0].id, output.id);
   } finally {
     f.close();
   }

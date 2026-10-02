@@ -23,15 +23,15 @@ the host; use the environment's port forwarding for port 5173 or the
 
 ## Code map
 
-| Area                                    | Start here                                                                                                                                                                                                             |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workbench and panels                    | [App.tsx](../packages/workbench/src/App.tsx), [panels](../packages/workbench/src/panels/)                                                                                                                              |
-| Application API and project lifecycle   | [app.ts](../packages/server/src/app.ts), [projects.ts](../packages/server/src/projects.ts)                                                                                                                             |
-| Agent sessions, tools, and permissions  | [pi.ts](../packages/server/src/pi.ts), [supervisor.ts](../packages/server/src/supervisor.ts), [workspace-tools.ts](../packages/server/src/workspace-tools.ts), [permissions.ts](../packages/server/src/permissions.ts) |
-| Shared scientific execution and outputs | [execution.ts](../packages/server/src/execution.ts), [kernels.ts](../packages/server/src/kernels.ts), [outputs.ts](../packages/server/src/outputs.ts)                                                                  |
-| Frontend/backend types                  | [protocol](../packages/protocol/src/index.ts)                                                                                                                                                                          |
-| Agent behavior                          | [coding assistant prompt](../prompts/collaborator.md), [Supervisor](../packages/server/src/supervisor.ts)                                                                                                              |
-| Launching and checks                    | [dev launcher](../scripts/dev.mjs), [server tests](../packages/server/test/), [browser tests](../tests/)                                                                                                               |
+| Area                                   | Start here                                                                                                                                                                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workbench and panels                   | [App.tsx](../packages/workbench/src/App.tsx), [panels](../packages/workbench/src/panels/)                                                                                                                              |
+| Application API and project lifecycle  | [app.ts](../packages/server/src/app.ts), [projects.ts](../packages/server/src/projects.ts)                                                                                                                             |
+| Agent sessions, tools, and permissions | [pi.ts](../packages/server/src/pi.ts), [supervisor.ts](../packages/server/src/supervisor.ts), [workspace-tools.ts](../packages/server/src/workspace-tools.ts), [permissions.ts](../packages/server/src/permissions.ts) |
+| Shared R/Python execution and outputs  | [execution.ts](../packages/server/src/execution.ts), [kernels.ts](../packages/server/src/kernels.ts), [outputs.ts](../packages/server/src/outputs.ts)                                                                  |
+| Frontend/backend types                 | [protocol](../packages/protocol/src/index.ts)                                                                                                                                                                          |
+| Agent behavior                         | [coding assistant prompt](../prompts/collaborator.md), [Supervisor](../packages/server/src/supervisor.ts)                                                                                                              |
+| Launching and checks                   | [dev launcher](../scripts/dev.mjs), [server tests](../packages/server/test/), [browser tests](../tests/)                                                                                                               |
 
 ## Checks
 
@@ -158,7 +158,12 @@ in `<stateDir>/pi/mcp.json`. `/mcp` shows connection status; authentication
 challenges offer a sign-in link in the workbench. Pi's MCP OAuth provider stores
 credentials per server and URL in `<stateDir>/pi/mcp-auth/`; its loopback callback
 listener opens only when sign-in is needed. Tools register directly with Pi
-Durable, using Pi's standalone MCP clients and code-mode sandbox. Code mode
+Durable, using Pi's standalone MCP clients and code-mode sandbox. Connections
+are shared across responses within a project. Direct tools connect during setup;
+other servers connect on discovery or resource access. Use `tool_search` before
+calling an undiscovered MCP tool from code mode. Stopping a response cancels its
+calls without closing another conversation's connection. Project shutdown or
+connection configuration changes close the clients. Code mode
 orchestrates tools without direct filesystem, network, shell, or auxiliary model
 access. Executable extensions require an explicit host integration.
 
@@ -168,6 +173,9 @@ Back up the entire project state directory. Application records live in
 `biologue.sqlite`; canonical conversation history, accepted inputs, the latest run state,
 submissions, task checkpoints, and usage live in `pi/durable.sqlite`. Chat rows
 and run records in the application database are rebuildable display caches.
+Accepted inputs retain prepared content only while pending. Delivered inputs
+retain their original display metadata in a document keyed by native entry,
+without a separate delivery archive or history-wide receipt scan.
 Include WAL files and artifact payloads
 in a live backup, or stop the app before copying. Branches inherit a selected
 history prefix while retaining the project's shared files and live kernels.
@@ -178,7 +186,12 @@ when the owning process is dead on the same host.
 
 Documents synchronize to the server's versioned working buffers; saving writes
 them to project files. Execution captures exact source independently of later
-edits. All human, agent, and inspection code goes through ExecutionService.
+edits. All human, agent, and inspection code goes through ExecutionService. It owns
+kernel queues, outputs, interruption, and readiness checks. Durable owns tool
+scheduling and recovery; kernel tools are not replayed after interruption.
+There is no code-effects analyzer, object-observation index, or mandatory
+scientific context review. Domain-specific decisions belong in project instructions
+and skills.
 
 Active durable runs resume after their project context and tools are
 restored for every recovering conversation. Failed setup waits for that same
@@ -194,9 +207,9 @@ saved values live in a rewindable native document and follow the selected branch
 prefix. Native compaction owns summaries, retries, recovery, cancellation, and usage.
 There is no separate summary conversation or provider-dispatch proxy, and no
 application journal of complete model requests. Each conversation keeps only its
-latest run state. Delivered receipts retain original display text and attachments;
+latest run state. Keyed message metadata retains original display text and attachments;
 expanded model content and image bytes belong to native history.
-Interrupted scientific executions are marked abandoned.
+Interrupted kernel executions are marked abandoned.
 Interrupted tools, including calls that were waiting for
 approval, settle as unknown effects and are never replayed automatically. A surviving Jupyter session can be reattached; restarting
 the managed launcher restarts Jupyter and clears live objects. Cancellation with

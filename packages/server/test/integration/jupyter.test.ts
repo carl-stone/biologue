@@ -12,7 +12,6 @@ import { createApp } from "../../src/app.ts";
 import { JupyterKernels } from "../../src/kernels.ts";
 import { ExecutionService } from "../../src/execution.ts";
 import { adapters } from "../../src/adapters.ts";
-import { analyzeCode } from "../../src/code-effects.ts";
 import { PiAdapter } from "../../src/pi.ts";
 import { scriptedModel } from "../helpers/pi-fixture.ts";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -118,10 +117,8 @@ test(
         return result;
       };
       const runAgent = async (language: Language, code: string, interveningCode?: string) => {
-        const effects = await analyzeCode(language, code);
-        const names = [...new Set([...effects.reads, ...effects.writes, ...effects.mutates])];
         model.faux.setResponses([
-          fauxAssistantMessage(fauxToolCall("inspect_environment", { language, names }), {
+          fauxAssistantMessage(fauxToolCall("inspect_environment", { language }), {
             stopReason: "toolUse",
           }),
           fauxAssistantMessage(
@@ -215,29 +212,12 @@ test(
         "context_output = context_input * 2",
         "context_input = 20",
       );
-      assert.equal(guarded.status, "not_executed");
-      assert.equal(execution.outputs.count(guarded.id), 0);
-      const absent = await execution.wait(
-        execution.submit({
-          language: "python",
-          actor: "human",
-          code: "print('context_output' in globals())",
-        }).id,
-      );
-      assert.equal(
-        execution.outputs.raw(absent.id)[0].text,
-        "False\n",
-        "Warning must precede any kernel execution",
-      );
+      assert.equal(guarded.status, "succeeded", guarded.error);
       const refreshed = await runAgent(
         "python",
         "context_output = context_input * 2\nprint(context_output)",
       );
-      assert.equal(
-        refreshed.status,
-        "succeeded",
-        JSON.stringify(execution.get(refreshed.id)?.contextCheck ?? refreshed.error),
-      );
+      assert.equal(refreshed.status, "succeeded", refreshed.error);
       assert.equal(execution.outputs.raw(refreshed.id)[0].text, "40\n");
       await execute(
         "python",
@@ -351,7 +331,7 @@ for _i in range(105):
           "context_means <- rowMeans(context_input)",
           "context_input <- context_input / 10",
         );
-        assert.equal(rGuarded.status, "not_executed");
+        assert.equal(rGuarded.status, "succeeded", rGuarded.error);
         const rAbsent = await execution.wait(
           execution.submit({
             language: "r",
@@ -360,7 +340,7 @@ for _i in range(105):
           }).id,
         );
         assert.ok(
-          execution.outputs.raw(rAbsent.id).some((output) => output.text?.includes("FALSE")),
+          execution.outputs.raw(rAbsent.id).some((output) => output.text?.includes("TRUE")),
         );
         assert.equal(
           (await runAgent("r", "context_means <- rowMeans(context_input)")).status,
@@ -446,7 +426,7 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
           ["large_vector", "dangerous", "classed"],
         );
         assert.match(rPreview.rows[0].preview, /1, 2, 3, 4/);
-        assert.equal(rPreview.rows[1].observed, false);
+        assert.equal(rPreview.rows[1].preview, "<not evaluated>");
         assert.equal(rPreview.rows[2].preview, "<explosive>");
         assert.deepEqual((await inspect("r", { names: [] })).rows, []);
         assert.equal((await inspect("r", { names: ["missing_object"] })).rows[0].type, "unbound");
@@ -643,36 +623,8 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
             code: "print(agent_value)",
           }).id,
         );
-        assert.equal(stale.status, "not_executed");
-        assert.ok(stale.contextCheck!.issues.some((issue) => issue.kind === "kernel_changed"));
-        // Establish an observation in this connection, then restart the same kernel ID.
-        const inspection = await reconnectedService.wait(
-          reconnectedService.submit({
-            language: "python",
-            actor: "agent",
-            conversationId,
-            purpose: "inspection",
-            inspection: "environment",
-            code: adapters.python.inspectionCode(),
-          }).id,
-        );
-        reconnectedService.context.observeContext(conversationId, [
-          {
-            role: "toolResult",
-            toolName: "inspect_environment",
-            toolCallId: inspection.id,
-            content: [{ type: "text", text: "agent_value preview" }],
-            isError: false,
-            timestamp: Date.now(),
-            details: {
-              biologueObservation: {
-                executionId: inspection.id,
-                names: ["agent_value"],
-                kind: "environment_preview",
-              },
-            },
-          },
-        ]);
+        assert.equal(stale.status, "succeeded", stale.error);
+        assert.equal(reconnectedService.outputs.raw(stale.id)[0].text, "42\n");
         const restarted = await fetch(`${url}api/kernels/${checked.kernelId}/restart`, {
           method: "POST",
           headers: { Authorization: `token ${token}` },
@@ -687,11 +639,8 @@ for (i in 0:104) assign(sprintf("page_%03d", i), i, .GlobalEnv)`,
             code: "print(agent_value)",
           }).id,
         );
-        assert.equal(afterRestart.status, "not_executed", afterRestart.error);
+        assert.equal(afterRestart.status, "failed", afterRestart.error);
         assert.equal(afterRestart.kernelId, checked.kernelId);
-        assert.ok(
-          afterRestart.contextCheck!.issues.some((issue) => issue.kind === "kernel_changed"),
-        );
         const afterDisplay = await reconnectedService.wait(
           reconnectedService.submit({
             language: "python",

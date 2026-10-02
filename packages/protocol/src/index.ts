@@ -8,29 +8,7 @@ export type ExecutionStatus =
   | "interrupted"
   | "cancelled"
   | "abandoned"
-  | "completion_unknown"
-  | "not_executed";
-export interface ContextIssue {
-  id: string;
-  object?: string;
-  kind: "possible_change" | "unobserved" | "kernel_changed" | "unknown";
-  message: string;
-  executionId?: string;
-  observedExecutionId?: string;
-  codePreview?: string;
-  actor?: Actor;
-  status?: ExecutionStatus;
-}
-export interface ExecutionContextCheck {
-  disposition: "clear" | "review" | "acknowledged";
-  through: number;
-  epoch: string;
-  issues: ContextIssue[];
-  notes: string[];
-  acknowledgment?: { warningExecutionId: string; reason: string };
-  /** Previously shown evidence accepted for this exact code and kernel generation. */
-  acknowledgedIssueIds?: string[];
-}
+  | "completion_unknown";
 export interface ExecutionSummary {
   id: string;
   language: Language;
@@ -50,8 +28,6 @@ export interface ExecutionSummary {
   kernelId?: string;
   kernelGeneration?: string;
   kernelUncertain?: boolean;
-  activitySequence?: number;
-  contextCheck?: ExecutionContextCheck;
   error?: string;
   inspection?: "environment" | "table";
   inspectionOptions?: EnvironmentQuery;
@@ -98,7 +74,7 @@ export interface EnvironmentQuery {
 }
 export interface EnvironmentResult {
   kind: "environment";
-  rows: { name: string; type: string; preview: string; observed?: false }[];
+  rows: { name: string; type: string; preview: string }[];
   next?: number;
 }
 export type InspectionResult = TableResult | EnvironmentResult;

@@ -19,7 +19,7 @@ export class EnvironmentService {
     this.unsubscribe = events.subscribe((event) => {
       if (event.type !== "execution" || event.execution.purpose !== "analysis") return;
       const record = event.execution;
-      if (["running", "queued", "cancelled", "not_executed"].includes(record.status)) return;
+      if (["running", "queued", "cancelled"].includes(record.status)) return;
       this.dirty.add(record.language);
       if (this.watched.has(record.language)) this.schedule(record.language);
     });

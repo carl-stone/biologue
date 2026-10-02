@@ -33,7 +33,7 @@ import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlit
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { acquireDurableOwner } from "./durable-owner.ts";
 import { DurableTools } from "./durable-tools.ts";
-import { validateMcpServerNames } from "./native-mcp.ts";
+import { NativeMcp, validateMcpServerNames } from "./native-mcp.ts";
 import type { ExtensionDialogs } from "./extension-ui.ts";
 import type { Permissions } from "./permissions.ts";
 import type { AgentRun } from "@biologue/protocol";
@@ -57,6 +57,7 @@ export class PiAdapter {
   private agentDir: string;
   private settings: SettingsManager;
   private releaseOwner?: () => void;
+  private mcp?: { key: string; connection: Promise<NativeMcp> };
   releaseHarness() {
     this.releaseOwner?.();
     this.releaseOwner = undefined;
@@ -282,8 +283,28 @@ export class PiAdapter {
       throw error;
     }
   }
+  private mcpConnection() {
+    const entries = this.mcpServers();
+    const key = JSON.stringify(entries);
+    if (this.mcp?.key === key) return this.mcp.connection;
+    const previous = this.mcp?.connection;
+    const connection = (async () => {
+      await (await previous)?.close();
+      return new NativeMcp({
+        entries,
+        project: this.options.project,
+        stateDir: this.agentDir,
+        models: await this.modelRuntime(),
+      });
+    })();
+    this.mcp = { key, connection };
+    return connection;
+  }
+  async closeConnections() {
+    await (await this.mcp?.connection)?.close();
+    this.mcp = undefined;
+  }
   async create(input: CreateDurableTools): Promise<DurableTools> {
-    const runtime = await this.modelRuntime();
     const loader = new DefaultResourceLoader({
       cwd: this.options.project,
       agentDir: this.agentDir,
@@ -295,10 +316,7 @@ export class PiAdapter {
     return new DurableTools({
       ...input,
       loader,
-      models: runtime,
-      project: this.options.project,
-      stateDir: this.agentDir,
-      servers: this.mcpServers(),
+      mcp: await this.mcpConnection(),
       tools: input.tools(loader.getSkills().skills),
     });
   }

@@ -22,13 +22,11 @@ function ActivityExecution({ execution, open }: { execution: ExecutionSummary; o
         ? "Running"
         : execution.status === "queued"
           ? "Queued"
-          : execution.status === "not_executed"
-            ? "Not run"
-            : execution.status === "failed"
-              ? "Failed"
-              : execution.status === "completion_unknown"
-                ? "Completion unknown"
-                : "Stopped";
+          : execution.status === "failed"
+            ? "Failed"
+            : execution.status === "completion_unknown"
+              ? "Completion unknown"
+              : "Stopped";
   return (
     <div className="activity-execution">
       <button

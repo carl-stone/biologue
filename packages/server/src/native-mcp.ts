@@ -1,3 +1,4 @@
+import { awaitWithContext } from "@earendil-works/chord/context";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -26,6 +27,7 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 export type NativeTool = ToolRegistration & {
   exposure?: "direct" | "codemode" | "deferred" | "hidden";
   namespace?: string;
+  requiresApproval?: boolean;
 };
 type Server = {
   entry: McpServerEntry;
@@ -93,51 +95,89 @@ export class NativeMcp {
   private closed = false;
   private authController = new AbortController();
   private closing?: Promise<void>;
-  private abort = () => {
-    void this.close().catch((error) => console.error("MCP shutdown failed", error));
+  private listeners = new Set<{
+    changed: () => void | Promise<void>;
+    notify: (text: string, level?: "info" | "warning" | "error") => void;
+  }>();
+  private changed = async () => {
+    await Promise.all([...this.listeners].map((listener) => listener.changed()));
   };
+  private notify = (text: string, level?: "info" | "warning" | "error") => {
+    for (const listener of this.listeners) listener.notify(text, level);
+  };
+  subscribe(listener: {
+    changed: () => void | Promise<void>;
+    notify: (text: string, level?: "info" | "warning" | "error") => void;
+  }) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
   constructor(
     private input: {
       entries: McpServerEntry[];
       project: string;
       stateDir: string;
       models: ModelRuntime;
-      signal: AbortSignal;
-      changed: () => void | Promise<void>;
-      notify: (text: string, level?: "info" | "warning" | "error") => void;
     },
   ) {
     validateMcpServerNames(input.entries.map((entry) => entry.name));
     this.servers = input.entries
       .filter((e) => e.config.enabled !== false)
       .map((entry) => ({ entry, tools: [] }));
-    input.signal.addEventListener("abort", this.abort, { once: true });
   }
-  async start() {
-    for (const server of this.servers)
-      server.opening = this.open(server).catch((error) => {
-        server.error = error instanceof Error ? error.message : String(error);
-        if (!this.input.signal.aborted)
-          this.input.notify(`${server.entry.name}: ${server.error}`, "warning");
-      });
+  async start(active: Set<string> = new Set()) {
     await Promise.all(
       this.servers
         .filter(
-          (s) =>
-            s.entry.config.exposure === "direct" ||
-            Object.values(s.entry.config.toolExposure ?? {}).includes("direct"),
+          (server) =>
+            server.entry.config.exposure === "direct" ||
+            Object.values(server.entry.config.toolExposure ?? {}).includes("direct") ||
+            [...active].some((name) => name.startsWith(namespace(server.entry.name) + "__")),
         )
-        .map((s) => s.opening),
+        .map((server) => this.ensure(server)),
     );
-    this.input.signal.throwIfAborted();
   }
-  async ready() {
-    await Promise.all(this.servers.map((s) => s.opening));
-    this.input.signal.throwIfAborted();
+  private ensure(server: Server) {
+    if (this.closed) throw new Error("MCP connections are closed.");
+    if (server.opening) return server.opening;
+    const opening = this.open(server).catch((error) => {
+      if (server.opening !== opening) return;
+      server.error = error instanceof Error ? error.message : String(error);
+      if (!server.login) server.opening = undefined;
+      if (!this.closed) this.notify(`${server.entry.name}: ${server.error}`, "warning");
+    });
+    server.opening = opening;
+    return opening;
   }
-  tools() {
+  async ready(name?: string) {
+    const servers = name ? this.servers.filter((s) => s.entry.name === name) : this.servers;
+    if (name && !servers.length) throw new Error(`Unknown MCP server: ${name}`);
+    await Promise.all(servers.map((server) => this.ensure(server)));
+    this.authController.signal.throwIfAborted();
+  }
+  tools(
+    approve?: (name: string, args: unknown, callId: string, signal?: AbortSignal) => Promise<void>,
+  ) {
     return [
-      ...this.servers.flatMap((s) => s.tools).filter((t) => t.exposure !== "hidden"),
+      ...this.servers
+        .flatMap((server) => server.tools)
+        .filter((tool) => tool.exposure !== "hidden")
+        .map(
+          (tool) =>
+            ({
+              ...tool,
+              execute: async (args, api, context) => {
+                if (tool.requiresApproval) {
+                  if (!approve) throw new Error("MCP writes require an approval handler.");
+                  await approve(tool.name, args, api.callId, context.abortSignal);
+                }
+                context.abortSignal?.throwIfAborted();
+                return tool.execute(args, api, context);
+              },
+            }) satisfies NativeTool,
+        ),
       ...(this.servers.length ? this.resources() : []),
     ];
   }
@@ -145,26 +185,28 @@ export class NativeMcp {
     return this.servers
       .map(
         (s) =>
-          `${namespace(s.entry.name)} (${s.entry.config.exposure ?? "codemode"}): ${s.entry.config.description ?? s.client?.instructions ?? s.error ?? "Discover tools with searchTools or tool_search."}`,
+          `${namespace(s.entry.name)} (${s.entry.config.exposure ?? "codemode"}): ${s.entry.config.description ?? s.client?.instructions ?? s.error ?? "Discover tools with tool_search."}`,
       )
       .join("\n");
   }
   async command(args: string) {
-    await this.ready();
     if (args.trim())
       throw new Error(
         "Manage MCP configuration in the workbench settings. Run /mcp to inspect connection status.",
       );
-    this.input.notify(
+    this.notify(
       this.servers
-        .map((s) => `${s.entry.name}: ${s.error ?? `${s.tools.length} tools connected`}`)
+        .map(
+          (s) =>
+            `${s.entry.name}: ${s.error ?? (s.client?.connectionState === "connected" ? `${s.tools.length} tools connected` : "not connected; connects on discovery or use")}`,
+        )
         .join("\n") || "No MCP servers configured.",
     );
   }
   private async open(server: Server) {
     const { entry } = server,
       config = entry.config;
-    this.input.signal.throwIfAborted();
+    this.authController.signal.throwIfAborted();
     const client = new McpClient({
       name: "biologue",
       version: "1.0.0",
@@ -217,7 +259,7 @@ export class NativeMcp {
                 renameSync(path + ".next", path);
               },
             },
-            onRedirect: (url) => this.input.notify(`Sign in to ${entry.name}: ${url.href}`),
+            onRedirect: (url) => this.notify(`Sign in to ${entry.name}: ${url.href}`),
           });
         let oauth = makeProvider(config.oauth?.callbackUrl ?? "http://127.0.0.1/callback");
         let delegate = adaptOAuthProvider(oauth);
@@ -294,13 +336,14 @@ export class NativeMcp {
                 })
                 .catch((cause) => {
                   if (!this.closed)
-                    this.input.notify(
+                    this.notify(
                       `MCP sign-in failed: ${cause instanceof Error ? cause.message : String(cause)}`,
                       "warning",
                     );
                 })
                 .finally(() => {
                   server.login = undefined;
+                  if (server.error) server.opening = undefined;
                 });
               throw error;
             }
@@ -333,16 +376,24 @@ export class NativeMcp {
       await client.close();
       throw new Error("MCP connection cancelled.");
     }
-    await client.connect(transport);
-    await this.refresh(server);
-    server.error = undefined;
+    try {
+      await client.connect(transport);
+      await this.refresh(server);
+      server.error = undefined;
+    } catch (error) {
+      if (!server.login) await client.close();
+      throw error;
+    }
+    client.onClose(() => {
+      if (server.client === client && !this.closed) server.opening = undefined;
+    });
     client.onNotification("notifications/tools/list_changed", () => {
-      void this.refresh(server).catch((error) => this.input.notify(String(error), "warning"));
+      void this.refresh(server).catch((error) => this.notify(String(error), "warning"));
     });
   }
   private async refresh(server: Server) {
     const { client, entry } = server;
-    const tools = await client!.listTools({ signal: this.input.signal });
+    const tools = await client!.listTools({ signal: this.authController.signal });
     const plainCounts = new Map<string, number>();
     for (const raw of new Set(tools.map((tool) => tool.name))) {
       const plain = toolName(entry.name, raw, () => false);
@@ -367,10 +418,11 @@ export class NativeMcp {
         }),
         replay: "unsafe",
         executionMode: "sequential",
+        requiresApproval: tool.annotations?.readOnlyHint !== true,
         execute: async (args, api, context) => {
-          if (tool.annotations?.readOnlyHint !== true)
-            await this.approve?.(name, args, api.callId, context.abortSignal);
-          const result = await client!.callTool(tool.name, args as Record<string, unknown>, {
+          await awaitWithContext(this.ensure(server), context);
+          if (server.error) throw new Error(server.error);
+          const result = await server.client!.callTool(tool.name, args as Record<string, unknown>, {
             signal: context.abortSignal,
             onProgress: (progress) => {
               void api.details(JSON.parse(JSON.stringify(progress)), context).catch(() => {});
@@ -390,9 +442,8 @@ export class NativeMcp {
         },
       };
     });
-    await this.input.changed();
+    await this.changed();
   }
-  approve?: (name: string, args: unknown, callId: string, signal?: AbortSignal) => Promise<void>;
   private closeCallback(server: Server) {
     return (server.callbackClosing ??= server.callback?.close());
   }
@@ -409,8 +460,8 @@ export class NativeMcp {
         }),
         replay: "unsafe",
         execute: async (raw, _api, context) => {
-          await this.ready();
           const args = raw as { server?: string; cursor?: string; uri?: string };
+          await awaitWithContext(this.ready(args.server), context);
           const servers = args.server
             ? this.servers.filter((s) => s.entry.name === args.server)
             : this.servers.filter((s) => s.client?.serverCapabilities?.resources);
@@ -469,11 +520,11 @@ export class NativeMcp {
     this.closed = true;
     this.authController.abort();
     return (this.closing = (async () => {
-      this.input.signal.removeEventListener("abort", this.abort);
+      this.listeners.clear();
       const results = await Promise.allSettled(
         this.servers.flatMap((s) => [s.client?.close(), this.closeCallback(s)]),
       );
-      await Promise.allSettled(this.servers.map((server) => server.login));
+      await Promise.allSettled(this.servers.flatMap((server) => [server.login, server.opening]));
       const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       if (errors.length)
         throw new AggregateError(

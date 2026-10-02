@@ -12,7 +12,7 @@ import { Events } from "../src/events.ts";
 import { ContextService } from "../src/context.ts";
 import { ConversationSessions } from "../src/conversation-sessions.ts";
 import { createApp } from "../src/app.ts";
-import { InputsDoc } from "../src/durable-state.ts";
+import { InputsDoc, MessageDisplay } from "../src/durable-state.ts";
 
 test("a settled delivered input cannot be withdrawn or hidden", async () => {
   const f = await fixture();
@@ -45,11 +45,17 @@ test("a settled delivered input cannot be withdrawn or hidden", async () => {
       f.sessions.discardPending(input.conversationId, [input.id]),
       /already delivered/,
     );
-    assert.equal(
-      (await f.harness.snapshot(InputsDoc, conversation.id, ctx))!.receipts[0].discarded,
-      undefined,
-    );
+    assert.equal((await f.harness.snapshot(InputsDoc, conversation.id, ctx))!.receipts.length, 1);
     assert.equal((await f.sessions.page(input.conversationId)).items[0].text, input.text);
+    assert.equal((await f.harness.snapshot(InputsDoc, conversation.id, ctx))!.receipts.length, 0);
+    const record = await f.harness.commit(
+      (tx) => tx.submissionByRequest(conversation.id, input.id),
+      ctx,
+    );
+    assert.equal(
+      (await f.harness.snapshot(MessageDisplay, String(record!.entry), ctx))!.display!.text,
+      input.text,
+    );
   } finally {
     await f.close();
   }
@@ -125,7 +131,7 @@ test("queue withdrawal settles native submission and receipt in one commit", asy
         (c) =>
           c.type === "document" &&
           c.record.kind === InputsDoc.definition.kind &&
-          (c.value?.receipts as { discarded?: boolean }[] | undefined)?.every((r) => r.discarded),
+          (c.value?.receipts as unknown[] | undefined)?.length === 0,
       );
       if (submission && receipt) atomic = true;
     });
@@ -207,7 +213,7 @@ test("conversation pages remain bounded and isolate histories and tied timestamp
   }
 });
 
-test("the display index rebuilds from durable history and receipts without modifying raw history", async () => {
+test("the display index rebuilds from durable history and pending inputs without modifying raw history", async () => {
   const f = await fixture();
   try {
     const id = f.conversation.id,
@@ -338,6 +344,44 @@ test("concurrent correction restoration commits one entry despite repeated displ
     assert.equal((await f.sessions.page(input.conversationId)).items[0].id, input.id);
   } finally {
     f.store.put = put;
+    await f.close();
+  }
+});
+
+test("message reads do not recheck the delivery state of historical inputs", async () => {
+  const f = await fixture();
+  try {
+    const id = f.conversation.id;
+    for (let index = 0; index < 20; index++) {
+      const message = await f.sessions.accept(id, `Input ${index}`, "run");
+      await f.sessions.restore(message);
+    }
+    const conversation = await f.sessions.get(id);
+    let lookups = 0;
+    const commit = conversation.commit.bind(conversation);
+    conversation.commit = (action, context) =>
+      commit(
+        (tx) =>
+          action(
+            new Proxy(tx, {
+              get(target, property) {
+                if (property === "submissionByRequest")
+                  return (...args: Parameters<typeof tx.submissionByRequest>) => {
+                    lookups++;
+                    return tx.submissionByRequest(...args);
+                  };
+                const value = Reflect.get(target, property);
+                return typeof value === "function" ? value.bind(target) : value;
+              },
+            }),
+          ),
+        context,
+      );
+    assert.equal((await f.sessions.page(id, 10)).items.length, 10);
+    assert.equal((await f.sessions.pending(id)).length, 0);
+    assert.equal(lookups, 0, "Delivered input records stay out of normal queue reads");
+    assert.equal((await f.harness.snapshot(InputsDoc, conversation.id, ctx))!.receipts.length, 0);
+  } finally {
     await f.close();
   }
 });

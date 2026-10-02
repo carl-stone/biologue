@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, contentText } from "@earendil-works/pi-ai";
 import type { AgentQuestion, AgentSettings } from "@biologue/protocol";
@@ -314,6 +314,7 @@ test(
       const address = server.address() as { port: number };
       f.pi.saveMcpServer("test", { url: `http://127.0.0.1:${address.port}`, exposure: "codemode" });
       f.faux.setResponses([
+        call("tool_search", { query: "write" }),
         call("codemode", { code: "text(await tools.mcp__test__write({}));" }),
         fauxAssistantMessage("MCP call completed."),
       ]);
@@ -423,15 +424,20 @@ test(
   },
 );
 
-test("native stdio MCP transports close when the response session ends", timeout, async () => {
-  const f = await fixture();
-  try {
-    const script = join(f.root, "mcp-test.mjs"),
-      closed = join(f.root, "mcp-closed");
-    writeFileSync(
-      script,
-      `import { createInterface } from "node:readline";
-import { writeFileSync } from "node:fs";
+test(
+  "unused stdio servers stay stopped; discovered connections are reused and close with the project",
+  timeout,
+  async () => {
+    const f = await fixture();
+    try {
+      const script = join(f.root, "mcp-test.mjs"),
+        closed = join(f.root, "mcp-closed"),
+        opened = join(f.root, "mcp-opened");
+      writeFileSync(
+        script,
+        `import { createInterface } from "node:readline";
+import { writeFileSync, appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(opened)}, "started\\n");
 process.on("exit", () => writeFileSync(${JSON.stringify(closed)}, "closed"));
 process.on("SIGTERM", () => process.exit(0));
 const input = createInterface({ input: process.stdin });
@@ -442,18 +448,38 @@ input.on("line", line => {
   const result = m.method === "initialize" ? { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "stdio-test", version: "1" } } : m.method === "tools/list" ? { tools: [] } : {};
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }) + "\\n");
 });`,
-    );
-    f.pi.saveMcpServer("stdio", { command: process.execPath, args: [script] });
-    const run = await f.run("/mcp");
-    assert.equal(run.status, "completed", run.error);
-    assert.ok(run.notices?.some((notice) => /stdio/.test(notice.text)));
-    for (let attempt = 0; attempt < 30 && !existsSync(closed); attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.ok(existsSync(closed), "The MCP subprocess exits before the session is discarded");
-  } finally {
-    await f.close();
-  }
-});
+      );
+      f.pi.saveMcpServer("stdio", { command: process.execPath, args: [script] });
+      const run = await f.run("/mcp");
+      assert.equal(run.status, "completed", run.error);
+      assert.ok(run.notices?.some((notice) => /stdio/.test(notice.text)));
+      assert.equal(existsSync(opened), false, "Status inspection does not launch deferred servers");
+      f.faux.setResponses([
+        call("codemode", { code: 'text(await tools.read({ path: "analysis.py" }));' }),
+        fauxAssistantMessage("Workspace read."),
+      ]);
+      assert.equal((await f.run("Read the workspace")).status, "completed");
+      assert.equal(
+        existsSync(opened),
+        false,
+        "Workspace-only scripts leave unused servers stopped",
+      );
+      for (let response = 0; response < 2; response++) {
+        f.faux.setResponses([
+          call("tool_search", { query: "stdio" }),
+          fauxAssistantMessage("Discovered."),
+        ]);
+        assert.equal((await f.run("Discover the configured tools")).status, "completed");
+        assert.equal(readFileSync(opened, "utf8"), "started\n", "Responses reuse one subprocess");
+        assert.equal(existsSync(closed), false);
+      }
+      await f.supervisor.close();
+      assert.ok(existsSync(closed), "Project shutdown closes its subprocess");
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test(
   "native prompt arguments and skill contents reach durable model context while chat retains the command",

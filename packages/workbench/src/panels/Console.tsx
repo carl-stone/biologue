@@ -23,7 +23,6 @@ const statuses: Record<Execution["status"], string> = {
   cancelled: "Cancelled",
   abandoned: "Session ended",
   completion_unknown: "Completion unknown",
-  not_executed: "Needs review · not run",
 };
 
 function OutputView({ output, execution }: { output: DisplayOutput; execution: ExecutionSummary }) {

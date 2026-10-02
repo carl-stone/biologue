@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -59,7 +58,7 @@ export class OutputService {
   constructor(
     private store: Store,
     private events: Events,
-    private directory: string,
+    directory: string,
   ) {
     this.artifacts = new ArtifactStore(join(directory, "blobs"));
     store.db.exec(`
@@ -86,20 +85,15 @@ export class OutputService {
   append(
     execution: Pick<Execution, "id" | "language" | "kernelId" | "kernelGeneration">,
     value: KernelOutput,
-    legacy?: Output,
   ): OutputReference {
-    if (legacy) {
-      const existing = this.reference(legacy.id);
-      if (existing) return existing;
-    }
     const state = this.store.db
       .prepare("SELECT next_sequence, clear_pending FROM output_state WHERE execution_id=?")
       .get(execution.id);
     const output: Output = {
       ...value,
-      id: legacy?.id ?? randomUUID(),
+      id: randomUUID(),
       executionId: execution.id,
-      sequence: legacy?.sequence ?? Number(state?.next_sequence ?? 0),
+      sequence: Number(state?.next_sequence ?? 0),
     };
     const { text, data, metadata, ...descriptor } = output;
     const payload = this.artifacts.put({ text, data, metadata });
@@ -115,7 +109,7 @@ export class OutputService {
       table: !!decodeTable(data?.["application/json"]),
     };
     const image = typeof data?.["image/png"] === "string" ? 1 : 0;
-    // Without a process identity, legacy output can only update its own execution.
+    // Without a kernel identity, output can only update its own execution.
     const scope = execution.kernelGeneration
       ? JSON.stringify([execution.language, execution.kernelId, execution.kernelGeneration])
       : `execution:${execution.id}`;
@@ -178,18 +172,6 @@ export class OutputService {
     for (const executionId of affected)
       this.events.emit({ type: "outputs", executionId, language: execution.language });
     return reference;
-  }
-  removeLegacyCopies(outputs: Output[]) {
-    for (const output of outputs) {
-      if (!/^[a-f0-9-]{36}$/.test(output.id)) continue;
-      const path = join(this.directory, output.id + ".json");
-      if (
-        existsSync(path) &&
-        isDeepStrictEqual(this.get(output.id), output) &&
-        isDeepStrictEqual(JSON.parse(readFileSync(path, "utf8")), output)
-      )
-        unlinkSync(path);
-    }
   }
   reference(id: string): OutputReference | undefined {
     const row = this.store.db.prepare("SELECT reference FROM outputs WHERE id=?").get(id);

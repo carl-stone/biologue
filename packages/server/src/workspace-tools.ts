@@ -9,35 +9,16 @@ import type { AgentRun, Execution } from "@biologue/protocol";
 import type { Documents } from "./documents.ts";
 import type { ExecutionService } from "./execution.ts";
 import type { Permissions } from "./permissions.ts";
-import { adapters, decodeInspection } from "./adapters.ts";
-import type { StaleContext } from "./stale-context.ts";
+import { adapters } from "./adapters.ts";
 import { textResult, clip, executionText, inspectionResult, artifactText } from "./tool-results.ts";
 
 const limit = 16_000;
-function executionResult(record: Execution, outputs: OutputService, context: StaleContext) {
-  if (record.status !== "succeeded" && record.status !== "not_executed")
+function executionResult(record: Execution, outputs: OutputService) {
+  if (record.status !== "succeeded")
     throw new Error(
       `Execution ${record.id} ${record.status}: ${clip(record.error ?? "No result.", 2000)}`,
     );
-  const effects = record.status === "succeeded" ? context.effects(record.id) : undefined;
-  return textResult(executionText(record, outputs), {
-    executionId: record.id,
-    ...(effects
-      ? {
-          biologueObservation: {
-            executionId: record.id,
-            names: [
-              ...new Set([
-                ...effects.reads.filter((name) => !effects.calls.includes(name)),
-                ...effects.writes,
-                ...effects.mutates,
-              ]),
-            ],
-            kind: "execution_result" as const,
-          },
-        }
-      : {}),
-  });
+  return textResult(executionText(record, outputs), { executionId: record.id });
 }
 
 export function workspaceTools(
@@ -220,15 +201,14 @@ export function workspaceTools(
           toolCallId,
         });
         const finished = await execution.wait(record.id);
-        if (finished.status !== "succeeded")
-          return executionResult(finished, execution.outputs, execution.context);
+        if (finished.status !== "succeeded") return executionResult(finished, execution.outputs);
         return inspectionResult(finished, execution.outputs, args.names, args.offset);
       },
     },
     {
       name: "execute_code",
       description:
-        "Run code or a working document in the shared session with approval. For a complete buffer, provide its document path/version and omit code; the workspace captures its exact contents, including unsaved edits. On 'Not run', inspect or revise, or acknowledge the warning with a reason.",
+        "Run code or a working document in the shared session with approval. For a complete buffer, provide its document path/version and omit code; the workspace captures its exact contents, including unsaved edits.",
       parameters: Type.Object({
         language,
         code: Type.Optional(Type.String()),
@@ -242,21 +222,6 @@ export function workspaceTools(
             },
           ),
         ),
-        acknowledgment: Type.Optional(
-          Type.Object(
-            {
-              warningExecutionId: Type.String(),
-              reason: Type.String({
-                minLength: 1,
-                maxLength: 2000,
-                description: "Why this code remains appropriate.",
-              }),
-            },
-            {
-              description: "Accept the warning for unchanged code; new changes are checked.",
-            },
-          ),
-        ),
       }),
       execute: async (raw, api, context) => {
         const toolCallId = api.callId,
@@ -267,12 +232,6 @@ export function workspaceTools(
             code: z.string().min(1).max(200_000).optional(),
             reason: z.string().max(5000),
             document: z.object({ path: z.string(), version: z.number().int().min(1) }).optional(),
-            acknowledgment: z
-              .object({
-                warningExecutionId: z.string().uuid(),
-                reason: z.string().trim().min(1).max(2000),
-              })
-              .optional(),
           })
           .refine((value) => value.code !== undefined || value.document !== undefined, {
             message: "Provide code or a document reference.",
@@ -315,7 +274,6 @@ export function workspaceTools(
           runId: run.id,
           toolCallId,
           conversationId: run.conversationId,
-          acknowledgment: args.acknowledgment,
           beforeDispatch: args.document
             ? () => {
                 const { path, version } = args.document!;
@@ -327,17 +285,13 @@ export function workspaceTools(
               }
             : undefined,
         });
-        return executionResult(
-          await execution.wait(record.id),
-          execution.outputs,
-          execution.context,
-        );
+        return executionResult(await execution.wait(record.id), execution.outputs);
       },
     },
     {
       name: "list_executions",
       description:
-        "Find recent recorded executions in this project, newest first, including the scientist's runs. Defaults to analysis history. Use read_execution for exact source and output IDs, then read_artifact for captured figures or full output. History does not establish current live object state.",
+        "Find recent recorded executions in this project, newest first, including human runs. Defaults to analysis history. Use read_execution for exact source and output IDs, then read_artifact for captured figures or full output.",
       parameters: Type.Object({
         language: Type.Optional(language),
         actor: Type.Optional(
@@ -427,8 +381,7 @@ export function workspaceTools(
     },
     {
       name: "read_artifact",
-      description:
-        "Read captured text, data, or a PNG. Historical output does not establish current runtime state.",
+      description: "Read captured text, data, or a PNG.",
       parameters: Type.Object({
         executionId: Type.String(),
         outputId: Type.String(),
@@ -450,29 +403,7 @@ export function workspaceTools(
         const record = execution.get(args.executionId)!;
         const image = output.data?.["image/png"];
         const text = artifactText(output, args.offset);
-        // Only a complete environment artifact establishes observations. Partial
-        // JSON may cut through a row; never credit unseen names from its full record.
-        const observed =
-          record.inspection === "environment" &&
-          args.offset === 0 &&
-          output.text !== undefined &&
-          output.text.length <= 16_000
-            ? decodeInspection("environment", [output])
-            : undefined;
-        const response = textResult(text || "No text output.", {
-          executionId: record.id,
-          ...(observed?.kind === "environment"
-            ? {
-                biologueObservation: {
-                  executionId: record.id,
-                  names: observed.rows
-                    .filter((row) => row.observed !== false)
-                    .map((row) => row.name),
-                  kind: "environment_preview" as const,
-                },
-              }
-            : {}),
-        });
+        const response = textResult(text || "No text output.", { executionId: record.id });
         if (typeof image === "string" && args.offset === 0 && supportsImages) {
           if (image.length > 14_000_000)
             throw new Error(

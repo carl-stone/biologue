@@ -107,7 +107,7 @@ del _biologue_inspect`,
   selected <- head(candidates[seq_along(candidates) > offset], 100L)
   rows <- lapply(selected, function(n) {
     if (!exists(n, envir = .GlobalEnv, inherits = FALSE)) return(list(name = n, type = "unbound", preview = "<not defined in workspace>"))
-    if (bindingIsActive(n, .GlobalEnv)) return(list(name = n, type = "active binding", preview = "<not evaluated>", observed = FALSE))
+    if (bindingIsActive(n, .GlobalEnv)) return(list(name = n, type = "active binding", preview = "<not evaluated>"))
     tryCatch({
       v <- get(n, envir = .GlobalEnv, inherits = FALSE)
       kind <- typeof(v)
@@ -122,7 +122,7 @@ del _biologue_inspect`,
         } else if (kind == "list") preview <- paste0("<list: ", length(v), " items>")
       }
       list(name = n, type = label, preview = substr(preview, 1L, 240L))
-    }, error = function(e) list(name = n, type = "unavailable", preview = "<inspection failed>", observed = FALSE))
+    }, error = function(e) list(name = n, type = "unavailable", preview = "<inspection failed>"))
   })
   next_offset <- offset + length(selected)
   cat(jsonlite::toJSON(list(rows = rows, "next" = if (next_offset < length(candidates)) next_offset else NULL), auto_unbox = TRUE))
@@ -182,8 +182,7 @@ export function decodeInspection(
           row &&
           typeof row.name === "string" &&
           typeof row.type === "string" &&
-          typeof row.preview === "string" &&
-          (row.observed === undefined || row.observed === false),
+          typeof row.preview === "string",
       )
     )
       return {

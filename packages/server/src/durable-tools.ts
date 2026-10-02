@@ -1,11 +1,6 @@
 import { readFileSync } from "node:fs";
 import { Type } from "typebox";
-import {
-  stripFrontmatter,
-  type DefaultResourceLoader,
-  type McpServerEntry,
-  type ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
+import { stripFrontmatter, type DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { validateToolArguments, type ToolCall } from "@earendil-works/pi-ai";
 import {
   CodemodeSandbox,
@@ -14,7 +9,11 @@ import {
   type CodemodeTool,
   type CodemodeJsonSchema,
 } from "@earendil-works/pi-codemode";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT,
+  withAbortSignal,
+  awaitWithContext,
+} from "@earendil-works/chord/context";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
   AgentDoc,
@@ -50,38 +49,38 @@ export class DurableTools {
   readonly name: string;
   private active = new Set<string>();
   private mcp: NativeMcp;
+  private detach: () => void;
+  private approve: (
+    name: string,
+    args: unknown,
+    callId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   private stopped = false;
   constructor(
     private input: {
-      project: string;
-      stateDir: string;
       loader: DefaultResourceLoader;
       tools: ToolRegistration[];
       run: AgentRun;
-      models: ModelRuntime;
       registry: Registry;
       harness: Harness;
       conversation: Conversation;
       permissions: Permissions;
       dialogs: ExtensionDialogs;
       signal: AbortSignal;
-      servers: McpServerEntry[];
+      mcp: NativeMcp;
     },
   ) {
     this.name = `biologue-tools:${input.run.conversationId}`;
-    this.mcp = new NativeMcp({
-      entries: input.servers,
-      project: input.project,
-      stateDir: input.stateDir,
-      models: input.models,
-      signal: input.signal,
+    this.mcp = input.mcp;
+    this.detach = this.mcp.subscribe({
       changed: async () => {
         this.publish();
         await this.configure();
       },
       notify: (text, level) => input.dialogs.notify(input.run, text, level),
     });
-    this.mcp.approve = (name, args, callId, signal) =>
+    this.approve = (name, args, callId, signal) =>
       input.permissions.request(
         {
           runId: input.run.id,
@@ -102,7 +101,7 @@ export class DurableTools {
       this.askTool(),
       this.codeTool(),
       this.searchTool(),
-      ...this.mcp.tools(),
+      ...this.mcp.tools(this.approve),
     ];
   }
   private publish() {
@@ -158,8 +157,10 @@ export class DurableTools {
       BACKGROUND_CONTEXT,
     );
     if (Array.isArray(saved?.tools)) this.active = new Set(saved.tools);
-    await this.mcp.start();
-    if ([...this.active].some((name) => name.startsWith("mcp__"))) await this.mcp.ready();
+    await awaitWithContext(
+      this.mcp.start(this.active),
+      withAbortSignal(this.input.signal, BACKGROUND_CONTEXT),
+    );
     this.publish();
     await this.configure();
   }
@@ -228,7 +229,7 @@ export class DurableTools {
       },
     });
   }
-  private matches(query: string, tools = this.mcp.tools(), limit = 8) {
+  private matches(query: string, tools = this.mcp.tools(this.approve), limit = 8) {
     const words = query
       .toLowerCase()
       .split(/[^a-z0-9]+/)
@@ -261,8 +262,8 @@ export class DurableTools {
         query: Type.String({ minLength: 1 }),
         limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
       }),
-      execute: async ({ query, limit }) => {
-        await this.mcp.ready();
+      execute: async ({ query, limit }, _api, context) => {
+        await awaitWithContext(this.mcp.ready(), context);
         const matches = this.matches(query, undefined, limit);
         for (const tool of matches) this.active.add(tool.name);
         return {
@@ -293,7 +294,7 @@ export class DurableTools {
     }));
     return defineTool({
       name: "codemode",
-      description: `Run JavaScript that calls workspace or MCP tools, chains calls, or filters results. R/Python execution and inspection use workspace tools. Use text() or return for output; store()/load() retain JSON values. Discover MCP tools with searchTools(query, {limit, namespace}), describeTool(name), or describeNamespace(name). Scripts have no filesystem, network, or shell access.\n${renderDeclarations({ tools })}`,
+      description: `Run JavaScript that calls workspace or MCP tools, chains calls, or filters results. R/Python execution and inspection use workspace tools. Use text() or return for output; store()/load() retain JSON values. Discover MCP tools with tool_search before running scripts; searchTools(query, {limit, namespace}), describeTool(name), and describeNamespace(name) inspect already loaded tools. Scripts have no filesystem, network, or shell access.\n${renderDeclarations({ tools })}`,
       replay: "unsafe",
       parameters: Type.Object({ code: Type.String() }),
       execute: (args, api, context) => this.code(args.code, api, context),
@@ -304,7 +305,6 @@ export class DurableTools {
     api: ToolExecutionApi,
     context: Context,
   ): Promise<ToolExecutionResult> {
-    await this.mcp.ready();
     const { code, options } = parseCodemodeSource(source);
     const definitions = this.definitions().filter(
       (t) => !["codemode", "tool_search"].includes(t.name) && t.exposure !== "hidden",
@@ -431,7 +431,7 @@ export class DurableTools {
   }
   async stop() {
     this.stopped = true;
-    await this.mcp.close();
+    this.detach();
     this.input.registry.uninstall(defineExtension({ name: this.name }));
   }
 }

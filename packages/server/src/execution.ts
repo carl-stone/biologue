@@ -3,10 +3,8 @@ import type { Actor, Execution, ExecutionSummary, Language } from "@biologue/pro
 import type { Events } from "./events.ts";
 import type { Store } from "./store.ts";
 import { digest } from "./documents.ts";
-import { ExecutionRepository, summarize, displaySummary } from "./execution-repository.ts";
+import { ExecutionRepository, summarize } from "./execution-repository.ts";
 import type { OutputService, KernelOutput } from "./outputs.ts";
-import { analyzeCode, emptyEffects, type CodeEffects } from "./code-effects.ts";
-import { StaleContext, type ContextAcknowledgment } from "./stale-context.ts";
 export type { KernelOutput } from "./outputs.ts";
 
 export interface KernelBackend {
@@ -37,27 +35,23 @@ type Submission = {
   runId?: string;
   toolCallId?: string;
   conversationId?: string;
-  acknowledgment?: ContextAcknowledgment;
   beforeDispatch?: () => void;
 };
 type Job = {
   record: Execution;
   abort: AbortController;
   settled: boolean;
+  dispatched: boolean;
   promise: Promise<Execution>;
   resolve: (record: Execution) => void;
   reject: (error: Error) => void;
-  effects: Promise<CodeEffects>;
   stopping?: Promise<void>;
-  acknowledgment?: ContextAcknowledgment;
   beforeDispatch?: () => void;
 };
-class ContextReviewRequired extends Error {}
 
 /** Sole owner of kernel submissions and their lifetime, for every actor. */
 export class ExecutionService {
   readonly repository: ExecutionRepository;
-  readonly context: StaleContext;
   private queues: Record<Language, Job[]> = { python: [], r: [] };
   private active = new Map<Language, Job>();
   private jobs = new Map<string, Job>();
@@ -73,15 +67,6 @@ export class ExecutionService {
     private cancellationTimeoutMs = 2000,
   ) {
     this.repository = new ExecutionRepository(store);
-    this.context = new StaleContext(store, this.repository);
-    this.repository.migrate((record) => {
-      for (const output of record.outputs) outputs.append(record, output, output);
-      outputs.complete(record);
-      outputs.removeLegacyCopies(record.outputs);
-      const decoded = outputs.result(record.id);
-      if (decoded && !record.inspection)
-        this.repository.update({ ...summarize(record), inspection: decoded.kind });
-    });
     for (const record of this.repository.unfinished())
       this.repository.update({
         ...record,
@@ -95,7 +80,7 @@ export class ExecutionService {
   }
   submit(input: Submission): Execution {
     if (this.closing) throw new Error("Execution service is shutting down.");
-    const { acknowledgment, beforeDispatch, ...submission } = input;
+    const { beforeDispatch, ...submission } = input;
     const record: Execution = {
       ...submission,
       id: randomUUID(),
@@ -132,7 +117,7 @@ export class ExecutionService {
       resolve,
       reject,
       settled: false,
-      acknowledgment,
+      dispatched: false,
       beforeDispatch: setup
         ? () => {
             const configured = this.get(setup.id);
@@ -145,13 +130,9 @@ export class ExecutionService {
             beforeDispatch?.();
           }
         : beforeDispatch,
-      effects:
-        input.purpose === "setup" || (input.purpose === "inspection" && input.inspection)
-          ? Promise.resolve(emptyEffects())
-          : analyzeCode(input.language, input.code),
     };
     this.jobs.set(record.id, job);
-    this.events.emit({ type: "execution", execution: displaySummary(summarize(record)) });
+    this.events.emit({ type: "execution", execution: summarize(record) });
     this.queues[record.language].push(job);
     void this.drain(record.language);
     return structuredClone(record);
@@ -169,7 +150,7 @@ export class ExecutionService {
   }
   private publish(record: Execution) {
     this.repository.update(summarize(record));
-    this.events.emit({ type: "execution", execution: displaySummary(summarize(record)) });
+    this.events.emit({ type: "execution", execution: summarize(record) });
   }
   private async reconcile(language: Language) {
     const record = this.uncertain.get(language);
@@ -229,7 +210,6 @@ export class ExecutionService {
     this.active.set(language, job);
     let captureError: unknown;
     try {
-      const effects = await job.effects;
       abort.signal.throwIfAborted();
       if (job.settled) return;
       await this.reconcile(language);
@@ -256,19 +236,7 @@ export class ExecutionService {
             abort.signal.throwIfAborted();
             Object.assign(record, identity);
             job.beforeDispatch?.();
-            const epoch = identity.kernelGeneration ?? `${identity.sessionId}:${identity.kernelId}`;
-            if (
-              record.actor === "agent" &&
-              record.purpose === "analysis" &&
-              record.conversationId
-            ) {
-              record.contextCheck = this.context.check(record, effects, epoch, job.acknowledgment);
-              if (record.contextCheck.disposition === "review")
-                throw new ContextReviewRequired(
-                  "Not executed: review the relevant runtime changes, inspect affected objects, or acknowledge this warning before retrying.",
-                );
-            }
-            record.activitySequence = this.context.started(record, effects, epoch);
+            job.dispatched = true;
             this.publish(record);
           } else throw new Error("Execution was cancelled before kernel dispatch.");
         },
@@ -283,15 +251,11 @@ export class ExecutionService {
       }
     } catch (error) {
       if (!job.settled) {
-        record.status =
-          error instanceof ContextReviewRequired
-            ? "not_executed"
-            : abort.signal.aborted
-              ? record.activitySequence === undefined
-                ? "cancelled"
-                : "interrupted"
-              : "failed";
-        if (record.status === "not_executed") delete record.startedAt;
+        record.status = abort.signal.aborted
+          ? job.dispatched
+            ? "interrupted"
+            : "cancelled"
+          : "failed";
         record.error = error instanceof Error ? error.message : String(error);
       }
     } finally {
@@ -335,7 +299,7 @@ export class ExecutionService {
       ]);
       if (job.settled) return;
       const { record } = job;
-      record.status = record.activitySequence === undefined ? "cancelled" : "completion_unknown";
+      record.status = !job.dispatched ? "cancelled" : "completion_unknown";
       if (record.status === "completion_unknown") {
         record.kernelUncertain = true;
         record.error =
@@ -395,7 +359,7 @@ export class ExecutionService {
       for (const job of jobs)
         if (!job.settled) {
           job.record.status = "abandoned";
-          job.record.kernelUncertain = job.record.activitySequence !== undefined;
+          job.record.kernelUncertain = job.dispatched;
           job.record.error =
             "Shutdown could not confirm kernel completion. Kernel state may have changed; this code will not be replayed.";
           this.finish(job);

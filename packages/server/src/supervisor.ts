@@ -226,7 +226,6 @@ export class Supervisor {
     try {
       const conversation = await this.sessions.get(run.conversationId);
       active.conversation = conversation;
-      this.execution.context.begin(run.conversationId);
       run.piSessionId = String(conversation.id);
       const runtime = await this.pi.modelRuntime();
       const model = runtime.getModel(run.settings!.provider, run.settings!.model);
@@ -288,7 +287,6 @@ export class Supervisor {
                           timestamp: Date.now(),
                         },
                       ];
-                this.execution.context.observeContext(run.conversationId, request);
                 return { messages: request };
               },
             }),
@@ -360,7 +358,7 @@ export class Supervisor {
         }
         await conversation.waitForIdle(ctx);
       } else {
-        const accepted = this.sessions.receipt(input.inputId!);
+        const accepted = await this.sessions.receipt(run.conversationId, input.inputId!);
         if (!accepted) throw new Error("The saved agent input is missing.");
         if (this.sessions.content(accepted).images.length && !model.input.includes("image"))
           throw new Error(
@@ -771,6 +769,7 @@ export class Supervisor {
     // Close suspends durable work. Explicit Stop aborts it. Kernel requests must drain independently.
     const results = await Promise.allSettled([
       this.harness.close(ctx),
+      this.pi.closeConnections(),
       ...[...this.active.values()].map((a) => this.execution.cancelRun(a.run.id)),
     ]);
     await Promise.allSettled([...this.active.values()].map((a) => a.completion));

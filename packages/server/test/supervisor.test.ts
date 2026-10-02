@@ -182,7 +182,7 @@ test("document identity is checked again after the approval wait", timeout, asyn
     await finished;
     const execution = f.execution.repository.list().items.at(-1)!;
     assert.equal(execution.status, "failed");
-    assert.equal(execution.activitySequence, undefined);
+    assert.equal(execution.status, "failed");
     assert.equal(f.calls.length, 0);
     assert.equal(f.execution.outputs.count(execution.id), 0);
   } finally {
@@ -399,7 +399,7 @@ test("kernel failures become Pi tool errors with recorded evidence", timeout, as
 });
 
 test(
-  "Pi Durable receives pre-execution warnings, retains observations across runs, and can refresh or acknowledge",
+  "approved code uses the current shared state without a mandatory observation review",
   timeout,
   async () => {
     const sent: string[] = [];
@@ -408,12 +408,7 @@ test(
         async execute(_language, code, output, started) {
           started({ sessionId: "shared", kernelId: "kernel" });
           sent.push(code);
-          output({
-            kind: "stream",
-            text: code.includes("def _biologue_inspect")
-              ? JSON.stringify([{ name: "A", type: "list", preview: "[1, 2]" }])
-              : "actual output",
-          });
+          output({ kind: "stream", text: "current output" });
         },
         async interrupt() {},
       },
@@ -426,67 +421,23 @@ test(
         f.execution.submit({ language: "python", actor: "human", code: "A = [10, 20]" }).id,
       );
       f.faux.setResponses([
-        call("inspect_environment", { language: "python", names: ["A"] }),
-        fauxAssistantMessage("I have a preview of A."),
+        call("execute_code", {
+          language: "python",
+          code: "print(A)",
+          reason: "Print current values",
+        }),
+        fauxAssistantMessage("Current values printed."),
       ]);
-      await f.run("Inspect A.");
-      const human = await f.execution.wait(
-        f.execution.submit({ language: "python", actor: "human", code: "A[0] = 1" }).id,
-      );
-      f.faux.setResponses([
-        call("execute_code", { language: "python", code: "print(A)", reason: "Use A" }),
-        fauxAssistantMessage("The input changed; I will reconsider."),
-      ]);
-      await f.run("Continue.");
-      const warning = f.execution.repository.list().items.at(-1)!;
-      assert.equal(warning.status, "not_executed");
-      assert.ok(!sent.includes("print(A)"));
-      const returned = toolResults(f.requests.at(-1)!).at(-1)!;
+      assert.equal((await f.run("Use the current A")).status, "completed");
+      const record = f.execution.get(f.execution.repository.list().items.at(-1)!.id)!;
+      assert.equal(record.status, "succeeded");
+      assert.deepEqual(sent, ["A = [10, 20]", "print(A)"]);
+      assert.deepEqual(Object.keys(toolResults(f.requests.at(-1)!)[0].details!), ["executionId"]);
       assert.equal(
-        returned.isError,
-        false,
-        "A context warning is an actionable result, not a kernel failure",
+        f.store.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'runtime_%'").all()
+          .length,
+        0,
       );
-      const body = contentText(returned.content);
-      assert.match(body, /^Not run/);
-      assert.match(body, /A: may have changed/);
-      assert.ok(body.includes(human.id));
-      assert.ok(body.includes("A[0] = 1"));
-      assert.equal(body.split(warning.id).length - 1, 1);
-      assert.ok(body.length < 900, "A simple warning must fit in a short tool result");
-      assert.doesNotMatch(
-        body,
-        /codeHash|kernelId|sessionId|activitySequence|contextCheck|executed|disposition/,
-      );
-      f.faux.setResponses([
-        call("execute_code", {
-          language: "python",
-          code: "print(A)",
-          reason: "Inspect the updated values",
-          acknowledgment: {
-            warningExecutionId: warning.id,
-            reason: "Printing the updated A is the intended inspection.",
-          },
-        }),
-        fauxAssistantMessage("The updated values were printed."),
-      ]);
-      await f.run("Proceed with the updated A.");
-      assert.equal(sent.filter((code) => code === "print(A)").length, 1);
-      await f.execution.wait(
-        f.execution.submit({ language: "python", actor: "human", code: "A[1] = 3" }).id,
-      );
-      f.faux.setResponses([
-        call("inspect_environment", { language: "python", names: ["A"] }),
-        call("execute_code", {
-          language: "python",
-          code: "print(A)",
-          reason: "Use the fresh preview",
-        }),
-        fauxAssistantMessage("The fresh observation was used."),
-      ]);
-      await f.run("Inspect again and continue.");
-      assert.equal(f.execution.repository.list().items.at(-1)!.status, "succeeded");
-      assert.equal(sent.filter((code) => code === "print(A)").length, 2);
     } finally {
       approve();
       await f.close();
@@ -495,7 +446,7 @@ test(
 );
 
 test(
-  "truncated inspection results only establish observations for the objects actually delivered",
+  "inspection previews remain bounded without blocking code that uses omitted objects",
   timeout,
   async () => {
     const f = await fixture({
@@ -530,7 +481,7 @@ test(
         fauxAssistantMessage("A targeted inspection is needed."),
       ]);
       await f.run("Inspect the environment.");
-      assert.equal(f.execution.repository.list().items.at(-1)!.status, "not_executed");
+      assert.equal(f.execution.repository.list().items.at(-1)!.status, "succeeded");
       const inspection = contentText(toolResults(f.requests.at(-1)!)[0].content);
       assert.equal(inspection.match(/^"object_/gm)?.length, 100);
       assert.match(inspection, /More: inspect_environment offset=100/);
@@ -733,7 +684,7 @@ test("file lists and long file reads expose usable continuation hints", timeout,
 });
 
 test(
-  "historical artifact receipts retain their checkpoint and never credit truncated objects",
+  "historical artifacts remain readable and bounded without blocking execution",
   timeout,
   async () => {
     let rows = [{ name: "A", type: "int", preview: "1" }];
@@ -784,10 +735,7 @@ test(
         ]);
         await f.run("Read the captured artifact and use its object.");
         const record = f.execution.get(f.execution.repository.list().items.at(-1)!.id)!;
-        assert.equal(record.status, "not_executed");
-        const issue = record.contextCheck!.issues.find((issue) => issue.executionId === change.id)!;
-        assert.ok(issue);
-        assert.equal(issue.observedExecutionId, large ? undefined : historical.id);
+        assert.equal(record.status, "succeeded");
         const artifact = toolResults(f.requests.at(-1)!)
           .filter((result) => result.toolName === "read_artifact")
           .at(-1)!;
@@ -1436,8 +1384,8 @@ test(
         1,
       );
       assert.equal(
-        (await f.sessions.history(f.conversationId)).filter(
-          (e) => (e.data as { display?: Message })?.display?.id === receipt.id,
+        (await f.sessions.page(f.conversationId)).items.filter(
+          (message) => message.id === receipt.id,
         ).length,
         1,
       );

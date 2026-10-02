@@ -33,35 +33,6 @@ test("title-cache failure cannot strand a native accepted run", timeout, async (
 });
 
 test(
-  "scientific setup failure after acceptance is terminal and cannot resume as unfinished work",
-  timeout,
-  async () => {
-    const f = await fixture();
-    const begin = f.execution.context.begin.bind(f.execution.context);
-    try {
-      f.execution.context.begin = () => {
-        throw new Error("Scientific source unavailable");
-      };
-      const finished = await f.run("Protect scientific provenance");
-      assert.equal(finished.status, "failed");
-      assert.match(finished.error!, /Scientific source unavailable/);
-      assert.equal(f.requests.length, 0);
-      assert.equal(f.supervisor.isActive(), false);
-      const state = await f.supervisor.harness.snapshot(
-        RunsDoc,
-        (await f.sessions.get(f.conversationId)).id,
-        ctx,
-      );
-      assert.equal(state!.current!.run.status, "failed");
-      assert.ok(state!.current!.run.finishedAt);
-    } finally {
-      f.execution.context.begin = begin;
-      await f.close();
-    }
-  },
-);
-
-test(
   "a failed display write after native acceptance cannot strand or reject a run",
   timeout,
   async () => {
@@ -179,7 +150,7 @@ test(
       assert.equal(f.store.list("run-input").length, 0);
       assert.equal(
         (await f.supervisor.harness.snapshot(InputsDoc, conversation.id, ctx))!.receipts.length,
-        1,
+        0,
       );
     } finally {
       conversation.commit = commit;

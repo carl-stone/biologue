@@ -50,7 +50,8 @@ test(
   "native tool discovery activates deferred MCP tools and resource reads preserve images",
   timeout,
   async () => {
-    let calls = 0;
+    let calls = 0,
+      connections = 0;
     const server = createServer(async (req, res) => {
       if (req.method !== "POST") {
         res.writeHead(405).end();
@@ -64,12 +65,14 @@ test(
         return;
       }
       let result: unknown = {};
-      if (request.method === "initialize")
+      if (request.method === "initialize") {
+        connections++;
         result = {
           protocolVersion: "2025-11-25",
           capabilities: { tools: {}, resources: {} },
           serverInfo: { name: "catalog", version: "1" },
         };
+      }
       if (request.method === "tools/list")
         result = {
           tools: [
@@ -122,6 +125,7 @@ test(
         "completed",
       );
       assert.equal(calls, 2);
+      assert.equal(connections, 1, "Responses share the same MCP connection");
       const history = JSON.stringify(await f.sessions.history(f.conversationId));
       assert.match(history, /"nextCursor":"next"/);
       assert.match(history, /"mimeType":"image\/png"/);
@@ -465,3 +469,178 @@ test(
     }
   },
 );
+
+test(
+  "shared MCP calls keep approvals and cancellation scoped to their own conversation",
+  timeout,
+  async () => {
+    const slow = deferred();
+    let connections = 0;
+    const server = createServer(async (req, res) => {
+      if (req.method !== "POST") {
+        res.writeHead(405).end();
+        return;
+      }
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const message = JSON.parse(body);
+      if (message.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      let result: unknown = {};
+      if (message.method === "initialize") {
+        connections++;
+        result = {
+          protocolVersion: "2025-11-25",
+          capabilities: { tools: {} },
+          serverInfo: { name: "shared", version: "1" },
+        };
+      }
+      if (message.method === "tools/list")
+        result = {
+          tools: [
+            {
+              name: "write",
+              description: "Write a selected item",
+              inputSchema: {
+                type: "object",
+                properties: { item: { type: "string" } },
+                required: ["item"],
+              },
+            },
+          ],
+        };
+      if (message.method === "tools/call") {
+        if (message.params.arguments.item === "slow") {
+          slow.resolve();
+          return;
+        }
+        result = { content: [{ type: "text", text: "Item written" }] };
+      }
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const f = await fixture();
+    const approvals: { runId: string; conversationId?: string }[] = [];
+    const detach = f.events.subscribe((event) => {
+      if (event.type === "permission") {
+        approvals.push({
+          runId: event.request.runId,
+          conversationId: event.request.conversationId,
+        });
+        f.permissions.decide(event.request.id, true);
+      }
+    });
+    try {
+      f.pi.saveMcpServer("shared", {
+        url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        exposure: "direct",
+      });
+      f.faux.setResponses([call("mcp__shared__write", { item: "slow" })]);
+      const first = await f.supervisor.start(f.conversationId, "Start the slow write");
+      await slow.promise;
+      const other = f.context.createConversation("Other");
+      f.faux.setResponses([
+        call("mcp__shared__write", { item: "quick" }),
+        fauxAssistantMessage("Written"),
+      ]);
+      const done = f.finished();
+      const second = await f.supervisor.start(other.id, "Write the other item");
+      assert.equal((await done).id, second.id);
+      assert.equal(f.supervisor.isActive(f.conversationId), true);
+      const cancelled = f.finished();
+      await f.supervisor.cancel(first.id);
+      assert.equal((await cancelled).status, "cancelled");
+      f.faux.setResponses([
+        call("mcp__shared__write", { item: "again" }),
+        fauxAssistantMessage("Written again"),
+      ]);
+      const completed = f.finished();
+      const third = await f.supervisor.start(other.id, "Write once more");
+      assert.equal((await completed).status, "completed");
+      assert.equal(connections, 1, "Stopping one conversation preserves the shared transport");
+      assert.deepEqual(approvals, [
+        { runId: first.id, conversationId: f.conversationId },
+        { runId: second.id, conversationId: other.id },
+        { runId: third.id, conversationId: other.id },
+      ]);
+    } finally {
+      detach();
+      await f.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+test("a failed shared MCP connection can reconnect on the next response", timeout, async () => {
+  let available = false,
+    connections = 0,
+    calls = 0;
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") {
+      res.writeHead(405).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const message = JSON.parse(raw);
+    if (message.id === undefined) {
+      res.writeHead(202).end();
+      return;
+    }
+    if (!available) {
+      res.writeHead(503).end();
+      return;
+    }
+    let result: unknown = {};
+    if (message.method === "initialize") {
+      connections++;
+      result = {
+        protocolVersion: "2025-11-25",
+        capabilities: { tools: {} },
+        serverInfo: { name: "retry", version: "1" },
+      };
+    }
+    if (message.method === "tools/list")
+      result = {
+        tools: [
+          {
+            name: "read",
+            description: "Read an item",
+            annotations: { readOnlyHint: true },
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      };
+    if (message.method === "tools/call") {
+      calls++;
+      result = { content: [{ type: "text", text: "Read" }] };
+    }
+    res
+      .writeHead(200, { "content-type": "application/json" })
+      .end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const f = await fixture();
+  try {
+    f.pi.saveMcpServer("retry", {
+      url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+      exposure: "direct",
+    });
+    f.faux.setResponses([fauxAssistantMessage("Connection unavailable")]);
+    assert.equal((await f.run("Check connection")).status, "completed");
+    available = true;
+    f.faux.setResponses([call("mcp__retry__read", {}), fauxAssistantMessage("Read successfully")]);
+    assert.equal((await f.run("Try again")).status, "completed");
+    assert.equal(connections, 1);
+    assert.equal(calls, 1);
+  } finally {
+    await f.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
