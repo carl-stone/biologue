@@ -175,12 +175,12 @@ flowchart TB
 ```
 
 Run supervision, steering, cancellation, durable input receipts, permissions,
-and Pi Durable conversations are implemented. Supervisor restores scientific
-extensions and tool definitions for every active run before enabling scheduling.
+and Pi Durable conversations are implemented. Supervisor restores project context
+and tool definitions for every active run before enabling scheduling.
 Pi Durable owns task lifetimes and nested code-mode calls. Delegation and workflow
 coordination remain planned; their children will use separate durable conversations
-and the same Biologue services. Native Pi resource, MCP, question, and code-mode
-extensions are adapted as tools; no AgentSession or second agent loop runs.
+and the same Biologue services. Pi resources, MCP, questions, and code mode
+are connected through native tools and extensions; no AgentSession or second agent loop runs.
 
 Task lifetime belongs to the shared service, independently of a parent's active
 model turn. Both callers use a common request containing parent or workflow
@@ -202,10 +202,9 @@ stay within their caller's authorization.
 Pi loads skills and project instructions and compacts its canonical history.
 Pi also manages model-provider configuration and authentication on the
 application side.
-Biologue supplies the scientific collaboration policy, versioned notes, and
-retention instructions that preserve observations, interpretations, assumptions,
-corrections, and uncertainty distinctly. These instructions guide model behavior;
-scientific quality requires evaluation with scientists.
+The default agent is a coding assistant. Project instructions, skills, and
+user-authored notes supply domain-specific behavior. Pi Durable provides standard
+compaction; Biologue does not impose a scientific summary policy.
 
 ## 3. Shared scientific execution
 
@@ -333,10 +332,11 @@ historical bytes. Display identities are scoped to a kernel generation, so a
 restart cannot silently overwrite an earlier figure. The workbench and agent
 tools retrieve the same recorded evidence without rerunning code.
 
-The project state directory holds application SQLite, Pi Durable SQLite, legacy
-session files, and artifact blobs; back up the entire directory. Legacy histories
-are imported on first access, including unsent corrections and interrupted tool
-results, without executing historical calls. The durable database uses SQLite
+The project state directory holds application SQLite, Pi Durable SQLite, and
+artifact blobs; back up the entire directory. There is no legacy-chat import.
+Each conversation keeps its latest run state rather than a growing run archive.
+The application retains original message display metadata and pending content;
+Durable owns delivered model content and task history. The durable database uses SQLite
 WAL with synchronous FULL and a process ownership record that prevents concurrent
 harness writers. Shutdown suspends work; explicit Stop aborts it. On restart,
 unfinished model requests can resume, while interrupted scientific tools settle
@@ -354,6 +354,6 @@ without prescribing internal class structure or API details.
 | View                            | Main implementation anchors                                                                                                                                                                                                                                                                                |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1 · Workbench and project       | [Workbench](packages/workbench/src/App.tsx), [API composition](packages/server/src/app.ts), [documents](packages/server/src/documents.ts), [editor synchronization](packages/workbench/src/document-sync.ts), [context](packages/server/src/context.ts), [attachments](packages/server/src/attachments.ts) |
-| 2 · Agents and workflows        | [Supervisor](packages/server/src/supervisor.ts), [Pi adapter](packages/server/src/pi.ts), [scientific extension](packages/pi-science/index.ts), [permissions](packages/server/src/permissions.ts), [workspace tools](packages/server/src/workspace-tools.ts)                                               |
+| 2 · Agents and workflows        | [Supervisor](packages/server/src/supervisor.ts), [Pi adapter](packages/server/src/pi.ts), [permissions](packages/server/src/permissions.ts), [workspace tools](packages/server/src/workspace-tools.ts)                                                                                                     |
 | 3 · Shared scientific execution | [ExecutionService](packages/server/src/execution.ts), [kernel client](packages/server/src/kernels.ts), [language adapters](packages/server/src/adapters.ts), [context checks](packages/server/src/stale-context.ts), [environment refresh](packages/server/src/environment.ts)                             |
 | 4 · Evidence and persistence    | [Conversation sessions](packages/server/src/conversation-sessions.ts), [execution repository](packages/server/src/execution-repository.ts), [outputs](packages/server/src/outputs.ts), [SQLite store](packages/server/src/store.ts)                                                                        |

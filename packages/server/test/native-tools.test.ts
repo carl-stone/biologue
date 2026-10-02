@@ -135,7 +135,7 @@ test(
 );
 
 test(
-  "scientific summary requests and spend belong to one native child conversation",
+  "native compaction records spend in its conversation without creating a child agent",
   timeout,
   async () => {
     const f = await fixture({
@@ -170,11 +170,11 @@ test(
         (tx) => tx.scanConversations({ ownerConversationId: conversation.id }, 100),
         ctx,
       );
-      assert.equal(children.items.length, 1);
-      const child = (await f.supervisor.harness.conversation(children.items[0].id, ctx))!;
-      const entries = await child.entries({}, 100, undefined, ctx);
-      assert.ok(entries.items.some((e) => e.kind === "pi.assistant"));
-      const usage = await f.supervisor.harness.snapshot(UsageDoc, child.id, ctx);
+      assert.equal(children.items.length, 0);
+      assert.ok(
+        (await f.sessions.history(f.conversationId)).some((e) => e.kind === "pi.compaction"),
+      );
+      const usage = await f.supervisor.harness.snapshot(UsageDoc, conversation.id, ctx);
       const native = Object.values(usage!.models).reduce(
         (sum, model) => sum + model.totalTokens,
         0,

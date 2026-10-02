@@ -5,7 +5,7 @@ import type { JsonRepresentation } from "@earendil-works/chord";
 
 export type InputReceipt = {
   message: Message;
-  content: { text: string; images: ImageContent[] };
+  content?: { text: string; images: ImageContent[] };
   conversation: number;
   restoredEntry?: number;
   discarded?: boolean;
@@ -21,7 +21,7 @@ export const InputsDoc = defineDoc({
   initial: () => ({ receipts: [] as JsonRepresentation<InputReceipt>[] }),
 });
 
-export type StoredRun = { run: AgentRun; prompt: string; inputId?: string; compactionId?: number };
+export type StoredRun = { run: AgentRun; inputId?: string; compactionId?: number };
 /** UI identity and scientific policy, not a scheduler or another task journal. */
 export const RunsDoc = defineDoc({
   kind: "biologue.runs",
@@ -29,5 +29,5 @@ export const RunsDoc = defineDoc({
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ runs: [] as JsonRepresentation<StoredRun>[] }),
+  initial: () => ({ current: null as JsonRepresentation<StoredRun> | null }),
 });

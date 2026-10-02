@@ -10,6 +10,8 @@ import {
   defineExtension,
   UsageDoc,
   CompactionTask,
+  GenerationTask,
+  hook,
   LiveDoc,
   type TaskId,
   type CompactionResult,
@@ -35,7 +37,6 @@ import type { DurableTools } from "./durable-tools.ts";
 import { ConversationSessions } from "./conversation-sessions.ts";
 import { RunsDoc, type StoredRun } from "./durable-state.ts";
 import { workspaceTools } from "./workspace-tools.ts";
-import { createScientificExtension } from "../../pi-science/index.ts";
 
 function contextUsage(messages: readonly PiMessage[], contextWindow: number) {
   let index = messages.length - 1;
@@ -69,7 +70,7 @@ type ActiveRun = {
   stopping?: Promise<void>;
 };
 
-/** Biologue supplies scientific policy; Pi Durable owns all scheduling, admission and recovery. */
+/** Workbench integration; Pi Durable owns scheduling, admission, compaction and recovery. */
 export class Supervisor {
   private active = new Map<string, ActiveRun>();
   private closing = false;
@@ -103,7 +104,7 @@ export class Supervisor {
       const page = await this.harness.commit((tx) => tx.scanConversations({}, 100, cursor), ctx);
       for (const conversation of page.items) {
         const state = await this.harness.snapshot(RunsDoc, conversation.id, ctx);
-        for (const saved of state?.runs ?? []) {
+        for (const saved of state?.current ? [state.current] : []) {
           try {
             this.store.put("run", saved.run.id, saved.run);
           } catch (error) {
@@ -172,7 +173,7 @@ export class Supervisor {
       }),
     );
     try {
-      const saved: StoredRun = { run, prompt: this.prompt };
+      const saved: StoredRun = { run };
       if (run.kind !== "compaction") {
         const accepted = await this.sessions.accept(conversationId, text, run.id, options, saved);
         saved.inputId = accepted.id;
@@ -184,7 +185,7 @@ export class Supervisor {
       } else {
         const conversation = await this.sessions.get(conversationId);
         await conversation.commit(async (tx) => {
-          (await tx.doc(RunsDoc, conversation.id)).runs.push(JSON.parse(JSON.stringify(saved)));
+          (await tx.doc(RunsDoc, conversation.id)).current = JSON.parse(JSON.stringify(saved));
         }, ctx);
       }
       this.launch(run, saved, false);
@@ -250,69 +251,46 @@ export class Supervisor {
           ),
       });
       active.session = tools;
-      const science = createScientificExtension({
-        prompt: input.prompt,
-        research: () => this.context.get(),
-        mode: run.settings?.mode,
-        harness: this.harness,
-        registry: this.registry,
-        conversationId: conversation.id,
-        model: { provider: model.provider, modelId: model.id },
-        guardRequest: (messages, maxTokens) => {
-          this.pi.guardRequest(
-            messages,
-            () => {
-              if (active.integrationError) throw active.integrationError;
-              if (run.status !== "running" || this.closing) throw new Error("Agent run stopped.");
-            },
-            maxTokens,
-          );
-        },
-        onContext: (messages) => {
-          try {
-            run.usage = {
-              tokens: run.usage?.tokens ?? {
-                input: 0,
-                output: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                total: 0,
-              },
-              cost: run.usage?.cost ?? 0,
-              subscription: runtime.isUsingSubscription(model.provider),
-              context: contextUsage(messages, model.contextWindow),
-            };
-            this.execution.context.observeContext(run.conversationId, [...messages]);
-            const id = randomUUID();
-            this.store.put("run-request", id, {
-              id,
-              runId: run.id,
-              piSessionId: String(conversation.id),
-              contextVersion: this.context.get().version,
-              createdAt: new Date().toISOString(),
-              model: { provider: model.provider, id: model.id },
-              messages,
-            });
-          } catch (error) {
-            this.failure(active, "Record model context", error);
-            void this.stop(active);
-          }
-        },
-        onError: (error) => {
-          this.failure(active, "Scientific context", error);
-          void this.stop(active);
-        },
-      });
-      const scienceName = `biologue-science:${run.conversationId}`;
-      this.registry.install({ ...science, name: scienceName });
-      const guardName = `biologue-guard:${run.conversationId}`;
+      const agentName = `biologue-agent:${run.conversationId}`;
       this.registry.install(
         defineExtension({
-          name: guardName,
+          name: agentName,
           sections: [
-            section("integration_guard", () => {
-              if (active.integrationError) throw active.integrationError;
-              return undefined;
+            section("preamble", () => this.prompt, { tag: false }),
+            section("project_notes", () => this.context.get().text || undefined),
+            section("permission_mode", () =>
+              run.settings?.mode === "plan"
+                ? "Plan mode: read and inspect; do not edit files or execute code."
+                : `Permission mode: ${run.settings?.mode ?? "ask"}. Use workspace tools for edits and execution.`,
+            ),
+          ],
+          hooks: [
+            hook(GenerationTask, {
+              beforeRequest: ({ messages }) => {
+                // A recovered generation has a pinned request. Apply the user's
+                // current notes without modifying its recorded history.
+                const notes = this.context.get().text;
+                const shown = messages
+                  .filter((m) => m.role === "system")
+                  .map((m) => m.sections?.project_notes)
+                  .filter((s) => s !== undefined)
+                  .at(-1);
+                const current = notes ? `<project_notes>\n${notes}\n</project_notes>` : undefined;
+                const request =
+                  shown === current
+                    ? messages
+                    : [
+                        ...messages,
+                        {
+                          role: "system" as const,
+                          content: "",
+                          sections: { project_notes: current ?? "" },
+                          timestamp: Date.now(),
+                        },
+                      ];
+                this.execution.context.observeContext(run.conversationId, request);
+                return { messages: request };
+              },
             }),
           ],
         }),
@@ -321,7 +299,7 @@ export class Supervisor {
         {
           model: { provider: model.provider, modelId: model.id },
           thinkingLevel: run.settings!.thinking as never,
-          extensions: [{ name: scienceName }, { name: tools.name }, { name: guardName }],
+          extensions: [{ name: agentName }, { name: tools.name }],
           cwd: this.documents.root,
         },
         ctx,
@@ -336,6 +314,12 @@ export class Supervisor {
       stream.start(async (events) => {
         try {
           this.consume(active, events);
+          if (
+            events.some((event) => event.type === "message_end" || event.type === "compaction_end")
+          ) {
+            await this.updateUsage(active);
+            this.publish(active);
+          }
         } catch (error) {
           this.failure(active, "Conversation update", error);
           void this.stop(active);
@@ -344,9 +328,7 @@ export class Supervisor {
       if (run.kind === "compaction") {
         // Bind the app run and native task in the same durable transaction.
         const id = await conversation.commit(async (tx) => {
-          const saved = (await tx.doc(RunsDoc, conversation.id)).runs.find(
-            (r) => r.run.id === run.id,
-          )!;
+          const saved = (await tx.doc(RunsDoc, conversation.id)).current!;
           const existing = saved.compactionId;
           if (existing !== undefined) return existing as TaskId<CompactionResult>;
           const taskId = await tx.createTask(
@@ -367,15 +349,14 @@ export class Supervisor {
         await this.submitQueued(active);
         const task = await this.harness.waitForTask(id, ctx);
         if (task.state.outcome.status !== "completed")
-          throw new Error(`Scientific compaction ${task.state.outcome.status}.`);
+          throw new Error(`Compaction ${task.state.outcome.status}.`);
         if (task.state.outcome.result.submissionId) {
           const submission = await this.harness.submission(
             task.state.outcome.result.submissionId,
             ctx,
           );
           const settled = await submission!.wait(ctx);
-          if (settled.status !== "done")
-            throw new Error(`Scientific compaction ${settled.reason}.`);
+          if (settled.status !== "done") throw new Error(`Compaction ${settled.reason}.`);
         }
         await conversation.waitForIdle(ctx);
       } else {
@@ -499,6 +480,8 @@ export class Supervisor {
       } catch (error) {
         this.failure(active, "Dispose Pi tools", error);
       }
+      this.registry.uninstall(defineExtension({ name: `biologue-agent:${run.conversationId}` }));
+      this.registry.uninstall(defineExtension({ name: `biologue-failed:${run.conversationId}` }));
       this.attempt(active, "Cancel questions", () => this.dialogs.cancelRun(run.id));
       this.attempt(active, "Cancel permissions", () => this.permissions.cancelRun(run.id));
       try {
@@ -615,31 +598,16 @@ export class Supervisor {
     if (!active.conversation) return;
     const sums = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
     let cost = 0;
-    // Native child conversations own summary requests and usage. Aggregate their
-    // spend for display without copying it into the parent's durable accounts.
-    const pending = [active.conversation.id];
-    while (pending.length) {
-      const id = pending.shift()!;
-      const usage = await this.harness.snapshot(UsageDoc, id, ctx);
-      if (usage)
-        for (const bucket of [...Object.values(usage.models), ...Object.values(usage.tools)]) {
-          sums.input += bucket.input;
-          sums.output += bucket.output;
-          sums.cacheRead += bucket.cacheRead;
-          sums.cacheWrite += bucket.cacheWrite;
-          sums.total += bucket.totalTokens;
-          cost += bucket.cost.total;
-        }
-      let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
-      do {
-        const page = await this.harness.commit(
-          (tx) => tx.scanConversations({ ownerConversationId: id }, 100, cursor),
-          ctx,
-        );
-        pending.push(...page.items.map((child) => child.id));
-        cursor = page.next;
-      } while (cursor);
-    }
+    const usage = await this.harness.snapshot(UsageDoc, active.conversation.id, ctx);
+    if (usage)
+      for (const bucket of [...Object.values(usage.models), ...Object.values(usage.tools)]) {
+        sums.input += bucket.input;
+        sums.output += bucket.output;
+        sums.cacheRead += bucket.cacheRead;
+        sums.cacheWrite += bucket.cacheWrite;
+        sums.total += bucket.totalTokens;
+        cost += bucket.cost.total;
+      }
     const runtime = await this.pi.modelRuntime();
     const settings = active.run.settings!;
     const model = runtime.getModel(settings.provider, settings.model);
@@ -679,10 +647,8 @@ export class Supervisor {
     const conversation =
       active.conversation ?? (await this.sessions.get(active.run.conversationId));
     await conversation.commit(async (tx) => {
-      const saved = (await tx.doc(RunsDoc, conversation.id)).runs.find(
-        (r) => r.run.id === active.run.id,
-      );
-      if (saved) saved.run = JSON.parse(JSON.stringify(active.run));
+      const saved = (await tx.doc(RunsDoc, conversation.id)).current;
+      if (saved?.run.id === active.run.id) saved.run = JSON.parse(JSON.stringify(active.run));
     }, ctx);
   }
   private publish(active: ActiveRun, emit = true) {

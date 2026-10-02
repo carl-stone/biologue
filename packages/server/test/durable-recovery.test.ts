@@ -325,7 +325,7 @@ for (const scenario of ["provider", "question"])
     },
   );
 test(
-  "recovery installs every active conversation's tools and scientific policy before scheduling",
+  "recovery installs every active conversation's tools and project context before scheduling",
   { timeout: 90_000 },
   async () => {
     const killed = await crash("providers");
@@ -360,7 +360,7 @@ test(
   },
 );
 test(
-  "a committed scientific summary survives SIGKILL before placement without another model request or duplicate usage",
+  "a committed native summary survives SIGKILL without another model request or duplicate usage",
   { timeout: 90_000 },
   async () => {
     const killed = await crash("summary");
@@ -389,7 +389,7 @@ test(
 );
 
 test(
-  "failed recovery setup cannot start another conversation before its scientific policy is installed",
+  "failed recovery setup cannot start another conversation before its project context is installed",
   { timeout: 90_000 },
   async () => {
     const killed = await crash("providers");
@@ -407,8 +407,7 @@ test(
             RunsDoc,
             Number(first.piSessionId) as import("@earendil-works/pi-durable").ConversationId,
           );
-          state.runs.find((saved) => saved.run.id === first.id)!.run.settings!.model =
-            "removed-model";
+          state.current!.run.settings!.model = "removed-model";
         }, ctx);
         context.update(
           "Newest correction: the biological unit is the donor.",
@@ -456,7 +455,7 @@ test(
       );
       assert.equal(
         f.store.list<{ runId: string }>("run-request").filter((r) => r.runId === second.id).length,
-        2,
+        0,
       );
     } finally {
       await f.close();

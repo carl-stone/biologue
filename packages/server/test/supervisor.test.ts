@@ -12,7 +12,6 @@ import {
 } from "@earendil-works/pi-ai";
 import type { Execution, Message } from "@biologue/protocol";
 import { collaboratorPrompt, deferred, fixture } from "./helpers/pi-fixture.ts";
-import { scientificRetention } from "../src/pi.ts";
 import { ConversationSessions } from "../src/conversation-sessions.ts";
 import { digest } from "../src/documents.ts";
 import { BACKGROUND_CONTEXT as durableContext } from "@earendil-works/chord/context";
@@ -81,7 +80,7 @@ for (const includeCode of [true, false])
         assert.ok(existsSync(join(f.stateDir, "pi", "durable.sqlite")));
         assert.equal(f.store.list("transcript").length, 0);
         assert.equal(f.store.list("message").length, 0);
-        assert.ok(f.store.list("run-request").length >= 2);
+        assert.equal(f.store.list("run-request").length, 0);
       } finally {
         await f.close();
       }
@@ -192,7 +191,7 @@ test("document identity is checked again after the approval wait", timeout, asyn
 });
 
 test(
-  "a reopened session receives corrected scientific notes and the prior conversation",
+  "a reopened session receives current project notes and the prior conversation",
   timeout,
   async () => {
     let f = await fixture();
@@ -217,11 +216,11 @@ test(
       const request = f.requests.at(-1)!;
       const systems = request.messages.filter((message) => message.role === "system");
       assert.equal(systems[0].sections?.preamble, collaboratorPrompt);
-      assert.ok(systems[0].sections?.scientific_workspace);
+      assert.equal(systems[0].sections?.scientific_workspace, undefined);
       assert.equal(systems[0].sections?.scientific_retention, undefined);
       assert.match(
         systems.map(getSystemMessageText).join("\n"),
-        /version 2[\s\S]*function was measured separately/,
+        /function was measured separately/,
       );
       assert.match(textOf(request), /The shape looks different/);
       assert.match(textOf(request), /Which observation/);
@@ -857,7 +856,7 @@ test("captured plots can reach the model without another kernel execution", time
 });
 
 test(
-  "automatic compaction uses scientific retention instructions and preserves raw history",
+  "native automatic compaction preserves raw history and current project notes",
   timeout,
   async () => {
     const f = await fixture({
@@ -891,12 +890,15 @@ test(
       assert.equal(run.status, "completed", run.error);
       const summaryRequests = f.requests.filter((request) =>
         request.messages.some(
-          (message) => message.role === "system" && message.sections?.scientific_retention,
+          (message) =>
+            message.role === "system" &&
+            getSystemMessageText(message).includes("context summarization assistant"),
         ),
       );
       assert.ok(summaryRequests.length);
-      for (const request of summaryRequests)
-        assert.equal(textOf(request).split(scientificRetention.split("\n")[0]).length - 1, 1);
+      assert.ok(
+        summaryRequests.every((request) => !textOf(request).includes("scientific_retention")),
+      );
       assert.ok(
         (await f.sessions.history(f.conversationId)).some(
           (entry) => entry.kind === "pi.compaction",
@@ -1062,57 +1064,49 @@ test(
   },
 );
 
-test(
-  "a failed scientific compaction stops visibly without a generic fallback or lost history",
-  timeout,
-  async () => {
-    const f = await fixture({
-      settings: { compaction: { enabled: true, reserveTokens: 95_000, keepRecentTokens: 100 } },
+test("a failed native compaction stops visibly without lost history", timeout, async () => {
+  const f = await fixture({
+    settings: { compaction: { enabled: true, reserveTokens: 95_000, keepRecentTokens: 100 } },
+  });
+  try {
+    const manager = await f.sessions.get(f.conversationId);
+    await appendMessage(manager, {
+      role: "user",
+      content: "Keep the matched control. ".repeat(1500),
+      timestamp: Date.now() - 1000,
     });
-    try {
-      const manager = await f.sessions.get(f.conversationId);
-      await appendMessage(manager, {
-        role: "user",
-        content: "Keep the matched control. ".repeat(1500),
-        timestamp: Date.now() - 1000,
-      });
-      await appendMessage(manager, {
-        role: "user",
-        content: "Recent question: the matched control is still required. ".repeat(100),
-        timestamp: Date.now() - 950,
-      });
-      const old = fauxAssistantMessage("The interpretation remains unresolved.", {
-        timestamp: Date.now() - 900,
-      });
-      old.usage = { ...old.usage, input: 9000, totalTokens: 9010 };
-      await appendMessage(manager, old);
-      f.faux.setResponses([
-        fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid test credentials" }),
-      ]);
-      const run = await f.run("Continue the investigation.");
-      assert.equal(run.status, "failed");
-      assert.match(run.error!, /Scientific context compaction failed/);
-      assert.equal(
-        f.faux.state.callCount,
-        1,
-        "Only the failed scientific summary; no generic fallback or subsequent generation",
-      );
-      assert.ok(textOf(f.requests.at(-1)!).includes(scientificRetention.split("\n")[0]));
-      assert.ok(
-        !(await f.sessions.history(f.conversationId)).some(
-          (entry) => entry.kind === "pi.compaction",
-        ),
-      );
-      assert.ok(
-        (await f.sessions.page(f.conversationId, 200)).items.some((message) =>
-          message.text.startsWith("Keep the matched control"),
-        ),
-      );
-    } finally {
-      await f.close();
-    }
-  },
-);
+    await appendMessage(manager, {
+      role: "user",
+      content: "Recent question: the matched control is still required. ".repeat(100),
+      timestamp: Date.now() - 950,
+    });
+    const old = fauxAssistantMessage("The interpretation remains unresolved.", {
+      timestamp: Date.now() - 900,
+    });
+    old.usage = { ...old.usage, input: 9000, totalTokens: 9010 };
+    await appendMessage(manager, old);
+    f.faux.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid test credentials" }),
+    ]);
+    const done = f.finished();
+    await f.supervisor.start(f.conversationId, "", { kind: "compaction" });
+    const run = await done;
+    assert.equal(run.status, "failed");
+    assert.match(run.error!, /Invalid test credentials|compaction/i);
+    assert.equal(f.faux.state.callCount, 1, "The manual summary failure does not start a response");
+    assert.doesNotMatch(textOf(f.requests.at(-1)!), /scientific_retention/);
+    assert.ok(
+      !(await f.sessions.history(f.conversationId)).some((entry) => entry.kind === "pi.compaction"),
+    );
+    assert.ok(
+      (await f.sessions.page(f.conversationId, 200)).items.some((message) =>
+        message.text.startsWith("Keep the matched control"),
+      ),
+    );
+  } finally {
+    await f.close();
+  }
+});
 
 test(
   "cancellation during Pi authentication preflight preserves the unsent prompt",
@@ -1155,7 +1149,7 @@ test(
 );
 
 test(
-  "manual durable compaction receives scientific policy, current notes and retains original evidence",
+  "manual native compaction retains original history without a policy extension",
   timeout,
   async () => {
     const f = await fixture({
@@ -1186,8 +1180,7 @@ test(
       const run = await done;
       assert.equal(run.status, "completed", run.error);
       assert.equal(f.requests.length, 1);
-      assert.match(textOf(f.requests[0]), /samples share one donor/);
-      assert.equal(textOf(f.requests[0]).split(scientificRetention.split("\n")[0]).length - 1, 1);
+      assert.doesNotMatch(textOf(f.requests[0]), /scientific_retention/);
       const history = await f.sessions.history(f.conversationId);
       assert.ok(history.some((e) => e.kind === "pi.compaction"));
       assert.ok(
@@ -1236,7 +1229,7 @@ test(
 );
 
 test(
-  "scientific summaries retry transient errors and include every attempt in durable usage",
+  "native summaries retry transient errors and include every attempt in durable usage",
   timeout,
   async () => {
     const f = await fixture({
@@ -1299,7 +1292,7 @@ test(
           r.messages.some(
             (m) =>
               m.role === "system" &&
-              m.sections?.scientific_retention?.includes(scientificRetention),
+              getSystemMessageText(m).includes("context summarization assistant"),
           ),
         ),
       );
@@ -1310,7 +1303,7 @@ test(
 );
 
 test(
-  "scientific compaction retains raw image evidence without sending base64 as scientific observations",
+  "native compaction keeps original images out of the text summary request",
   timeout,
   async () => {
     const f = await fixture({
@@ -1454,31 +1447,27 @@ test(
   },
 );
 
-test(
-  "native model dispatch fails closed when the scientific extension is missing",
-  timeout,
-  async () => {
-    const f = await fixture();
-    try {
-      const conversation = await f.sessions.get(f.conversationId);
-      await conversation.configure(
-        { model: { provider: f.options.provider, modelId: f.options.modelId } },
-        durableContext,
-      );
-      f.faux.setResponses([fauxAssistantMessage("This unguarded response must not be requested")]);
-      const submission = await conversation.submit(
-        { type: "input", content: "Unconfigured scientific request" },
-        durableContext,
-      );
-      const settled = await submission.wait(durableContext);
-      assert.equal(settled.status, "unanswered");
-      assert.equal(f.requests.length, 0);
-      assert.equal(f.calls.length, 0);
-    } finally {
-      await f.close();
-    }
-  },
-);
+test("native model dispatch works without a custom policy extension", timeout, async () => {
+  const f = await fixture();
+  try {
+    const conversation = await f.sessions.get(f.conversationId);
+    await conversation.configure(
+      { model: { provider: f.options.provider, modelId: f.options.modelId } },
+      durableContext,
+    );
+    f.faux.setResponses([fauxAssistantMessage("Native response without an extension")]);
+    const submission = await conversation.submit(
+      { type: "input", content: "Unconfigured scientific request" },
+      durableContext,
+    );
+    const settled = await submission.wait(durableContext);
+    assert.equal(settled.status, "done");
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await f.close();
+  }
+});
 
 test(
   "clearing startup corrections prevents their admission while the clear is in progress",
@@ -1543,44 +1532,39 @@ test(
   },
 );
 
-test(
-  "native compaction also fails closed when the scientific extension is missing",
-  timeout,
-  async () => {
-    const f = await fixture({
-      settings: { compaction: { enabled: false, keepRecentTokens: 100 } },
+test("native compaction works without a custom policy extension", timeout, async () => {
+  const f = await fixture({
+    settings: { compaction: { enabled: false, keepRecentTokens: 100 } },
+  });
+  try {
+    const conversation = await f.sessions.get(f.conversationId);
+    await conversation.configure(
+      { model: { provider: f.options.provider, modelId: f.options.modelId } },
+      durableContext,
+    );
+    await appendMessage(conversation, {
+      role: "user",
+      content: "Original biological measurements. ".repeat(1000),
+      timestamp: Date.now(),
     });
-    try {
-      const conversation = await f.sessions.get(f.conversationId);
-      await conversation.configure(
-        { model: { provider: f.options.provider, modelId: f.options.modelId } },
-        durableContext,
-      );
-      await appendMessage(conversation, {
-        role: "user",
-        content: "Original biological measurements. ".repeat(1000),
-        timestamp: Date.now(),
-      });
-      await appendMessage(conversation, {
-        role: "user",
-        content: "Current unresolved question. ".repeat(1000),
-        timestamp: Date.now(),
-      });
-      f.faux.setResponses([fauxAssistantMessage("An unguarded summary must not be requested")]);
-      const task = await f.supervisor.harness.waitForTask(
-        await conversation.compact(undefined, durableContext),
-        durableContext,
-      );
-      assert.equal(task.state.outcome.status, "faulted");
-      assert.equal(f.requests.length, 0);
-      assert.equal(f.faux.state.callCount, 0);
-      assert.equal(
-        (await f.sessions.history(f.conversationId)).filter((e) => e.kind === "pi.compaction")
-          .length,
-        0,
-      );
-    } finally {
-      await f.close();
-    }
-  },
-);
+    await appendMessage(conversation, {
+      role: "user",
+      content: "Current unresolved question. ".repeat(1000),
+      timestamp: Date.now(),
+    });
+    f.faux.setResponses([fauxAssistantMessage("Native summary without an extension")]);
+    const task = await f.supervisor.harness.waitForTask(
+      await conversation.compact(undefined, durableContext),
+      durableContext,
+    );
+    assert.equal(task.state.outcome.status, "completed");
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.faux.state.callCount, 1);
+    assert.equal(
+      (await f.sessions.history(f.conversationId)).filter((e) => e.kind === "pi.compaction").length,
+      1,
+    );
+  } finally {
+    await f.close();
+  }
+});

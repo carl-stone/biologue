@@ -52,8 +52,8 @@ test(
         (await f.sessions.get(f.conversationId)).id,
         ctx,
       );
-      assert.equal(state!.runs[0].run.status, "failed");
-      assert.ok(state!.runs[0].run.finishedAt);
+      assert.equal(state!.current!.run.status, "failed");
+      assert.ok(state!.current!.run.finishedAt);
     } finally {
       f.execution.context.begin = begin;
       await f.close();
@@ -91,7 +91,7 @@ test(
           RunsDoc,
           (await f.sessions.get(f.conversationId)).id,
           ctx,
-        ))!.runs.find((r) => r.run.id === run.id)!.run.status,
+        ))!.current!.run.status,
         "completed",
       );
     } finally {
@@ -305,36 +305,20 @@ test(
   },
 );
 
-test(
-  "failed model-context provenance stops provider dispatch and scientific tools",
-  timeout,
-  async () => {
-    const f = await fixture();
-    try {
-      f.faux.setResponses([
-        fauxAssistantMessage(
-          fauxToolCall("execute_code", {
-            language: "python",
-            code: "must_not_dispatch()",
-            reason: "Test a failed context record",
-          }),
-          { stopReason: "toolUse" },
-        ),
-      ]);
-      const put = f.store.put.bind(f.store);
-      f.store.put = (kind, id, value) => {
-        if (kind === "run-request") throw new Error("Context storage unavailable");
-        return put(kind, id, value);
-      };
-      const run = await f.run("Inspect the shared object.");
-      assert.equal(run.status, "failed");
-      assert.equal(run.endReason, "integration_error");
-      assert.match(run.error!, /Context storage unavailable/);
-      assert.equal(f.faux.state.callCount, 0);
-      assert.equal(f.calls.length, 0);
-      assert.equal(f.permissions.list().length, 0);
-    } finally {
-      await f.close();
-    }
-  },
-);
+test("unused request-journal failures cannot block native model dispatch", timeout, async () => {
+  const f = await fixture();
+  const put = f.store.put.bind(f.store);
+  try {
+    f.store.put = (kind, id, value) => {
+      if (kind === "run-request") throw new Error("The removed journal must not be used");
+      return put(kind, id, value);
+    };
+    f.faux.setResponses([fauxAssistantMessage("Completed without a second request journal")]);
+    assert.equal((await f.run("Answer with the native harness")).status, "completed");
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.store.list("run-request").length, 0);
+  } finally {
+    f.store.put = put;
+    await f.close();
+  }
+});

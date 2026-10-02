@@ -81,7 +81,7 @@ test("harness API persists conversation settings, rejects unavailable models and
     assert.equal(removed.statusCode, 200, removed.body);
     assert.equal(pi.mcpServers().length, 0);
     const resources = (await f.app.inject({ url: "/api/agent/resources" })).json();
-    assert.ok(resources.prompts.some((item: { name: string }) => item.name === "review-analysis"));
+    assert.ok(!resources.prompts.some((item: { name: string }) => item.name === "review-analysis"));
   } finally {
     await f.app.close();
     rmSync(project, { recursive: true, force: true });

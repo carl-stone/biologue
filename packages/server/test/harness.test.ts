@@ -48,7 +48,8 @@ test(
       assert.equal(branch[0].createdAt, original.createdAt);
       assert.equal(branch[0].conversationId, child.id);
       assert.deepEqual(branch[0].attachments, [attachment]);
-      assert.deepEqual(reopened.content(branch[0]).images, [image]);
+      assert.deepEqual(reopened.content(branch[0]).images, []);
+      assert.ok(JSON.stringify(await reopened.history(child.id)).includes(image.data));
       assert.equal((await reopened.pending(child.id)).length, 0);
       assert.equal((await reopened.pending(f.conversationId)).length, 1);
       const rebuilt = (await reopened.page(f.conversationId)).items;

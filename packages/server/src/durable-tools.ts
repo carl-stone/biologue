@@ -181,7 +181,7 @@ export class DurableTools {
     return defineTool({
       name: "ask_user",
       description:
-        "Ask the scientist a question when their answer matters to the next scientific decision. Provide suggested options or request free text.",
+        "Ask the user a focused question when their answer is needed to continue. Provide suggested options or request free text.",
       replay: "safe",
       parameters: Type.Object({
         question: Type.String(),
@@ -293,7 +293,7 @@ export class DurableTools {
     }));
     return defineTool({
       name: "codemode",
-      description: `Run JavaScript that calls workspace or MCP tools, chains calls, or filters results. Scientific execution and inspection must use workspace tools. Use text() or return for output; store()/load() retain JSON values. Discover MCP tools with searchTools(query, {limit, namespace}), describeTool(name), or describeNamespace(name). Scripts have no filesystem, network, or shell access.\n${renderDeclarations({ tools })}`,
+      description: `Run JavaScript that calls workspace or MCP tools, chains calls, or filters results. R/Python execution and inspection use workspace tools. Use text() or return for output; store()/load() retain JSON values. Discover MCP tools with searchTools(query, {limit, namespace}), describeTool(name), or describeNamespace(name). Scripts have no filesystem, network, or shell access.\n${renderDeclarations({ tools })}`,
       replay: "unsafe",
       parameters: Type.Object({ code: Type.String() }),
       execute: (args, api, context) => this.code(args.code, api, context),
@@ -432,5 +432,6 @@ export class DurableTools {
   async stop() {
     this.stopped = true;
     await this.mcp.close();
+    this.input.registry.uninstall(defineExtension({ name: this.name }));
   }
 }

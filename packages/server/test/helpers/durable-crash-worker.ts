@@ -65,7 +65,7 @@ if (scenario.startsWith("summary")) {
             c.type === "document" &&
             c.record.kind === "pi.usage" &&
             publication.changes.some(
-              (change) => change.type === "entry" && change.value.kind === "pi.assistant",
+              (change) => change.type === "entry" && change.value.kind === "pi.compaction",
             )) ||
           (scenario === "summary-admitted" &&
             c.type === "task" &&

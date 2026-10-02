@@ -174,8 +174,8 @@ export class ConversationSessions {
     await conversation.commit(async (tx) => {
       (await tx.doc(InputsDoc, conversation.id)).receipts.push(JSON.parse(JSON.stringify(receipt)));
       if (run)
-        (await tx.doc(RunsDoc, conversation.id)).runs.push(
-          JSON.parse(JSON.stringify({ ...run, inputId: message.id })),
+        (await tx.doc(RunsDoc, conversation.id)).current = JSON.parse(
+          JSON.stringify({ ...run, inputId: message.id }),
         );
     }, context);
     this.inputs.set(message.id, receipt);
@@ -299,18 +299,25 @@ export class ConversationSessions {
   }
   private async loadInputs(conversation: DurableConversation) {
     const state = await this.harness.snapshot(InputsDoc, conversation.id, context);
-    const receipts = state?.receipts ?? [];
+    const receipts: InputReceipt[] = JSON.parse(JSON.stringify(state?.receipts ?? []));
     if (!receipts.length) return { receipts, pending: [] as Message[] };
     const pending = await this.harness.commit(async (tx) => {
       const pending: Message[] = [];
+      const delivered: string[] = [];
       for (const receipt of receipts) {
         this.inputs.set(receipt.message.id, receipt);
-        if (receipt.restoredEntry) this.entryInputs.set(receipt.restoredEntry, receipt.message);
+        if (receipt.restoredEntry) {
+          this.entryInputs.set(receipt.restoredEntry, receipt.message);
+          if (receipt.content) delivered.push(receipt.message.id);
+        }
         const record = await tx.submissionByRequest(
           receipt.conversation as ConversationId,
           receipt.message.id,
         );
-        if (record?.entry) this.entryInputs.set(record.entry, receipt.message);
+        if (record?.entry) {
+          this.entryInputs.set(record.entry, receipt.message);
+          if (receipt.content) delivered.push(receipt.message.id);
+        }
         if (
           receipt.conversation === conversation.id &&
           !receipt.discarded &&
@@ -318,6 +325,16 @@ export class ConversationSessions {
           !record?.entry
         )
           pending.push(receipt.message);
+      }
+      // Once placed, the native transcript owns expanded text and image bytes.
+      // Keep only the original display identity in the application receipt.
+      if (delivered.length) {
+        const state = await tx.doc(InputsDoc, conversation.id);
+        for (const receipt of state.receipts)
+          if (delivered.includes(receipt.message.id)) {
+            delete receipt.content;
+            this.inputs.set(receipt.message.id, JSON.parse(JSON.stringify(receipt)));
+          }
       }
       return pending;
     }, context);
@@ -375,6 +392,7 @@ export class ConversationSessions {
           inbox.items = inbox.items.filter((item) => item.id !== record.id);
         }
         receipt.discarded = true;
+        delete receipt.content;
       }
     }, context);
     await this.publishMessages(id);
