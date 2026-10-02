@@ -36,6 +36,7 @@ import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlit
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { acquireDurableOwner } from "./durable-owner.ts";
 import { DurableTools } from "./durable-tools.ts";
+import { validateMcpServerNames } from "./native-mcp.ts";
 import type { ExtensionDialogs } from "./extension-ui.ts";
 import type { Permissions } from "./permissions.ts";
 import type { AgentRun } from "@biologue/protocol";
@@ -200,6 +201,7 @@ export class PiAdapter {
     );
     if (config) mcpServers[name] = config;
     else delete mcpServers[name];
+    validateMcpServerNames(Object.keys(mcpServers));
     const path = join(this.agentDir, "mcp.json");
     writeFileSync(path + ".next", JSON.stringify({ mcpServers }, null, 2) + "\n", { mode: 0o600 });
     renameSync(path + ".next", path);

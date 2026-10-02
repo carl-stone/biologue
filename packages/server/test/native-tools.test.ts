@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AgentDoc, UsageDoc } from "@earendil-works/pi-durable";
 import type { AgentQuestion } from "@biologue/protocol";
@@ -345,6 +345,120 @@ test(
       assert.equal(next.status, "completed");
       assert.equal(toolCalls, 2);
       assert.ok(!next.notices?.some((notice) => notice.text.startsWith("Sign in to")));
+    } finally {
+      await f.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+test(
+  "MCP names stay unique and bounded while direct and code-mode calls reach the original tools",
+  timeout,
+  async () => {
+    const remote = [
+      "read-file",
+      "read_file",
+      "read_" + "source_metadata_".repeat(8) + "a",
+      "read_" + "source_metadata_".repeat(8) + "b",
+    ];
+    const called: string[] = [],
+      approved: string[] = [];
+    let reversed = false;
+    const server = createServer(async (req, res) => {
+      if (req.method !== "POST") {
+        res.writeHead(405).end();
+        return;
+      }
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const request = JSON.parse(raw);
+      if (request.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      let result: unknown = {};
+      if (request.method === "initialize")
+        result = {
+          protocolVersion: "2025-11-25",
+          capabilities: { tools: {} },
+          serverInfo: { name: "metadata", version: "1" },
+        };
+      if (request.method === "tools/list")
+        result = {
+          tools: (reversed ? [...remote].reverse() : remote).map((name) => ({
+            name,
+            description: name,
+            inputSchema: { type: "object", properties: {} },
+          })),
+        };
+      if (request.method === "tools/call") {
+        called.push(request.params.name);
+        result = { content: [{ type: "text", text: request.params.name }] };
+      }
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const f = await fixture();
+    try {
+      f.pi.saveMcpServer("sample-metadata", {
+        url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        exposure: "direct",
+      });
+      const question = deferred<AgentQuestion>();
+      const unsubscribe = f.events.subscribe((event) => {
+        if (event.type === "question") question.resolve(event.question);
+        if (event.type === "permission") {
+          approved.push(event.request.tool);
+          f.permissions.decide(event.request.id, true);
+        }
+      });
+      f.faux.setResponses([call("ask_user", { question: "Which sample?" })]);
+      const done = f.finished();
+      await f.supervisor.start(f.conversationId, "Inspect sample metadata");
+      const waiting = await question.promise;
+      const registrations = getCurrentTools(f.requests[0].messages).filter((tool) =>
+        tool.name.startsWith("mcp__"),
+      );
+      assert.equal(registrations.length, remote.length);
+      const names = remote.map(
+        (raw) => registrations.find((tool) => tool.description === raw)!.name,
+      );
+      assert.equal(new Set(names).size, remote.length);
+      for (const name of names) {
+        assert.ok(name.length <= 64);
+        assert.match(name, /^[A-Za-z0-9_]+$/);
+      }
+      f.faux.setResponses([
+        call(names[0], {}),
+        call(names[1], {}),
+        call("codemode", {
+          code: `for (const name of ${JSON.stringify(names.slice(2))}) text(await tools[name]({}));`,
+        }),
+        fauxAssistantMessage("All original tools called."),
+      ]);
+      f.supervisor.dialogs.answer(waiting.id, "Donor");
+      const completed = await done;
+      assert.equal(completed.status, "completed", completed.error);
+      assert.deepEqual(called, remote);
+      assert.deepEqual(approved, names);
+      reversed = true;
+      f.faux.setResponses([
+        call(names[0], {}),
+        call(names[1], {}),
+        fauxAssistantMessage("Names survived reordered discovery."),
+      ]);
+      const next = await f.run("Inspect again");
+      assert.equal(next.status, "completed", next.error);
+      assert.deepEqual(called, [...remote, ...remote.slice(0, 2)]);
+      const nextTools = getCurrentTools(f.requests.at(-3)!.messages);
+      assert.deepEqual(
+        remote.map((raw) => nextTools.find((tool) => tool.description === raw)!.name),
+        names,
+      );
+      unsubscribe();
     } finally {
       await f.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));

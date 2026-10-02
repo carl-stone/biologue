@@ -38,6 +38,30 @@ type Server = {
   login?: Promise<void>;
 };
 const namespace = (name: string) => `mcp__${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+export function validateMcpServerNames(names: string[]) {
+  const owners = new Map<string, string>();
+  for (const name of names) {
+    const key = namespace(name);
+    const other = owners.get(key);
+    if (other !== undefined && other !== name)
+      throw Object.assign(new Error(`MCP server "${name}" conflicts with "${other}".`), {
+        statusCode: 400,
+      });
+    owners.set(key, name);
+  }
+}
+function toolName(server: string, tool: string, taken: (name: string) => boolean) {
+  const plain = `${namespace(server)}__${tool.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+  if (plain.length <= 64 && !taken(plain)) return plain;
+  for (let attempt = 0; ; attempt++) {
+    const hash = createHash("sha256")
+      .update(JSON.stringify([server, tool, attempt]))
+      .digest("hex")
+      .slice(0, 8);
+    const name = `${plain.slice(0, 55)}_${hash}`;
+    if (!taken(name)) return name;
+  }
+}
 const expandHome = (value: string) =>
   value === "~" ? homedir() : value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
 function value(input: string) {
@@ -65,6 +89,7 @@ function exposure(entry: McpServerEntry, name: string): NativeTool["exposure"] {
 /** Protocol clients only. Calls execute as Pi Durable ToolTasks. */
 export class NativeMcp {
   private servers: Server[];
+  private toolOwners = new Map<string, string>();
   private closed = false;
   private authController = new AbortController();
   private closing?: Promise<void>;
@@ -82,6 +107,7 @@ export class NativeMcp {
       notify: (text: string, level?: "info" | "warning" | "error") => void;
     },
   ) {
+    validateMcpServerNames(input.entries.map((entry) => entry.name));
     this.servers = input.entries
       .filter((e) => e.config.enabled !== false)
       .map((entry) => ({ entry, tools: [] }));
@@ -317,43 +343,53 @@ export class NativeMcp {
   private async refresh(server: Server) {
     const { client, entry } = server;
     const tools = await client!.listTools({ signal: this.input.signal });
-    server.tools = tools.map((tool) => ({
-      name: `${namespace(entry.name)}__${tool.name.replace(/[^a-zA-Z0-9_]/g, "_")}`,
-      namespace: namespace(entry.name),
-      exposure: exposure(entry, tool.name),
-      description: tool.description ?? tool.name,
-      parameters: Type.Unsafe<Record<string, unknown>>({
-        ...tool.inputSchema,
-        type: "object",
-        properties: tool.inputSchema.properties ?? {},
-      }),
-      replay: "unsafe",
-      executionMode: "sequential",
-      execute: async (args, api, context) => {
-        if (tool.annotations?.readOnlyHint !== true)
-          await this.approve?.(
-            `${namespace(entry.name)}__${tool.name.replace(/[^a-zA-Z0-9_]/g, "_")}`,
-            args,
-            api.callId,
-            context.abortSignal,
-          );
-        const result = await client!.callTool(tool.name, args as Record<string, unknown>, {
-          signal: context.abortSignal,
-          onProgress: (progress) => {
-            void api.details(JSON.parse(JSON.stringify(progress)), context).catch(() => {});
-          },
-        });
-        return {
-          content: toLlmContent(result),
-          isError: result.isError === true,
-          details: JSON.parse(
-            JSON.stringify({
-              ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
-            }),
-          ),
-        };
-      },
-    }));
+    const plainCounts = new Map<string, number>();
+    for (const raw of new Set(tools.map((tool) => tool.name))) {
+      const plain = toolName(entry.name, raw, () => false);
+      plainCounts.set(plain, (plainCounts.get(plain) ?? 0) + 1);
+    }
+    server.tools = tools.map((tool) => {
+      const owner = JSON.stringify([entry.name, tool.name]);
+      const name = toolName(entry.name, tool.name, (candidate) => {
+        const other = this.toolOwners.get(candidate);
+        return (other !== undefined && other !== owner) || (plainCounts.get(candidate) ?? 0) > 1;
+      });
+      this.toolOwners.set(name, owner);
+      return {
+        name,
+        namespace: namespace(entry.name),
+        exposure: exposure(entry, tool.name),
+        description: tool.description ?? tool.name,
+        parameters: Type.Unsafe<Record<string, unknown>>({
+          ...tool.inputSchema,
+          type: "object",
+          properties: tool.inputSchema.properties ?? {},
+        }),
+        replay: "unsafe",
+        executionMode: "sequential",
+        execute: async (args, api, context) => {
+          if (tool.annotations?.readOnlyHint !== true)
+            await this.approve?.(name, args, api.callId, context.abortSignal);
+          const result = await client!.callTool(tool.name, args as Record<string, unknown>, {
+            signal: context.abortSignal,
+            onProgress: (progress) => {
+              void api.details(JSON.parse(JSON.stringify(progress)), context).catch(() => {});
+            },
+          });
+          return {
+            content: toLlmContent(result),
+            isError: result.isError === true,
+            details: JSON.parse(
+              JSON.stringify({
+                ...(result.structuredContent
+                  ? { structuredContent: result.structuredContent }
+                  : {}),
+              }),
+            ),
+          };
+        },
+      };
+    });
     await this.input.changed();
   }
   approve?: (name: string, args: unknown, callId: string, signal?: AbortSignal) => Promise<void>;
